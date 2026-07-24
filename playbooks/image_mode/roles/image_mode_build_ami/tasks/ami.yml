@@ -186,7 +186,7 @@
     # Run bootc-image-builder
     ###########################################################################
 
-    - name: IMAGE MODE AMI | Run bootc-image-builder AWS upload
+    - name: IMAGE MODE AMI | Start bootc-image-builder AWS upload
       ansible.builtin.command:
         argv:
           - podman
@@ -230,7 +230,27 @@
           - --aws-region
           - "{{ image_mode_aws_region }}"
           - "{{ image_mode_image_reference }}"
+      async: "{{ image_mode_ami_build_timeout | default(14400) | int }}"
+      poll: 0
+      register: image_mode_ami_build_async_job
+      changed_when: true
+
+    - name: IMAGE MODE AMI | Wait for bootc-image-builder AWS upload
+      ansible.builtin.async_status:
+        jid: "{{ image_mode_ami_build_async_job.ansible_job_id }}"
       register: image_mode_ami_build_command
+      until: image_mode_ami_build_command.finished
+      retries: >-
+        {{
+          (
+            image_mode_ami_build_timeout | default(14400) | int
+          )
+          //
+          (
+            image_mode_ami_build_poll_interval | default(30) | int
+          )
+        }}
+      delay: "{{ image_mode_ami_build_poll_interval | default(30) | int }}"
       changed_when: true
 
     ###########################################################################

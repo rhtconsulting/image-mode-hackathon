@@ -17,7 +17,8 @@
     - ../vars/projects.yml
     - ../vars/job_templates.yml
     - ../vars/workflow_job_templates.yml
-    - ../vars/surveys/satellite_content.yml
+    # - ../vars/surveys/satellite_content.yml
+    # - ../vars/surveys/image_mode_build_ami.yml
 
 
   vars:
@@ -176,6 +177,16 @@
     image_builder_job_poll_interval: 10
 
   pre_tasks:
+
+    #Instead of specifying all surveys above, we will load the entire directory at one time 
+    - name: Load all survey definitions
+      ansible.builtin.include_vars:
+        dir: "../vars/surveys"
+        extensions:
+          - yml
+          - yaml
+
+
     ###########################################################################
     # Validate Terraform inventory
     ###########################################################################

@@ -1,0 +1,48 @@
+---
+    ###########################################################################
+    # PHASE 7 | Determine current installation state
+    ###########################################################################
+
+    - name: PHASE 7 | Check for existing Satellite installer answer file
+      ansible.builtin.stat:
+        path: "{{ satellite_install_complete_marker }}"
+      register: satellite_answer_file
+
+    - name: PHASE 7 | Check current Satellite HTTPS endpoint
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --show-error
+          - --insecure
+          - --location
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - --connect-timeout
+          - "10"
+          - --max-time
+          - "30"
+          - --resolve
+          - "{{ satellite_fqdn }}:443:127.0.0.1"
+          - "https://{{ satellite_fqdn }}/users/login"
+      register: existing_satellite_endpoint
+      changed_when: false
+      failed_when: false
+
+    - name: PHASE 7 | Determine whether Satellite installer must run
+      ansible.builtin.set_fact:
+        satellite_installer_required: >-
+          {{
+            not satellite_answer_file.stat.exists
+            or
+            existing_satellite_endpoint.rc | default(1) | int != 0
+            or
+            existing_satellite_endpoint.stdout
+            | default('0')
+            | trim
+            | int
+            not in [200, 301, 302, 401, 403, 422]
+          }}
+

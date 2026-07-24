@@ -1,0 +1,32 @@
+---
+    ###########################################################################
+    # PHASE 3 | Verify EC2 IAM/S3 access
+    ###########################################################################
+
+    - name: PHASE 3 | Verify caller identity from Satellite EC2 instance role
+      ansible.builtin.command:
+        argv:
+          - aws
+          - sts
+          - get-caller-identity
+          - "--region"
+          - "{{ satellite_aws_region }}"
+          - "--output"
+          - json
+      register: satellite_aws_identity
+      changed_when: false
+
+    - name: PHASE 3 | Verify Satellite ISO exists in S3
+      ansible.builtin.command:
+        argv:
+          - aws
+          - s3api
+          - head-object
+          - "--bucket"
+          - "{{ satellite_iso_bucket }}"
+          - "--key"
+          - "{{ satellite_iso_key }}"
+          - "--region"
+          - "{{ satellite_aws_region }}"
+      register: satellite_iso_head
+      changed_when: false

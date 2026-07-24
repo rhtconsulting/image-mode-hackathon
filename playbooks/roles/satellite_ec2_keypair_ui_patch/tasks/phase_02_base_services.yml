@@ -1,0 +1,31 @@
+---
+    ###########################################################################
+    # PHASE 2 | Base packages and services
+    ###########################################################################
+
+    - name: PHASE 2 | Install bootstrap packages
+      ansible.builtin.dnf:
+        name: "{{ satellite_bootstrap_packages }}"
+        state: present
+        update_cache: true
+
+    - name: PHASE 2 | Enable time synchronization
+      ansible.builtin.service:
+        name: chronyd
+        state: started
+        enabled: true
+
+    - name: PHASE 2 | Start and enable firewalld
+      ansible.builtin.service:
+        name: firewalld
+        state: started
+        enabled: true
+
+    - name: PHASE 2 | Open Satellite TCP ports
+      ansible.posix.firewalld:
+        port: "{{ item }}/tcp"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ satellite_firewall_tcp_ports }}"
+

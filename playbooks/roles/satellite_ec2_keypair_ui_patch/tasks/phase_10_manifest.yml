@@ -1,0 +1,205 @@
+    ###########################################################################
+    # PHASE 10 | Import and validate Satellite subscription manifest
+    ###########################################################################
+
+    - name: PHASE 10 | Read manifest history before upload
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - "--output"
+          - json
+          - subscription
+          - manifest-history
+          - "--organization"
+          - "{{ satellite_organization }}"
+      register: satellite_manifest_history_before
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: PHASE 10 | Parse manifest history before upload
+      ansible.builtin.set_fact:
+        satellite_manifest_history_before_data: >-
+          {{
+            (
+              satellite_manifest_history_before.stdout
+              | default('[]', true)
+              | trim
+              | from_json
+            )
+            if
+            (
+              satellite_manifest_history_before.rc == 0
+              and
+              satellite_manifest_history_before.stdout
+              | default('')
+              | trim
+              | length > 0
+            )
+            else []
+          }}
+      no_log: true
+
+    - name: PHASE 10 | Determine whether manifest upload is required
+      ansible.builtin.set_fact:
+        satellite_manifest_upload_required: >-
+          {{
+            satellite_manifest_history_before_data
+            | length == 0
+          }}
+
+    - name: PHASE 10 | Upload Satellite subscription manifest
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - subscription
+          - upload
+          - "--file"
+          - "{{ satellite_manifest_dest }}"
+          - "--organization"
+          - "{{ satellite_organization }}"
+      register: satellite_manifest_upload
+      changed_when: satellite_manifest_upload.rc == 0
+      failed_when: satellite_manifest_upload.rc != 0
+      no_log: true
+      when: satellite_manifest_upload_required
+
+    - name: PHASE 10 | Read manifest history after upload
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - "--output"
+          - json
+          - subscription
+          - manifest-history
+          - "--organization"
+          - "{{ satellite_organization }}"
+      register: satellite_manifest_history_after
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: PHASE 10 | Parse manifest history after upload
+      ansible.builtin.set_fact:
+        satellite_manifest_history_data: >-
+          {{
+            (
+              satellite_manifest_history_after.stdout
+              | default('[]', true)
+              | trim
+              | from_json
+            )
+            if
+            (
+              satellite_manifest_history_after.rc == 0
+              and
+              satellite_manifest_history_after.stdout
+              | default('')
+              | trim
+              | length > 0
+            )
+            else []
+          }}
+      no_log: true
+
+    - name: PHASE 10 | List Red Hat repository sets
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - "--output"
+          - json
+          - repository-set
+          - list
+          - "--organization"
+          - "{{ satellite_organization }}"
+      register: satellite_repository_sets
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: PHASE 10 | Parse Red Hat repository sets
+      ansible.builtin.set_fact:
+        satellite_repository_set_data: >-
+          {{
+            (
+              satellite_repository_sets.stdout
+              | default('[]', true)
+              | trim
+              | from_json
+            )
+            if
+            (
+              satellite_repository_sets.rc == 0
+              and
+              satellite_repository_sets.stdout
+              | default('')
+              | trim
+              | length > 0
+            )
+            else []
+          }}
+      no_log: true
+
+    - name: PHASE 10 | Validate manifest availability
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              satellite_manifest_history_data | length > 0
+            )
+            or
+            (
+              satellite_repository_set_data | length > 0
+            )
+            or
+            (
+              satellite_manifest_upload is defined
+              and
+              satellite_manifest_upload is not skipped
+              and
+              satellite_manifest_upload.rc == 0
+            )
+        fail_msg: >-
+          Satellite could not verify the manifest for organization
+          {{ satellite_organization }}. Manifest history is empty, the upload
+          did not report success, and no Red Hat repository sets are visible.
+        success_msg: >-
+          Satellite manifest access was verified for organization
+          {{ satellite_organization }}.
+      no_log: true
+
+    - name: PHASE 10 | Report manifest state
+      ansible.builtin.debug:
+        msg:
+          - "Organization: {{ satellite_organization }}"
+          - >-
+            Manifest history entries:
+            {{ satellite_manifest_history_data | length }}
+          - >-
+            Red Hat repository sets:
+            {{ satellite_repository_set_data | length }}
+          - >-
+            Manifest upload performed:
+            {{
+              satellite_manifest_upload is defined
+              and
+              satellite_manifest_upload is not skipped
+            }}
+
+

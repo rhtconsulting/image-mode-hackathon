@@ -1,0 +1,66 @@
+---    ###########################################################################
+    # PHASE 1 | Host preparation
+    ###########################################################################
+
+    - name: PHASE 1 | Configure Satellite hostname
+      block:
+        - name: Set persistent Satellite hostname
+          ansible.builtin.hostname:
+            name: "{{ satellite_fqdn }}"
+
+        - name: Ensure cloud-init preserves the configured hostname
+          ansible.builtin.copy:
+            dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              preserve_hostname: true
+
+        - name: Determine Satellite private IPv4 address
+          ansible.builtin.set_fact:
+            satellite_private_ip: >-
+              {{
+                private_ip
+                | default(ansible_default_ipv4.address)
+              }}
+
+        - name: Validate Satellite private IPv4 address
+          ansible.builtin.assert:
+            that:
+              - >-
+                satellite_private_ip
+                is match(
+                  '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$'
+                )
+            fail_msg: >-
+              No valid Satellite private IP was found in private_ip or
+              ansible_default_ipv4.address.
+
+        - name: Configure deterministic local hostname resolution
+          ansible.builtin.blockinfile:
+            path: /etc/hosts
+            create: true
+            owner: root
+            group: root
+            mode: "0644"
+            marker: "# {mark} ANSIBLE MANAGED SATELLITE HOST"
+            block: |
+              {{ satellite_private_ip }} {{ satellite_fqdn }} {{ satellite_short_name }}
+
+        - name: Verify Satellite FQDN resolves locally
+          ansible.builtin.command:
+            argv:
+              - getent
+              - ahostsv4
+              - "{{ satellite_fqdn }}"
+          register: satellite_hostname_resolution
+          changed_when: false
+
+        - name: Verify the resolved address includes the private IP
+          ansible.builtin.assert:
+            that:
+              - satellite_private_ip in satellite_hostname_resolution.stdout
+            fail_msg: >-
+              {{ satellite_fqdn }} does not resolve to
+              {{ satellite_private_ip }} on the Satellite host.

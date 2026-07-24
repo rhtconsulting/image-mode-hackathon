@@ -1,0 +1,47 @@
+---
+###############################################################################
+# Tasks | deploy_satellite
+#
+# The phase files keep the role maintainable while tasks/main.yml remains the
+# single role entry point.
+###############################################################################
+
+- name: Include host preparation tasks
+  ansible.builtin.import_tasks: phase_01_host_preparation.yml
+
+- name: Include base package and service tasks
+  ansible.builtin.import_tasks: phase_02_base_services.yml
+
+- name: Include S3 access and artifact download tasks
+  ansible.builtin.import_tasks: phase_03_artifacts.yml
+
+- name: Include ISO mount and package installation tasks
+  ansible.builtin.import_tasks: phase_04_install_packages.yml
+
+- name: Include Satellite installer tasks
+  ansible.builtin.import_tasks: phase_05_install_satellite.yml
+
+- name: Include public TLS tasks
+  ansible.builtin.import_tasks: phase_06_public_tls.yml
+  when: satellite_manage_public_tls | bool
+
+- name: Include IdM CA trust tasks
+  ansible.builtin.import_tasks: phase_07_idm_trust.yml
+  when: satellite_configure_idm | bool
+
+- name: Include service validation tasks
+  ansible.builtin.import_tasks: phase_08_validation.yml
+
+- name: Include IdM LDAP configuration tasks
+  ansible.builtin.import_tasks: phase_09_idm_ldap.yml
+  when: satellite_configure_idm | bool
+
+- name: Include subscription manifest tasks
+  ansible.builtin.import_tasks: phase_10_manifest.yml
+  when: satellite_import_manifest | bool
+
+- name: Include subscription connection tasks
+  ansible.builtin.import_tasks: phase_11_subscription_connection.yml
+
+- name: Include final report tasks
+  ansible.builtin.import_tasks: phase_12_report.yml

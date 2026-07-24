@@ -1,0 +1,22 @@
+    ###########################################################################
+    # PHASE 12 | Final report
+    ###########################################################################
+
+    - name: PHASE 12 | Display Satellite deployment information
+      ansible.builtin.debug:
+        msg:
+          - "Red Hat Satellite installation completed."
+          - "Satellite URL: https://{{ satellite_fqdn }}"
+          - "Administrator username: {{ satellite_admin_username }}"
+          - "Organization: {{ satellite_organization }}"
+          - "Location: {{ satellite_location }}"
+          - "ISO source: {{ satellite_iso_s3_uri }}"
+          - "Manifest source: {{ satellite_manifest_s3_uri }}"
+          - "Manifest destination: {{ satellite_manifest_dest }}"
+          - "Subscription manifest import verified."
+          - "Package installation log: {{ satellite_package_install_log }}"
+          - "Satellite installer log: {{ satellite_installer_log }}"
+          - "The administrator password remains stored in AWS Secrets Manager."
+          - "Public TLS certificate ARN: {{ satellite_acm_certificate_arn }}"
+          - "Public TLS certificate: {{ satellite_tls_certificate_path }}"
+          - "Public TLS CA bundle: {{ satellite_tls_ca_bundle_path }}"

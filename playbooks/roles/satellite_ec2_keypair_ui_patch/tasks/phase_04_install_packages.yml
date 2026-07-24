@@ -1,0 +1,163 @@
+---
+    ###########################################################################
+    # PHASE 4 | Download Satellite ISO
+    ###########################################################################
+
+    - name: PHASE 4 | Check for previously downloaded Satellite ISO
+      ansible.builtin.stat:
+        path: "{{ satellite_iso_dest }}"
+        checksum_algorithm: sha256
+        get_checksum: >-
+          {{
+            expected_satellite_iso_sha256
+            | length > 0
+          }}
+      register: existing_satellite_iso
+
+    - name: PHASE 4 | Determine whether Satellite ISO download is required
+      ansible.builtin.set_fact:
+        satellite_iso_download_required: >-
+          {{
+            not existing_satellite_iso.stat.exists
+            or
+            (
+              expected_satellite_iso_sha256 | length > 0
+              and
+              existing_satellite_iso.stat.checksum
+              | default('')
+              != expected_satellite_iso_sha256
+            )
+          }}
+
+    - name: PHASE 4 | Remove invalid or incomplete Satellite ISO
+      ansible.builtin.file:
+        path: "{{ satellite_iso_dest }}"
+        state: absent
+      when: satellite_iso_download_required
+
+    - name: PHASE 4 | Download Satellite ISO from S3
+      ansible.builtin.command:
+        argv:
+          - aws
+          - s3
+          - cp
+          - "{{ satellite_iso_s3_uri }}"
+          - "{{ satellite_iso_dest }}"
+          - "--region"
+          - "{{ satellite_aws_region }}"
+          - "--only-show-errors"
+      register: satellite_iso_download
+      changed_when: true
+      when: satellite_iso_download_required
+
+    - name: PHASE 4 | Set Satellite ISO permissions
+      ansible.builtin.file:
+        path: "{{ satellite_iso_dest }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: PHASE 4 | Calculate downloaded Satellite ISO checksum
+      ansible.builtin.stat:
+        path: "{{ satellite_iso_dest }}"
+        checksum_algorithm: sha256
+        get_checksum: true
+      register: downloaded_satellite_iso
+
+    - name: PHASE 4 | Validate downloaded Satellite ISO checksum
+      ansible.builtin.assert:
+        that:
+          - >-
+            downloaded_satellite_iso.stat.checksum
+            == expected_satellite_iso_sha256
+        fail_msg: >-
+          Satellite ISO checksum verification failed. Expected
+          {{ expected_satellite_iso_sha256 }}, but downloaded
+          {{ downloaded_satellite_iso.stat.checksum }}.
+      when: expected_satellite_iso_sha256 | length > 0
+
+    ###########################################################################
+    # PHASE 4B | Download Satellite subscription manifest
+    ###########################################################################
+
+    - name: PHASE 4B | Check for previously downloaded Satellite manifest
+      ansible.builtin.stat:
+        path: "{{ satellite_manifest_dest }}"
+        checksum_algorithm: sha256
+        get_checksum: >-
+          {{
+            expected_satellite_manifest_sha256
+            | length > 0
+          }}
+      register: existing_satellite_manifest
+
+    - name: PHASE 4B | Determine whether manifest download is required
+      ansible.builtin.set_fact:
+        satellite_manifest_download_required: >-
+          {{
+            not existing_satellite_manifest.stat.exists
+            or
+            (
+              expected_satellite_manifest_sha256 | length > 0
+              and
+              existing_satellite_manifest.stat.checksum
+              | default('')
+              != expected_satellite_manifest_sha256
+            )
+          }}
+
+    - name: PHASE 4B | Remove invalid or incomplete manifest
+      ansible.builtin.file:
+        path: "{{ satellite_manifest_dest }}"
+        state: absent
+      when: satellite_manifest_download_required
+
+    - name: PHASE 4B | Download Satellite manifest from S3
+      ansible.builtin.command:
+        argv:
+          - aws
+          - s3
+          - cp
+          - "{{ satellite_manifest_s3_uri }}"
+          - "{{ satellite_manifest_dest }}"
+          - "--region"
+          - "{{ satellite_aws_region }}"
+          - "--only-show-errors"
+      register: satellite_manifest_download
+      changed_when: true
+      when: satellite_manifest_download_required
+
+    - name: PHASE 4B | Set Satellite manifest permissions
+      ansible.builtin.file:
+        path: "{{ satellite_manifest_dest }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: PHASE 4B | Calculate downloaded manifest checksum
+      ansible.builtin.stat:
+        path: "{{ satellite_manifest_dest }}"
+        checksum_algorithm: sha256
+        get_checksum: true
+      register: downloaded_satellite_manifest
+
+    - name: PHASE 4B | Validate downloaded manifest checksum
+      ansible.builtin.assert:
+        that:
+          - >-
+            downloaded_satellite_manifest.stat.checksum
+            == expected_satellite_manifest_sha256
+        fail_msg: >-
+          Satellite manifest checksum verification failed. Expected
+          {{ expected_satellite_manifest_sha256 }}, but downloaded
+          {{ downloaded_satellite_manifest.stat.checksum }}.
+      when: expected_satellite_manifest_sha256 | length > 0
+
+    - name: PHASE 4B | Verify manifest is a readable ZIP archive
+      ansible.builtin.command:
+        argv:
+          - unzip
+          - "-t"
+          - "{{ satellite_manifest_dest }}"
+      register: satellite_manifest_zip_test
+      changed_when: false

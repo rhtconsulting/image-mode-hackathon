@@ -1,0 +1,572 @@
+---
+
+    ###########################################################################
+    # PHASE 9 | Validate Satellite services
+    ###########################################################################
+
+    - name: PHASE 9 | Wait for Satellite HTTPS service
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --show-error
+          - --location
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - --connect-timeout
+          - "15"
+          - --max-time
+          - "60"
+          - "https://{{ satellite_fqdn }}/users/login"
+      register: satellite_https_health
+      retries: 40
+      delay: 30
+      until: >-
+        satellite_https_health.rc == 0
+        and
+        satellite_https_health.stdout | trim
+        in ['200', '301', '302', '401', '403', '422']
+      changed_when: false
+      failed_when: false
+
+    - name: PHASE 9 | Validate Satellite HTTPS service
+      ansible.builtin.assert:
+        that:
+          - satellite_https_health.rc == 0
+          - satellite_https_health.stdout | trim in ['200', '301', '302', '401', '403', '422']
+        fail_msg: >-
+          Satellite HTTPS service did not become available after 40 attempts.
+          URL: https://{{ satellite_fqdn }}/users/login
+          curl return code: {{ satellite_https_health.rc | default('unknown') }}
+          HTTP status: {{ satellite_https_health.stdout | default('') | trim }}
+          curl error: {{ satellite_https_health.stderr | default('') | trim }}
+        success_msg: >-
+          Satellite HTTPS service is available and returned HTTP
+          {{ satellite_https_health.stdout | trim }}.
+          
+    - name: PHASE 9 | Check Satellite service status
+      ansible.builtin.command:
+        argv:
+          - satellite-maintain
+          - service
+          - status
+      register: satellite_service_status
+      changed_when: false
+
+    - name: PHASE 9 | Test Hammer authentication
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - ping
+      register: satellite_hammer_ping
+      changed_when: false
+      no_log: true
+
+
+    ###########################################################################
+    # PHASE 9B | Configure IdM LDAP authentication
+    ###########################################################################
+
+    - name: PHASE 9B | Enable outbound LDAP connections through SELinux
+      ansible.posix.seboolean:
+        name: nis_enabled
+        state: true
+        persistent: true
+
+    - name: PHASE 9B | Validate resolved IdM LDAP distinguished names
+      ansible.builtin.assert:
+        that:
+          - satellite_idm_host | length > 0
+          - satellite_idm_base_dn.startswith('dc=')
+          - satellite_idm_base_dn is not search('\\\\1')
+          - satellite_idm_users_base_dn is not search('\\\\1')
+          - satellite_idm_groups_base_dn is not search('\\\\1')
+          - satellite_idm_bind_dn is not search('\\\\1')
+          - satellite_idm_admin_group | length > 0
+          - satellite_admin_user_group_name | length > 0
+        fail_msg: |
+          Invalid IdM LDAP configuration was generated.
+
+          Host:
+            {{ satellite_idm_host }}
+
+          Base DN:
+            {{ satellite_idm_base_dn }}
+
+          Users Base:
+            {{ satellite_idm_users_base_dn }}
+
+          Groups Base:
+            {{ satellite_idm_groups_base_dn }}
+
+          Bind DN:
+            {{ satellite_idm_bind_dn }}
+
+          External administrator group:
+            {{ satellite_idm_admin_group }}
+
+    - name: PHASE 9B | Check IdM LDAP TCP connectivity
+      ansible.builtin.wait_for:
+        host: "{{ satellite_idm_host }}"
+        port: 636
+        timeout: 30
+        state: started
+
+    - name: PHASE 9B | Check for existing IdM LDAP authentication source
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - "--output"
+          - json
+          - auth-source
+          - ldap
+          - list
+          - "--search"
+          - "name=\"{{ satellite_idm_auth_source_name }}\""
+      register: satellite_idm_auth_source_list
+      changed_when: false
+      no_log: true
+  
+  
+    - name: PHASE 9B | Parse existing IdM LDAP authentication sources
+      ansible.builtin.set_fact:
+        satellite_idm_auth_source_records: >-
+          {{
+            satellite_idm_auth_source_list.stdout
+            | default('[]', true)
+            | from_json
+          }}
+      no_log: true
+
+    - name: PHASE 9B | Determine whether IdM authentication source exists
+      ansible.builtin.set_fact:
+        satellite_idm_auth_source_exists: >-
+          {{
+            satellite_idm_auth_source_records
+            | length > 0
+          }}
+
+    - name: PHASE 9B | Resolve existing IdM authentication source ID
+      ansible.builtin.set_fact:
+        satellite_idm_auth_source_id: >-
+          {{
+            (
+              satellite_idm_auth_source_records
+              | first
+            ).get(
+              'Id',
+              (
+                satellite_idm_auth_source_records
+                | first
+              ).get(
+                'ID',
+                (
+                  satellite_idm_auth_source_records
+                  | first
+                ).get('id', '')
+              )
+            )
+          }}
+      when: satellite_idm_auth_source_exists
+      no_log: true
+
+    - name: PHASE 9B | Create IdM LDAP authentication source
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - auth-source
+          - ldap
+          - create
+          - "--name"
+          - "{{ satellite_idm_auth_source_name }}"
+          - "--host"
+          - "{{ satellite_idm_host }}"
+          - "--port"
+          - "636"
+          - "--tls"
+          - "true"
+          - "--server-type"
+          - "free_ipa"
+          - "--base-dn"
+          - "{{ satellite_idm_users_base_dn }}"
+          - "--groups-base"
+          - "{{ satellite_idm_groups_base_dn }}"
+          - "--account"
+          - "{{ satellite_idm_bind_dn }}"
+          - "--account-password"
+          - "{{ satellite_idm_bind_password }}"
+          - "--attr-login"
+          - "uid"
+          - "--attr-firstname"
+          - "givenName"
+          - "--attr-lastname"
+          - "sn"
+          - "--attr-mail"
+          - "mail"
+          - "--onthefly-register"
+          - "true"
+          - "--usergroup-sync"
+          - "true"
+          - "--ldap-group-membership"
+          - "posix"
+          - "--organizations"
+          - "{{ satellite_organization }}"
+          - "--locations"
+          - "{{ satellite_location }}"
+      register: satellite_idm_auth_source_create
+      changed_when: true
+      no_log: true
+      when: not satellite_idm_auth_source_exists
+
+    - name: PHASE 9B | Update existing IdM LDAP authentication source
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - auth-source
+          - ldap
+          - update
+          - "--id"
+          - "{{ satellite_idm_auth_source_id }}"
+          - "--name"
+          - "{{ satellite_idm_auth_source_name }}"
+          - "--host"
+          - "{{ satellite_idm_host }}"
+          - "--port"
+          - "636"
+          - "--tls"
+          - "true"
+          - "--server-type"
+          - "free_ipa"
+          - "--base-dn"
+          - "{{ satellite_idm_users_base_dn }}"
+          - "--groups-base"
+          - "{{ satellite_idm_groups_base_dn }}"
+          - "--account"
+          - "{{ satellite_idm_bind_dn }}"
+          - "--account-password"
+          - "{{ satellite_idm_bind_password }}"
+          - "--attr-login"
+          - "uid"
+          - "--attr-firstname"
+          - "givenName"
+          - "--attr-lastname"
+          - "sn"
+          - "--attr-mail"
+          - "mail"
+          - "--onthefly-register"
+          - "true"
+          - "--usergroup-sync"
+          - "true"
+          - "--ldap-group-membership"
+          - "posix"
+          - "--organizations"
+          - "{{ satellite_organization }}"
+          - "--locations"
+          - "{{ satellite_location }}"
+      register: satellite_idm_auth_source_update
+      changed_when: true
+      no_log: true
+      when: satellite_idm_auth_source_exists
+
+    - name: PHASE 9B | Read IdM LDAP authentication source after configuration
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - "--output"
+          - json
+          - auth-source
+          - ldap
+          - list
+          - "--search"
+          - "name=\"{{ satellite_idm_auth_source_name }}\""
+      register: satellite_idm_auth_source_after
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 9B | Resolve configured IdM LDAP authentication source ID
+      ansible.builtin.set_fact:
+        satellite_idm_auth_source_id: >-
+          {{
+            (
+              (
+                satellite_idm_auth_source_after.stdout
+                | from_json
+              )
+              | first
+            ).get(
+              'Id',
+              (
+                (
+                  satellite_idm_auth_source_after.stdout
+                  | from_json
+                )
+                | first
+              ).get(
+                'ID',
+                (
+                  (
+                    satellite_idm_auth_source_after.stdout
+                    | from_json
+                  )
+                  | first
+                ).get('id', '')
+              )
+            )
+          }}
+      no_log: true
+
+    ###########################################################################
+    # PHASE 9C | Map IdM administrators to Satellite administrators
+    ###########################################################################
+
+    - name: PHASE 9C | Check for Satellite administrator user group
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - "--output"
+          - json
+          - user-group
+          - list
+          - "--search"
+          - "name=\"{{ satellite_admin_user_group_name }}\""
+      register: satellite_admin_user_group_list
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 9C | Parse Satellite administrator user group
+      ansible.builtin.set_fact:
+        satellite_admin_user_group_records: >-
+          {{
+            satellite_admin_user_group_list.stdout
+            | default('[]', true)
+            | from_json
+          }}
+      no_log: true
+
+    - name: PHASE 9C | Create Satellite administrator user group
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - user-group
+          - create
+          - "--name"
+          - "{{ satellite_admin_user_group_name }}"
+          - "--admin"
+          - "true"
+      register: satellite_admin_user_group_create
+      changed_when: satellite_admin_user_group_create.rc == 0
+      no_log: true
+      when: satellite_admin_user_group_records | length == 0
+
+    - name: PHASE 9C | Enforce administrator status on Satellite user group
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - user-group
+          - update
+          - "--name"
+          - "{{ satellite_admin_user_group_name }}"
+          - "--admin"
+          - "true"
+      register: satellite_admin_user_group_update
+      changed_when: >-
+        'User group updated' in
+        (
+          satellite_admin_user_group_update.stdout
+          | default('')
+        )
+      no_log: true
+
+    - name: PHASE 9C | Read external group mappings
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - "--output"
+          - json
+          - user-group
+          - external
+          - list
+          - "--user-group"
+          - "{{ satellite_admin_user_group_name }}"
+      register: satellite_external_admin_group_list
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 9C | Parse external administrator group mappings
+      ansible.builtin.set_fact:
+        satellite_external_admin_group_records: >-
+          {{
+            satellite_external_admin_group_list.stdout
+            | default('[]', true)
+            | from_json
+          }}
+      no_log: true
+
+    - name: PHASE 9C | Normalize external administrator group names
+      ansible.builtin.set_fact:
+        satellite_external_admin_group_names: >-
+          {{
+            satellite_external_admin_group_records
+            | map(attribute='Name', default='')
+            | map('lower')
+            | list
+          }}
+      no_log: true
+
+    - name: PHASE 9C | Determine whether IdM administrator group is mapped
+      ansible.builtin.set_fact:
+        satellite_idm_admin_group_is_mapped: >-
+          {{
+            satellite_idm_admin_group | lower
+            in
+            satellite_external_admin_group_names
+          }}
+      no_log: true
+
+    - name: PHASE 9C | Map IdM administrator group to Satellite administrator group
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - user-group
+          - external
+          - create
+          - "--user-group"
+          - "{{ satellite_admin_user_group_name }}"
+          - "--name"
+          - "{{ satellite_idm_admin_group }}"
+          - "--auth-source-id"
+          - "{{ satellite_idm_auth_source_id }}"
+      register: satellite_external_admin_group_create
+      changed_when: satellite_external_admin_group_create.rc == 0
+      no_log: false
+      when: not satellite_idm_admin_group_is_mapped
+
+    - name: PHASE 9C | Refresh LDAP external user groups
+      ansible.builtin.command:
+        argv:
+          - foreman-rake
+          - ldap:refresh_usergroups
+      register: satellite_ldap_group_refresh
+      changed_when: false
+
+    - name: PHASE 9C | Verify Satellite administrator user group
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - "--output"
+          - json
+          - user-group
+          - info
+          - "--name"
+          - "{{ satellite_admin_user_group_name }}"
+      register: satellite_admin_user_group_info
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 9C | Verify external IdM administrator group mapping
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - "--output"
+          - json
+          - user-group
+          - external
+          - list
+          - "--user-group"
+          - "{{ satellite_admin_user_group_name }}"
+      register: satellite_external_admin_group_after
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 9C | Parse verified administrator user group
+      ansible.builtin.set_fact:
+        satellite_admin_user_group_info_data: >-
+          {{
+            satellite_admin_user_group_info.stdout
+            | default('{}', true)
+            | from_json
+          }}
+        satellite_external_admin_group_after_data: >-
+          {{
+            satellite_external_admin_group_after.stdout
+            | default('[]', true)
+            | from_json
+          }}
+      no_log: true
+
+    - name: PHASE 9C | Assert IdM administrator mapping is configured
+      ansible.builtin.assert:
+        that:
+          - >-
+            satellite_admin_user_group_info_data.get(
+              'Admin',
+              satellite_admin_user_group_info_data.get('admin', false)
+            )
+            | bool
+          - >-
+            satellite_idm_admin_group | lower
+            in
+            (
+              satellite_external_admin_group_after_data
+              | map(attribute='Name', default='')
+              | map('lower')
+              | list
+            )
+        fail_msg: >-
+          The IdM administrator group could not be mapped to the Satellite
+          administrator user group.
+        success_msg: >-
+          Members of IdM group {{ satellite_idm_admin_group }} are mapped to
+          the Satellite administrator group.
+      no_log: true
+

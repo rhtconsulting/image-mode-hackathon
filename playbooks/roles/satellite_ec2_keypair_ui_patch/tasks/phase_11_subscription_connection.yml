@@ -1,0 +1,42 @@
+---
+# Move the corresponding PHASE tasks from the original playbook here.
+    ###########################################################################
+    # PHASE 11 | Configure disconnected behavior
+    ###########################################################################
+
+    - name: PHASE 11 | Read subscription connection setting
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - settings
+          - info
+          - "--name"
+          - subscription_connection_enabled
+      register: satellite_subscription_connection_setting
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 11 | Disable upstream subscription connection
+      ansible.builtin.command:
+        argv:
+          - hammer
+          - "--username"
+          - "{{ satellite_admin_username }}"
+          - "--password"
+          - "{{ satellite_admin_password }}"
+          - settings
+          - set
+          - "--name"
+          - subscription_connection_enabled
+          - "--value"
+          - "false"
+      register: disable_satellite_subscription_connection
+      changed_when: true
+      no_log: true
+      when: >-
+        satellite_subscription_connection_setting.stdout
+        is not search('false', ignorecase=true)

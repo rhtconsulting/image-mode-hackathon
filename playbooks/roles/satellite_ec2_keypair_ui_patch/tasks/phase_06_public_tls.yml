@@ -1,0 +1,109 @@
+---
+    ###########################################################################
+    # PHASE 6 | Install Satellite RPM packages
+    ###########################################################################
+
+    - name: PHASE 6 | Check whether Satellite packages are already installed
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - "--query"
+          - satellite
+      register: installed_satellite_package
+      changed_when: false
+      failed_when: false
+
+    - name: PHASE 6 | Install packages from mounted Satellite ISO
+      ansible.builtin.shell: |
+        set -o pipefail
+
+        ./install_packages \
+          2>&1 | tee "{{ satellite_package_install_log }}"
+      args:
+        chdir: "{{ satellite_mount_path }}"
+        executable: /bin/bash
+      register: satellite_package_install
+      changed_when: true
+      when: installed_satellite_package.rc != 0
+
+    - name: PHASE 6 | Verify Satellite package installation
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - "--query"
+          - satellite
+      register: verified_satellite_package
+      changed_when: false
+
+    - name: PHASE 6 | Locate satellite-installer command
+      ansible.builtin.command:
+        argv:
+          - command
+          - "-v"
+          - satellite-installer
+      register: satellite_installer_command
+      changed_when: false
+
+    - name: PHASE 6 | List available Satellite installer scenarios
+      ansible.builtin.command:
+        argv:
+          - satellite-installer
+          - "--list-scenarios"
+      register: satellite_installer_scenarios
+      changed_when: false
+
+    - name: PHASE 6 | Locate satellite-installer command
+      ansible.builtin.shell: |
+        command -v satellite-installer
+      args:
+        executable: /bin/bash
+      register: satellite_installer_command
+      changed_when: false
+
+    - name: PHASE 6 | List available Satellite installer scenarios
+      ansible.builtin.command:
+        argv:
+          - satellite-installer
+          - "--list-scenarios"
+      environment:
+        NO_COLOR: "1"
+        TERM: "dumb"
+      register: satellite_installer_scenarios
+      changed_when: false
+
+    - name: PHASE 6 | Verify Satellite installer scenario is available
+      ansible.builtin.assert:
+        that:
+          - satellite_installer_command.rc == 0
+          - satellite_installer_command.stdout | trim | length > 0
+          - satellite_installer_scenarios.rc == 0
+          - >-
+            (
+              'satellite (installed)'
+              in
+              (
+                satellite_installer_scenarios.stdout
+                | lower
+              )
+            )
+            or
+            (
+              '--scenario satellite'
+              in
+              (
+                satellite_installer_scenarios.stdout
+                | lower
+              )
+            )
+        fail_msg: |
+          Satellite installer validation failed.
+
+          Command path:
+          {{ satellite_installer_command.stdout | default('not found') | trim }}
+
+          Available scenarios:
+          {{ satellite_installer_scenarios.stdout | default('none returned') }}
+        success_msg: >-
+          satellite-installer is available and the Satellite scenario is
+          present or already installed.
+

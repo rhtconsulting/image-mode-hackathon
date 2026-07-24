@@ -1,47 +1,226 @@
 ---
 ###############################################################################
-# Tasks | deploy_satellite
+# Patch Satellite EC2 SSH key-pair UI
 #
-# The phase files keep the role maintainable while tasks/main.yml remains the
-# single role entry point.
+# Satellite 6.19.2 can return AWS Fog key-pair objects that do not have a local
+# Satellite key_pair_id. The packaged view attempts to generate a Download URL
+# with id=nil, causing an HTTP 500 response.
 ###############################################################################
 
-- name: Include host preparation tasks
-  ansible.builtin.import_tasks: phase_01_host_preparation.yml
+- name: EC2 KEY PATCH | Verify Satellite package is installed
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - satellite
+  register: satellite_ec2_keypair_ui_patch_satellite_rpm
+  changed_when: false
 
-- name: Include base package and service tasks
-  ansible.builtin.import_tasks: phase_02_base_services.yml
+- name: EC2 KEY PATCH | Verify Foreman package is installed
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - foreman
+  register: satellite_ec2_keypair_ui_patch_foreman_rpm
+  changed_when: false
 
-- name: Include S3 access and artifact download tasks
-  ansible.builtin.import_tasks: phase_03_artifacts.yml
+- name: EC2 KEY PATCH | Display detected package versions
+  ansible.builtin.debug:
+    msg:
+      - "{{ satellite_ec2_keypair_ui_patch_satellite_rpm.stdout }}"
+      - "{{ satellite_ec2_keypair_ui_patch_foreman_rpm.stdout }}"
 
-- name: Include ISO mount and package installation tasks
-  ansible.builtin.import_tasks: phase_04_install_packages.yml
+- name: EC2 KEY PATCH | Inspect affected Foreman view
+  ansible.builtin.stat:
+    path: "{{ satellite_ec2_keypair_ui_patch_view_path }}"
+  register: satellite_ec2_keypair_ui_patch_view_stat
 
-- name: Include Satellite installer tasks
-  ansible.builtin.import_tasks: phase_05_install_satellite.yml
+- name: EC2 KEY PATCH | Validate affected Foreman view
+  ansible.builtin.assert:
+    that:
+      - satellite_ec2_keypair_ui_patch_view_stat.stat.exists
+      - satellite_ec2_keypair_ui_patch_view_stat.stat.isreg
+    fail_msg: >-
+      The expected Foreman EC2 key-pair view does not exist at
+      {{ satellite_ec2_keypair_ui_patch_view_path }}. The installed Satellite
+      version may use a different view and must be reviewed before patching.
 
-- name: Include public TLS tasks
-  ansible.builtin.import_tasks: phase_06_public_tls.yml
-  when: satellite_manage_public_tls | bool
+- name: EC2 KEY PATCH | Read current Foreman view
+  ansible.builtin.slurp:
+    src: "{{ satellite_ec2_keypair_ui_patch_view_path }}"
+  register: satellite_ec2_keypair_ui_patch_view
 
-- name: Include IdM CA trust tasks
-  ansible.builtin.import_tasks: phase_07_idm_trust.yml
-  when: satellite_configure_idm | bool
+- name: EC2 KEY PATCH | Determine current patch state
+  ansible.builtin.set_fact:
+    satellite_ec2_keypair_ui_patch_is_applied: >-
+      {{
+        satellite_ec2_keypair_ui_patch_blank_guard
+        in (satellite_ec2_keypair_ui_patch_view.content | b64decode)
+        and
+        satellite_ec2_keypair_ui_patch_download_guard
+        in (satellite_ec2_keypair_ui_patch_view.content | b64decode)
+      }}
 
-- name: Include service validation tasks
-  ansible.builtin.import_tasks: phase_08_validation.yml
+- name: EC2 KEY PATCH | Report existing workaround
+  ansible.builtin.debug:
+    msg: >-
+      The Satellite EC2 SSH key-pair UI workaround is already installed.
+      No changes are required.
+  when: satellite_ec2_keypair_ui_patch_is_applied
 
-- name: Include IdM LDAP configuration tasks
-  ansible.builtin.import_tasks: phase_09_idm_ldap.yml
-  when: satellite_configure_idm | bool
+- name: EC2 KEY PATCH | Install workaround
+  when: not satellite_ec2_keypair_ui_patch_is_applied
+  block:
+    - name: EC2 KEY PATCH | Create backup directory
+      ansible.builtin.file:
+        path: "{{ satellite_ec2_keypair_ui_patch_backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
 
-- name: Include subscription manifest tasks
-  ansible.builtin.import_tasks: phase_10_manifest.yml
-  when: satellite_import_manifest | bool
+    - name: EC2 KEY PATCH | Create timestamped template backup
+      ansible.builtin.copy:
+        src: "{{ satellite_ec2_keypair_ui_patch_view_path }}"
+        dest: >-
+          {{ satellite_ec2_keypair_ui_patch_backup_dir }}/index.html.erb.{{
+            ansible_date_time.iso8601_basic_short
+          }}
+        remote_src: true
+        owner: root
+        group: root
+        mode: preserve
+        force: false
 
-- name: Include subscription connection tasks
-  ansible.builtin.import_tasks: phase_11_subscription_connection.yml
+    - name: EC2 KEY PATCH | Apply guarded view changes
+      ansible.builtin.shell: |
+        set -o errexit
+        set -o nounset
+        set -o pipefail
 
-- name: Include final report tasks
-  ansible.builtin.import_tasks: phase_12_report.yml
+        python3 - <<'PY'
+        from pathlib import Path
+        import re
+
+        path = Path({{ satellite_ec2_keypair_ui_patch_view_path | to_json }})
+        text = path.read_text()
+
+        blank_guard = "next if key_pair.name.blank?"
+        download_guard = "key_pair.key_pair_id.present? ?"
+
+        if blank_guard not in text:
+            loop_pattern = re.compile(
+                r'(?m)^(\s*<%\s*@key_pairs\.each do \|key_pair\|\s*%>\s*)$'
+            )
+
+            text, loop_count = loop_pattern.subn(
+                r'\1\n        <% next if key_pair.name.blank? %>',
+                text,
+                count=1,
+            )
+
+            if loop_count != 1:
+                raise SystemExit(
+                    "Could not uniquely locate the @key_pairs loop."
+                )
+
+        if download_guard not in text:
+            download_pattern = re.compile(
+                r'display_link_if_authorized\('
+                r'_\("Download"\),\s*'
+                r'hash_for_compute_resource_key_pair_path\('
+                r'@compute_resource,\s*key_pair\.key_pair_id'
+                r'\),\s*'
+                r'\{\s*:data\s*=>\s*\{\s*:no_turbolink\s*=>\s*true\s*\}\s*\}'
+                r'\)'
+            )
+
+            download_replacement = (
+                'key_pair.key_pair_id.present? ? '
+                'display_link_if_authorized('
+                '_("Download"), '
+                'hash_for_compute_resource_key_pair_path('
+                '@compute_resource, key_pair.key_pair_id'
+                '), '
+                '{:data => { :no_turbolink => true }}'
+                ') : nil'
+            )
+
+            text, download_count = download_pattern.subn(
+                download_replacement,
+                text,
+                count=1,
+            )
+
+            if download_count != 1:
+                raise SystemExit(
+                    "Could not uniquely locate the Download action."
+                )
+
+        path.write_text(text)
+        PY
+      args:
+        executable: /bin/bash
+      register: satellite_ec2_keypair_ui_patch_apply
+      changed_when: true
+      notify:
+        - Clear Foreman cache after EC2 key-pair patch
+        - Restart Satellite after EC2 key-pair patch
+
+    - name: EC2 KEY PATCH | Validate ERB-generated Ruby syntax
+      ansible.builtin.shell: |
+        set -o errexit
+        set -o nounset
+        set -o pipefail
+
+        erb -x -T - \
+          {{ satellite_ec2_keypair_ui_patch_view_path | quote }} |
+        ruby -c
+      args:
+        executable: /bin/bash
+      register: satellite_ec2_keypair_ui_patch_syntax
+      changed_when: false
+      failed_when: >-
+        satellite_ec2_keypair_ui_patch_syntax.rc != 0
+        or
+        'Syntax OK' not in satellite_ec2_keypair_ui_patch_syntax.stdout
+
+    - name: EC2 KEY PATCH | Read patched Foreman view
+      ansible.builtin.slurp:
+        src: "{{ satellite_ec2_keypair_ui_patch_view_path }}"
+      register: satellite_ec2_keypair_ui_patch_final_view
+
+    - name: EC2 KEY PATCH | Verify patch markers
+      ansible.builtin.assert:
+        that:
+          - >-
+            satellite_ec2_keypair_ui_patch_blank_guard
+            in
+            (satellite_ec2_keypair_ui_patch_final_view.content | b64decode)
+          - >-
+            satellite_ec2_keypair_ui_patch_download_guard
+            in
+            (satellite_ec2_keypair_ui_patch_final_view.content | b64decode)
+        fail_msg: >-
+          The Foreman view passed Ruby syntax validation, but one or more
+          expected workaround markers are missing.
+
+    - name: EC2 KEY PATCH | Apply cache and service handlers
+      ansible.builtin.meta: flush_handlers
+
+- name: EC2 KEY PATCH | Report final status
+  ansible.builtin.debug:
+    msg:
+      - >-
+        Satellite EC2 key-pair UI workaround:
+        {{
+          'already installed'
+          if satellite_ec2_keypair_ui_patch_is_applied
+          else 'installed successfully'
+        }}.
+      - >-
+        Validate Infrastructure -> Compute Resources -> EC2 Compute Resource
+        -> SSH Keys.
+      - >-
+        A future Satellite package update may overwrite this packaged view.

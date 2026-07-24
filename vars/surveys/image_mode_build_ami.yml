@@ -117,17 +117,6 @@ image_mode_build_ami_survey:
     # Operating-system access
     ###########################################################################
 
-    - question_name: "AMI SSH public key"
-      question_description: >-
-        Public SSH key installed for ec2-user in the generated AMI. Supply only
-        the public key. Never enter a private SSH key.
-      variable: "image_mode_ssh_public_key"
-      type: "textarea"
-      required: true
-      default: ""
-      min: 32
-      max: 16384
-
     - question_name: "Root disk size"
       question_description: >-
         Minimum root filesystem size passed to bootc-image-builder. Keep the

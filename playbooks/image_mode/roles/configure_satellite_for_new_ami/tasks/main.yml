@@ -8,51 +8,62 @@
 # PHASE 0 | Normalize workflow artifacts
 ###############################################################################
 
-- name: PHASE 0 | Resolve AMI values from workflow artifacts
+- name: PHASE 0 | Resolve AMI ID from available workflow variables
   ansible.builtin.set_fact:
     configure_satellite_ami_resolved_id: >-
       {{
         configure_satellite_ami_id
-        | default(
-            image_mode_ami_id
-            | default(
-                image_mode_ami_result.ami_id
-                | default('')
-              )
-          )
+        | default('', true)
+        if configure_satellite_ami_id | default('', true) | length > 0
+        else
+        (
+          image_mode_ami_id
+          | default(
+              image_mode_ami_result.ami_id
+              | default('', true),
+              true
+            )
+        )
       }}
+
+- name: PHASE 0 | Resolve AMI architecture from available workflow variables
+  ansible.builtin.set_fact:
     configure_satellite_ami_resolved_architecture: >-
       {{
         configure_satellite_ami_architecture
-        | default(
-            image_mode_ami_result.architecture
-            | default('x86_64')
-          )
-      }}
-    configure_satellite_ami_resolved_region: >-
-      {{
-        image_mode_ami_region
-        | default(
-            image_mode_ami_result.aws_region
-            | default('')
-          )
-      }}
-    configure_satellite_ami_resolved_name: >-
-      {{
-        image_mode_ami_name
-        | default(
-            image_mode_ami_result.ami_name
-            | default('')
-          )
+        | default('', true)
+        if configure_satellite_ami_architecture
+           | default('', true)
+           | length > 0
+        else
+        (
+          image_mode_ami_result.architecture
+          | default('x86_64', true)
+        )
       }}
 
 - name: PHASE 0 | Promote normalized AMI values
   ansible.builtin.set_fact:
     configure_satellite_ami_id: >-
-      {{ configure_satellite_ami_resolved_id }}
+      {{ configure_satellite_ami_resolved_id | trim }}
     configure_satellite_ami_architecture: >-
-      {{ configure_satellite_ami_resolved_architecture }}
+      {{ configure_satellite_ami_resolved_architecture | trim }}
 
+- name: PHASE 0 | Display received workflow AMI artifacts
+  ansible.builtin.debug:
+    msg:
+      configure_satellite_ami_id_original: >-
+        {{ configure_satellite_ami_id | default('UNDEFINED', true) }}
+      image_mode_ami_id: >-
+        {{ image_mode_ami_id | default('UNDEFINED', true) }}
+      image_mode_ami_result_ami_id: >-
+        {{
+          image_mode_ami_result.ami_id
+          | default('UNDEFINED', true)
+        }}
+      resolved_ami_id: "{{ configure_satellite_ami_resolved_id }}"
+
+      
 ###############################################################################
 # PHASE 1 | Validate inputs and Satellite services
 ###############################################################################

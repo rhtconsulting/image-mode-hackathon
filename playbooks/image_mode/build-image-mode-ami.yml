@@ -1,0 +1,13 @@
+---
+###############################################################################
+# Build a bootc container image, push it to Quay, and register an AWS AMI
+###############################################################################
+
+- name: Build Image Mode AMI
+  hosts: image_builder
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  roles:
+    - role: image_mode_build_ami

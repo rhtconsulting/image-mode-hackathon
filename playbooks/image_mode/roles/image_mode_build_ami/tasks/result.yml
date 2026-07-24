@@ -1,0 +1,74 @@
+---
+- name: IMAGE MODE AMI | Read final AMI details when reusing
+  ansible.builtin.command:
+    argv:
+      - aws
+      - ec2
+      - describe-images
+      - --image-ids
+      - "{{ image_mode_ami_id }}"
+      - --region
+      - "{{ image_mode_aws_region }}"
+      - --output
+      - json
+  environment: "{{ image_mode_aws_environment }}"
+  register: image_mode_reused_ami_description
+  changed_when: false
+  no_log: true
+  when: not image_mode_build_required | bool
+
+- name: IMAGE MODE AMI | Set reused AMI details
+  ansible.builtin.set_fact:
+    image_mode_ami_details: >-
+      {{
+        (
+          image_mode_reused_ami_description.stdout
+          | from_json
+        ).Images[0]
+      }}
+    image_mode_snapshot_id: >-
+      {{
+        (
+          (
+            image_mode_reused_ami_description.stdout
+            | from_json
+          ).Images[0].BlockDeviceMappings
+          | selectattr('Ebs', 'defined')
+          | map(attribute='Ebs.SnapshotId')
+          | select('defined')
+          | first
+        )
+        | default('')
+      }}
+  when: not image_mode_build_required | bool
+
+- name: IMAGE MODE AMI | Build result
+  ansible.builtin.set_fact:
+    image_mode_ami_result:
+      ami_id: "{{ image_mode_ami_id }}"
+      ami_name: "{{ image_mode_ami_details.Name }}"
+      state: "{{ image_mode_ami_details.State }}"
+      architecture: "{{ image_mode_ami_details.Architecture }}"
+      root_device_name: "{{ image_mode_ami_details.RootDeviceName }}"
+      snapshot_id: "{{ image_mode_snapshot_id }}"
+      container_image: "{{ image_mode_image_reference }}"
+      aws_account_id: "{{ image_mode_aws_account_id }}"
+      aws_region: "{{ image_mode_aws_region }}"
+      artifacts_bucket: "{{ image_mode_resolved_artifacts_bucket }}"
+      new_ami_created: "{{ image_mode_build_required | bool }}"
+
+- name: IMAGE MODE AMI | Display result
+  ansible.builtin.debug:
+    var: image_mode_ami_result
+
+- name: IMAGE MODE AMI | Publish AAP job artifacts
+  ansible.builtin.set_stats:
+    data:
+      image_mode_ami_id: "{{ image_mode_ami_id }}"
+      image_mode_ami_name: "{{ image_mode_ami_details.Name }}"
+      image_mode_ami_snapshot_id: "{{ image_mode_snapshot_id }}"
+      image_mode_ami_region: "{{ image_mode_aws_region }}"
+      image_mode_artifacts_bucket: "{{ image_mode_resolved_artifacts_bucket }}"
+      image_mode_container_image: "{{ image_mode_image_reference }}"
+      image_mode_ami_result: "{{ image_mode_ami_result }}"
+    per_host: false

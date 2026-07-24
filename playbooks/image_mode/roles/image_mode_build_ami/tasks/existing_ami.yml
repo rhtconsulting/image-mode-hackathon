@@ -1,0 +1,62 @@
+---
+- name: IMAGE MODE AMI | Find existing AMI for container reference
+  ansible.builtin.command:
+    argv:
+      - aws
+      - ec2
+      - describe-images
+      - --owners
+      - self
+      - --filters
+      - "Name=state,Values=available"
+      - "Name=tag:ContainerImage,Values={{ image_mode_image_reference }}"
+      - "Name=tag:Environment,Values={{ image_mode_environment_name }}"
+      - --query
+      - "reverse(sort_by(Images,&CreationDate))[0].ImageId"
+      - --output
+      - text
+      - --region
+      - "{{ image_mode_aws_region }}"
+  environment: "{{ image_mode_aws_environment }}"
+  register: image_mode_existing_ami_lookup
+  changed_when: false
+  no_log: true
+
+- name: IMAGE MODE AMI | Normalize existing AMI ID
+  ansible.builtin.set_fact:
+    image_mode_existing_ami_id: >-
+      {{
+        ''
+        if image_mode_existing_ami_lookup.stdout | trim
+           in ['', 'None', 'null']
+        else image_mode_existing_ami_lookup.stdout | trim
+      }}
+
+- name: IMAGE MODE AMI | Determine build requirement
+  ansible.builtin.set_fact:
+    image_mode_build_required: >-
+      {{
+        image_mode_force_rebuild | bool
+        or image_mode_existing_ami_id | length == 0
+      }}
+
+- name: IMAGE MODE AMI | Resolve unique AWS AMI name
+  ansible.builtin.set_fact:
+    image_mode_resolved_ami_name: >-
+      {{
+        image_mode_ami_base_name
+        ~ (
+            '-'
+            ~ ansible_date_time.iso8601_basic_short
+            if
+              image_mode_force_rebuild | bool
+              and image_mode_existing_ami_id | length > 0
+            else
+            ''
+          )
+      }}
+
+- name: IMAGE MODE AMI | Reuse existing AMI
+  ansible.builtin.set_fact:
+    image_mode_ami_id: "{{ image_mode_existing_ami_id }}"
+  when: not image_mode_build_required | bool

@@ -1,0 +1,49 @@
+---
+- name: IMAGE MODE AMI | Pull bootc base image
+  ansible.builtin.command:
+    argv:
+      - podman
+      - pull
+      - "{{ image_mode_base_image }}"
+  changed_when: true
+  when: image_mode_pull_base_image | bool
+
+- name: IMAGE MODE AMI | Build bootc container
+  ansible.builtin.command:
+    argv:
+      - podman
+      - build
+      - --pull=always
+      - --tag
+      - "{{ image_mode_image_reference }}"
+      - "{{ image_mode_workspace }}"
+  register: image_mode_container_build
+  changed_when: true
+
+- name: IMAGE MODE AMI | Inspect bootc label
+  ansible.builtin.command:
+    argv:
+      - podman
+      - inspect
+      - "{{ image_mode_image_reference }}"
+      - --format
+      - >-
+        {{ '{{' }} index .Config.Labels "containers.bootc" {{ '}}' }}
+  register: image_mode_bootc_label
+  changed_when: false
+
+- name: IMAGE MODE AMI | Validate bootc label
+  ansible.builtin.assert:
+    that:
+      - image_mode_bootc_label.stdout | trim == "1"
+    fail_msg: >-
+      The built container does not expose containers.bootc=1.
+
+- name: IMAGE MODE AMI | Push bootc container to Quay
+  ansible.builtin.command:
+    argv:
+      - podman
+      - push
+      - "{{ image_mode_image_reference }}"
+  changed_when: true
+  when: image_mode_push_container | bool

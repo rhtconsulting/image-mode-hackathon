@@ -1,0 +1,67 @@
+FROM {{ image_mode_base_image }}
+
+###############################################################################
+# Pin package resolution to the selected RHEL release
+###############################################################################
+
+RUN mkdir -p /etc/dnf/vars \
+    && printf '%s\n' '{{ image_mode_rhel_release }}' > /etc/dnf/vars/releasever
+
+###############################################################################
+# Install application and EC2 prerequisites
+###############################################################################
+
+RUN dnf clean all \
+    && rm -rf /var/cache/dnf \
+    && dnf --releasever={{ image_mode_rhel_release }} -y install \
+        nginx \
+        cloud-init \
+        openssh-server \
+        chrony \
+        sudo \
+        curl \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+###############################################################################
+# Add application content
+###############################################################################
+
+COPY files/index.html /usr/share/nginx/html/index.html
+
+###############################################################################
+# Configure EC2 cloud-init
+###############################################################################
+
+RUN printf '%s\n' \
+      'datasource_list: [ Ec2, None ]' \
+      > /etc/cloud/cloud.cfg.d/99-ec2-datasource.cfg
+
+###############################################################################
+# Enable deployed services
+###############################################################################
+
+RUN systemctl enable nginx.service \
+    && systemctl enable sshd.service \
+    && systemctl enable chronyd.service \
+    && systemctl enable cloud-init-local.service \
+    && systemctl enable cloud-init.service \
+    && systemctl enable cloud-config.service \
+    && systemctl enable cloud-final.service
+
+###############################################################################
+# Record image metadata
+###############################################################################
+
+RUN printf '%s\n' \
+      'IMAGE_NAME="{{ image_mode_image_name }}"' \
+      'IMAGE_VERSION="{{ image_mode_image_tag }}"' \
+      'RHEL_VERSION="{{ image_mode_rhel_release }}"' \
+      'APPLICATION="{{ image_mode_application_name }}"' \
+      'CONTAINER_IMAGE="{{ image_mode_image_reference }}"' \
+      > /etc/image-mode-release
+
+EXPOSE 22
+EXPOSE 80
+
+CMD ["/sbin/init"]

@@ -1,0 +1,165 @@
+---
+###############################################################################
+# Image identity
+###############################################################################
+
+image_mode_environment_name: "image-mode-lab"
+image_mode_image_name: "sample-rhel9"
+image_mode_image_tag: "v1"
+
+image_mode_quay_host: "quay-1.lab.example.com"
+image_mode_quay_organization: "image-mode"
+
+image_mode_image_reference: >-
+  {{
+    image_mode_quay_host
+    ~ '/'
+    ~ image_mode_quay_organization
+    ~ '/'
+    ~ image_mode_image_name
+    ~ ':'
+    ~ image_mode_image_tag
+  }}
+
+###############################################################################
+# RHEL and application settings
+###############################################################################
+
+image_mode_rhel_major_version: "9"
+image_mode_rhel_release: "9.8"
+image_mode_application_name: "nginx"
+
+image_mode_base_image: >-
+  registry.redhat.io/rhel{{ image_mode_rhel_major_version }}/rhel-bootc:latest
+
+image_mode_bootc_builder_image: >-
+  registry.redhat.io/rhel{{ image_mode_rhel_major_version }}/bootc-image-builder:latest
+
+# Keep this at 40 GiB for the current direct AWS uploader workflow.
+# Increase it later only after validating uploader and account constraints.
+image_mode_root_disk_size: "40 GiB"
+
+###############################################################################
+# Image user
+###############################################################################
+
+image_mode_os_user: "ec2-user"
+image_mode_os_user_groups:
+  - wheel
+
+# Required at runtime, normally supplied by an AAP survey or extra_vars.
+image_mode_ssh_public_key: ""
+
+###############################################################################
+# Workspace and templates
+###############################################################################
+
+image_mode_workspace_root: "/var/lib/image-mode/tmp"
+image_mode_workspace_name: "gitlab-image-mode"
+image_mode_workspace: >-
+  {{ image_mode_workspace_root }}/{{ image_mode_workspace_name }}
+
+image_mode_files_directory: "{{ image_mode_workspace }}/files"
+image_mode_output_directory: "{{ image_mode_workspace }}/output"
+
+image_mode_containerfile_path: "{{ image_mode_workspace }}/Containerfile"
+image_mode_config_path: "{{ image_mode_files_directory }}/config.toml"
+image_mode_index_path: "{{ image_mode_files_directory }}/index.html"
+
+image_mode_clean_workspace_before_build: false
+
+###############################################################################
+# AWS credentials
+#
+# Preferred AAP path:
+#   AWS_ACCESS_KEY_ID
+#   AWS_SECRET_ACCESS_KEY
+#   AWS_SESSION_TOKEN (optional)
+#   AWS_REGION or AWS_DEFAULT_REGION
+###############################################################################
+
+image_mode_aws_access_key_id: >-
+  {{ lookup('ansible.builtin.env', 'AWS_ACCESS_KEY_ID') | default('', true) }}
+
+image_mode_aws_secret_access_key: >-
+  {{ lookup('ansible.builtin.env', 'AWS_SECRET_ACCESS_KEY') | default('', true) }}
+
+image_mode_aws_session_token: >-
+  {{ lookup('ansible.builtin.env', 'AWS_SESSION_TOKEN') | default('', true) }}
+
+image_mode_aws_region: >-
+  {{
+    lookup('ansible.builtin.env', 'AWS_REGION')
+    | default(
+        lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'),
+        true
+      )
+  }}
+
+# Optional fallback for CLI execution outside AAP.
+image_mode_aws_profile: ""
+
+image_mode_aws_environment:
+  AWS_ACCESS_KEY_ID: "{{ image_mode_aws_access_key_id }}"
+  AWS_SECRET_ACCESS_KEY: "{{ image_mode_aws_secret_access_key }}"
+  AWS_REGION: "{{ image_mode_aws_region }}"
+  AWS_DEFAULT_REGION: "{{ image_mode_aws_region }}"
+  AWS_EC2_METADATA_DISABLED: "true"
+
+###############################################################################
+# AWS AMI upload
+###############################################################################
+
+image_mode_artifacts_bucket_override: ""
+
+image_mode_artifacts_bucket: >-
+  {{
+    image_mode_artifacts_bucket_override
+    if image_mode_artifacts_bucket_override | length > 0
+    else
+    image_mode_environment_name
+    ~ '-image-mode-artifacts-'
+    ~ image_mode_aws_account_id
+    ~ '-'
+    ~ image_mode_aws_region
+  }}
+
+image_mode_create_artifacts_bucket: true
+
+# Base AMI name. When force rebuild is requested and the name already exists,
+# the role appends a UTC timestamp because AWS AMI names must be unique.
+image_mode_ami_base_name: >-
+  {{ image_mode_image_name }}-{{ image_mode_image_tag }}
+
+image_mode_ami_description: >-
+  RHEL bootc image {{ image_mode_image_reference }}
+
+image_mode_ami_architecture: "x86_64"
+
+image_mode_vmimport_role_name: "vmimport"
+
+###############################################################################
+# Build controls
+###############################################################################
+
+image_mode_force_rebuild: false
+image_mode_pull_base_image: true
+image_mode_push_container: true
+image_mode_validate_registry_logins: true
+
+image_mode_ami_discovery_retries: 30
+image_mode_ami_discovery_delay: 10
+image_mode_ami_available_timeout_seconds: 3600
+
+###############################################################################
+# Tags
+###############################################################################
+
+image_mode_ami_tags:
+  Name: "{{ image_mode_ami_base_name }}"
+  Environment: "{{ image_mode_environment_name }}"
+  ImageMode: "bootc"
+  RHELVersion: "{{ image_mode_rhel_release }}"
+  Application: "{{ image_mode_application_name }}"
+  ContainerImage: "{{ image_mode_image_reference }}"
+  ManagedBy: "Ansible Automation Platform"

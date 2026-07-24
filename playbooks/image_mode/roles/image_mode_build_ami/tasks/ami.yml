@@ -1,0 +1,246 @@
+---
+###############################################################################
+# bootc-image-builder direct AWS upload
+#
+# The three AWS flags must be supplied together. The S3 bucket must exist.
+###############################################################################
+
+- name: IMAGE MODE AMI | Create temporary AWS environment file
+  ansible.builtin.tempfile:
+    state: file
+    prefix: image-mode-aws-
+    suffix: .env
+  register: image_mode_aws_env_tempfile
+  no_log: true
+
+- name: IMAGE MODE AMI | Write AWS environment for builder container
+  ansible.builtin.copy:
+    dest: "{{ image_mode_aws_env_tempfile.path }}"
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      AWS_ACCESS_KEY_ID={{ image_mode_aws_access_key_id }}
+      AWS_SECRET_ACCESS_KEY={{ image_mode_aws_secret_access_key }}
+      AWS_REGION={{ image_mode_aws_region }}
+      AWS_DEFAULT_REGION={{ image_mode_aws_region }}
+      AWS_EC2_METADATA_DISABLED=true
+      {% if image_mode_aws_session_token | trim | length > 0 %}
+      AWS_SESSION_TOKEN={{ image_mode_aws_session_token }}
+      {% endif %}
+  no_log: true
+  when: image_mode_aws_access_key_id | trim | length > 0
+
+- name: IMAGE MODE AMI | Build and upload AMI directly to AWS
+  block:
+    - name: IMAGE MODE AMI | Run bootc-image-builder AWS upload
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'podman',
+              'run',
+              '--rm',
+              '--privileged',
+              '--security-opt',
+              'label=type:unconfined_t',
+              '--pull=newer',
+              '--volume',
+              '/var/lib/containers/storage:/var/lib/containers/storage:Z',
+              '--volume',
+              image_mode_config_path ~ ':/config.toml:ro,Z'
+            ]
+            +
+            (
+              [
+                '--env-file',
+                image_mode_aws_env_tempfile.path
+              ]
+              if image_mode_aws_access_key_id | trim | length > 0
+              else
+              [
+                '--volume',
+                '/root/.aws:/root/.aws:ro,Z',
+                '--env',
+                'AWS_PROFILE=' ~ image_mode_aws_profile,
+                '--env',
+                'AWS_DEFAULT_PROFILE=' ~ image_mode_aws_profile,
+                '--env',
+                'AWS_CONFIG_FILE=/root/.aws/config',
+                '--env',
+                'AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials',
+                '--env',
+                'AWS_SDK_LOAD_CONFIG=1',
+                '--env',
+                'AWS_REGION=' ~ image_mode_aws_region,
+                '--env',
+                'AWS_DEFAULT_REGION=' ~ image_mode_aws_region
+              ]
+            )
+            +
+            [
+              image_mode_bootc_builder_image,
+              '--type',
+              'ami',
+              '--config',
+              '/config.toml',
+              '--aws-ami-name',
+              image_mode_resolved_ami_name,
+              '--aws-bucket',
+              image_mode_resolved_artifacts_bucket,
+              '--aws-region',
+              image_mode_aws_region,
+              image_mode_image_reference
+            ]
+          }}
+      register: image_mode_ami_build_command
+      changed_when: true
+      no_log: true
+
+    - name: IMAGE MODE AMI | Discover newly registered AMI
+      ansible.builtin.command:
+        argv:
+          - aws
+          - ec2
+          - describe-images
+          - --owners
+          - self
+          - --filters
+          - "Name=name,Values={{ image_mode_resolved_ami_name }}"
+          - --query
+          - "reverse(sort_by(Images,&CreationDate))[0].ImageId"
+          - --output
+          - text
+          - --region
+          - "{{ image_mode_aws_region }}"
+      environment: "{{ image_mode_aws_environment }}"
+      register: image_mode_new_ami_lookup
+      changed_when: false
+      until: >-
+        image_mode_new_ami_lookup.stdout | trim
+        not in ['', 'None', 'null']
+      retries: "{{ image_mode_ami_discovery_retries }}"
+      delay: "{{ image_mode_ami_discovery_delay }}"
+      no_log: true
+
+    - name: IMAGE MODE AMI | Set new AMI ID
+      ansible.builtin.set_fact:
+        image_mode_ami_id: "{{ image_mode_new_ami_lookup.stdout | trim }}"
+
+    - name: IMAGE MODE AMI | Wait for AMI availability
+      ansible.builtin.command:
+        argv:
+          - aws
+          - ec2
+          - wait
+          - image-available
+          - --image-ids
+          - "{{ image_mode_ami_id }}"
+          - --region
+          - "{{ image_mode_aws_region }}"
+      environment: "{{ image_mode_aws_environment }}"
+      changed_when: false
+      no_log: true
+
+  always:
+    - name: IMAGE MODE AMI | Remove temporary AWS environment file
+      ansible.builtin.file:
+        path: "{{ image_mode_aws_env_tempfile.path }}"
+        state: absent
+      when:
+        - image_mode_aws_env_tempfile is defined
+        - image_mode_aws_env_tempfile.path is defined
+
+- name: IMAGE MODE AMI | Read imported AMI details
+  ansible.builtin.command:
+    argv:
+      - aws
+      - ec2
+      - describe-images
+      - --image-ids
+      - "{{ image_mode_ami_id }}"
+      - --region
+      - "{{ image_mode_aws_region }}"
+      - --output
+      - json
+  environment: "{{ image_mode_aws_environment }}"
+  register: image_mode_ami_description_command
+  changed_when: false
+  no_log: true
+
+- name: IMAGE MODE AMI | Parse imported AMI details
+  ansible.builtin.set_fact:
+    image_mode_ami_details: >-
+      {{
+        (
+          image_mode_ami_description_command.stdout
+          | from_json
+        ).Images[0]
+      }}
+
+- name: IMAGE MODE AMI | Validate imported architecture
+  ansible.builtin.assert:
+    that:
+      - image_mode_ami_details.Architecture == image_mode_ami_architecture
+    fail_msg: >-
+      Imported AMI architecture is
+      {{ image_mode_ami_details.Architecture | default('unknown') }},
+      expected {{ image_mode_ami_architecture }}.
+
+- name: IMAGE MODE AMI | Find root snapshot ID
+  ansible.builtin.set_fact:
+    image_mode_snapshot_id: >-
+      {{
+        (
+          image_mode_ami_details.BlockDeviceMappings
+          | selectattr('Ebs', 'defined')
+          | map(attribute='Ebs.SnapshotId')
+          | select('defined')
+          | first
+        )
+        | default('')
+      }}
+
+- name: IMAGE MODE AMI | Build AWS tag arguments
+  ansible.builtin.set_fact:
+    image_mode_aws_tag_arguments: >-
+      {{
+        image_mode_ami_tags
+        | dict2items
+        | map(attribute='key')
+        | zip(image_mode_ami_tags | dict2items | map(attribute='value'))
+        | map('join', ',Value=')
+        | map('regex_replace', '^(.*)$', 'Key=\1')
+        | list
+      }}
+
+- name: IMAGE MODE AMI | Tag AMI and root snapshot
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          'aws',
+          'ec2',
+          'create-tags',
+          '--resources',
+          image_mode_ami_id
+        ]
+        +
+        (
+          [image_mode_snapshot_id]
+          if image_mode_snapshot_id | length > 0
+          else []
+        )
+        +
+        ['--tags']
+        +
+        image_mode_aws_tag_arguments
+        +
+        [
+          '--region',
+          image_mode_aws_region
+        ]
+      }}
+  environment: "{{ image_mode_aws_environment }}"
+  changed_when: true
+  no_log: true

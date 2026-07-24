@@ -1,0 +1,261 @@
+###############################################################################
+
+image_mode_build_ami_survey:
+  name: "Build Image Mode AMI"
+
+  description: >-
+    Build a RHEL bootc container image, push it to the configured Quay
+    repository, convert it into an AWS AMI with bootc-image-builder, tag the
+    resulting AMI and EBS snapshot, and publish the AMI details as AAP job
+    artifacts.
+
+  spec:
+
+    ###########################################################################
+    # Image identity
+    ###########################################################################
+
+    - question_name: "Image name"
+      question_description: >-
+        Container repository name and base AWS AMI name. Use lowercase letters,
+        numbers, hyphens, periods, or underscores. Do not include the registry,
+        organization, or image tag.
+      variable: "image_mode_image_name"
+      type: "text"
+      required: true
+      default: "sample-rhel9"
+      min: 1
+      max: 128
+
+    - question_name: "Image tag"
+      question_description: >-
+        Container image tag used when publishing the bootc image to Quay.
+        Change this value when creating a new application image version.
+      variable: "image_mode_image_tag"
+      type: "text"
+      required: true
+      default: "v1"
+      min: 1
+      max: 128
+
+    - question_name: "Environment name"
+      question_description: >-
+        Environment identifier used for AWS resource tags and the derived
+        Image Mode artifacts bucket name.
+      variable: "image_mode_environment_name"
+      type: "text"
+      required: true
+      default: "image-mode-lab"
+      min: 1
+      max: 63
+
+    ###########################################################################
+    # Quay destination
+    ###########################################################################
+
+    - question_name: "Quay registry hostname"
+      question_description: >-
+        DNS hostname of the Quay registry. Do not include https:// or a
+        repository path.
+      variable: "image_mode_quay_host"
+      type: "text"
+      required: true
+      default: "{{ resolved_quay_hostname }}" 
+      min: 1
+      max: 253
+
+    - question_name: "Quay organization"
+      question_description: >-
+        Quay organization containing the target bootc image repository.
+      variable: "image_mode_quay_organization"
+      type: "text"
+      required: true
+      default: "image-mode"
+      min: 1
+      max: 128
+
+    ###########################################################################
+    # RHEL image settings
+    ###########################################################################
+
+    - question_name: "RHEL major version"
+      question_description: >-
+        RHEL major version used to select the bootc base image and
+        bootc-image-builder container.
+      variable: "image_mode_rhel_major_version"
+      type: "multiplechoice"
+      required: true
+      default: "9"
+      choices:
+        - "9"
+        - "10"
+
+    - question_name: "RHEL release version"
+      question_description: >-
+        RHEL release version used for package resolution and image metadata.
+        The release must be available to the Image Builder host through its
+        configured Red Hat content sources.
+      variable: "image_mode_rhel_release"
+      type: "text"
+      required: true
+      default: "9.8"
+      min: 1
+      max: 16
+
+    - question_name: "Application name"
+      question_description: >-
+        Application identifier written to /etc/image-mode-release and applied
+        to AWS resource tags.
+      variable: "image_mode_application_name"
+      type: "text"
+      required: true
+      default: "nginx"
+      min: 1
+      max: 128
+
+    ###########################################################################
+    # Operating-system access
+    ###########################################################################
+
+    - question_name: "AMI SSH public key"
+      question_description: >-
+        Public SSH key installed for ec2-user in the generated AMI. Supply only
+        the public key. Never enter a private SSH key.
+      variable: "image_mode_ssh_public_key"
+      type: "textarea"
+      required: true
+      default: ""
+      min: 32
+      max: 16384
+
+    - question_name: "Root disk size"
+      question_description: >-
+        Minimum root filesystem size passed to bootc-image-builder. Keep the
+        current value at 40 GiB until larger direct AWS uploads have been
+        validated.
+      variable: "image_mode_root_disk_size"
+      type: "multiplechoice"
+      required: true
+      default: "40 GiB"
+      choices:
+        - "40 GiB"
+        - "50 GiB"
+        - "60 GiB"
+        - "80 GiB"
+        - "100 GiB"
+
+    ###########################################################################
+    # AWS configuration
+    ###########################################################################
+
+    - question_name: "AWS Region"
+      question_description: >-
+        AWS Region where the artifacts bucket, AMI, and EBS snapshot are
+        created. AWS credentials are provided by the attached AAP credential.
+      variable: "image_mode_aws_region"
+      type: "text"
+      required: true
+      default: "us-east-2"
+      min: 9
+      max: 32
+
+    - question_name: "Artifacts bucket override"
+      question_description: >-
+        Optional existing S3 bucket used by bootc-image-builder. Leave blank to
+        derive the bucket as
+        <environment>-image-mode-artifacts-<account-id>-<region>.
+      variable: "image_mode_artifacts_bucket_override"
+      type: "text"
+      required: false
+      default: ""
+      min: 0
+      max: 63
+
+    - question_name: "Create artifacts bucket"
+      question_description: >-
+        Create and secure the derived S3 artifacts bucket when it does not
+        already exist. Disable this only when the bucket is managed separately.
+      variable: "image_mode_create_artifacts_bucket"
+      type: "multiplechoice"
+      required: true
+      default: "true"
+      choices:
+        - "true"
+        - "false"
+
+    - question_name: "VM Import service role name"
+      question_description: >-
+        IAM service role used by AWS VM Import/Export. The role must already
+        exist and have access to the selected artifacts bucket.
+      variable: "image_mode_vmimport_role_name"
+      type: "text"
+      required: true
+      default: "vmimport"
+      min: 1
+      max: 64
+
+    ###########################################################################
+    # Build controls
+    ###########################################################################
+
+    - question_name: "Force image rebuild"
+      question_description: >-
+        Build and register a new AMI even when an available AMI already exists
+        for the same container image reference and environment. A timestamp is
+        appended to the AWS AMI name when necessary.
+      variable: "image_mode_force_rebuild"
+      type: "multiplechoice"
+      required: true
+      default: "false"
+      choices:
+        - "false"
+        - "true"
+
+    - question_name: "Pull latest bootc base image"
+      question_description: >-
+        Pull the configured RHEL bootc base image before starting the container
+        build.
+      variable: "image_mode_pull_base_image"
+      type: "multiplechoice"
+      required: true
+      default: "true"
+      choices:
+        - "true"
+        - "false"
+
+    - question_name: "Push container image to Quay"
+      question_description: >-
+        Push the completed bootc container image to the configured Quay
+        repository before starting the AWS AMI build.
+      variable: "image_mode_push_container"
+      type: "multiplechoice"
+      required: true
+      default: "true"
+      choices:
+        - "true"
+        - "false"
+
+    - question_name: "Validate registry logins"
+      question_description: >-
+        Verify that the root Podman account on the Image Builder host is logged
+        in to registry.redhat.io and the configured Quay registry before
+        starting the build.
+      variable: "image_mode_validate_registry_logins"
+      type: "multiplechoice"
+      required: true
+      default: "true"
+      choices:
+        - "true"
+        - "false"
+
+    - question_name: "Clean workspace before build"
+      question_description: >-
+        Delete the existing image workspace before rendering the Containerfile,
+        application files, and bootc-image-builder configuration.
+      variable: "image_mode_clean_workspace_before_build"
+      type: "multiplechoice"
+      required: true
+      default: "true"
+      choices:
+        - "true"
+        - "false"

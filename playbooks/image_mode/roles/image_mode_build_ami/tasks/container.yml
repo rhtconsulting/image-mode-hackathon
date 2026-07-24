@@ -3,10 +3,15 @@
 # Build and publish the bootc container image
 ###############################################################################
 
+###############################################################################
+# Validate Image Builder operating system
+###############################################################################
+
 - name: IMAGE MODE AMI | Validate Image Builder operating system facts
   ansible.builtin.assert:
     that:
       - ansible_facts.distribution is defined
+      - ansible_facts.distribution_version is defined
       - ansible_facts.distribution_major_version is defined
       - ansible_facts.distribution == "RedHat"
       - ansible_facts.distribution_major_version in image_mode_base_images
@@ -14,28 +19,97 @@
       The Image Mode build requires a supported Red Hat Enterprise Linux
       builder host. Detected distribution={{
       ansible_facts.distribution | default('unknown') }}, version={{
-      ansible_facts.distribution_version | default('unknown') }}. Supported
-      RHEL major versions are {{
-      image_mode_base_images.keys() | list | join(', ') }}.
+      ansible_facts.distribution_version | default('unknown') }}.
+      Supported RHEL major versions are
+      {{ image_mode_base_images.keys() | list | join(', ') }}.
 
-- name: IMAGE MODE AMI | Select bootc base image for builder operating system
+###############################################################################
+# Detect Satellite release lock
+###############################################################################
+
+- name: IMAGE MODE AMI | Read Satellite release lock
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - release
+      - --show
+  register: image_mode_subscription_release
+  changed_when: false
+  failed_when: false
+
+- name: IMAGE MODE AMI | Extract Satellite release
+  ansible.builtin.set_fact:
+    image_mode_satellite_release: >-
+      {{
+        image_mode_subscription_release.stdout
+        | regex_search('[0-9]+(?:\.[0-9]+)+')
+        | default('', true)
+      }}
+
+- name: IMAGE MODE AMI | Select effective RHEL release
+  ansible.builtin.set_fact:
+    image_mode_rhel_release: >-
+      {{
+        image_mode_rhel_release_override
+        if image_mode_rhel_release_override | default('') | length > 0
+        else (
+          image_mode_satellite_release
+          if image_mode_satellite_release | length > 0
+          else ansible_facts.distribution_version
+        )
+      }}
+
+- name: IMAGE MODE AMI | Determine RHEL major version
+  ansible.builtin.set_fact:
+    image_mode_rhel_major_version: >-
+      {{
+        image_mode_rhel_release
+        | split('.')
+        | first
+      }}
+
+- name: IMAGE MODE AMI | Validate detected release
+  ansible.builtin.assert:
+    that:
+      - image_mode_rhel_release is match('^[0-9]+\\.[0-9]+$')
+      - image_mode_rhel_major_version == ansible_facts.distribution_major_version
+      - image_mode_rhel_major_version in image_mode_base_images
+    fail_msg: >-
+      Unable to determine a valid Satellite-managed RHEL release.
+      Builder={{ ansible_facts.distribution_version }},
+      Satellite={{ image_mode_subscription_release.stdout | trim }},
+      Selected={{ image_mode_rhel_release }}.
+
+###############################################################################
+# Select bootc base image
+###############################################################################
+
+- name: IMAGE MODE AMI | Select bootc base image
   ansible.builtin.set_fact:
     image_mode_base_image: >-
       {{
         image_mode_base_images[
-          ansible_facts.distribution_major_version
+          image_mode_rhel_major_version
         ]
       }}
 
-- name: IMAGE MODE AMI | Display selected bootc base image
+- name: IMAGE MODE AMI | Display build configuration
   ansible.builtin.debug:
-    msg: >-
-      Image Builder {{ inventory_hostname }} is running RHEL
-      {{ ansible_facts.distribution_major_version }}. The container build will
-      use {{ image_mode_base_image }}.
+    msg:
+      - "Builder Host: {{ inventory_hostname }}"
+      - "Builder OS: RHEL {{ ansible_facts.distribution_version }}"
+      - >-
+        Satellite Release:
+        {{
+          image_mode_satellite_release
+          if image_mode_satellite_release | length > 0
+          else 'Not Locked'
+        }}
+      - "Effective Release: {{ image_mode_rhel_release }}"
+      - "Bootc Base Image: {{ image_mode_base_image }}"
 
 ###############################################################################
-# Pull the matching RHEL bootc base image
+# Pull bootc base image
 ###############################################################################
 
 - name: IMAGE MODE AMI | Pull bootc base image
@@ -49,7 +123,7 @@
   when: image_mode_pull_base_image | bool
 
 ###############################################################################
-# Build the bootc container
+# Build bootc container
 ###############################################################################
 
 - name: IMAGE MODE AMI | Build bootc container
@@ -60,15 +134,49 @@
       - --pull=always
       - --build-arg
       - "IMAGE_MODE_BASE_IMAGE={{ image_mode_base_image }}"
+      - --build-arg
+      - "IMAGE_MODE_RHEL_RELEASE={{ image_mode_rhel_release }}"
       - --tag
       - "{{ image_mode_image_reference }}"
+      - --file
+      - "{{ image_mode_workspace }}/Containerfile"
       - "{{ image_mode_workspace }}"
   register: image_mode_container_build
   changed_when: true
 
 ###############################################################################
-# Validate the built bootc container
+# Validate resulting image
 ###############################################################################
+
+- name: IMAGE MODE AMI | Inspect built image release
+  ansible.builtin.command:
+    argv:
+      - podman
+      - run
+      - --rm
+      - "{{ image_mode_image_reference }}"
+      - bash
+      - -c
+      - |
+        source /etc/os-release
+        printf '%s\n' "${VERSION_ID}"
+  register: image_mode_built_image_release
+  changed_when: false
+
+- name: IMAGE MODE AMI | Validate built image major version
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          image_mode_built_image_release.stdout
+          | trim
+          | split('.')
+          | first
+        ) == image_mode_rhel_major_version
+    fail_msg: >-
+      Built image reports RHEL
+      {{ image_mode_built_image_release.stdout | trim }},
+      expected RHEL {{ image_mode_rhel_major_version }}.
 
 - name: IMAGE MODE AMI | Inspect bootc label
   ansible.builtin.command:
@@ -87,11 +195,11 @@
     that:
       - image_mode_bootc_label.stdout | trim == "1"
     fail_msg: >-
-      The built container {{ image_mode_image_reference }} does not expose
-      the required containers.bootc=1 label.
+      The built container {{ image_mode_image_reference }}
+      does not expose containers.bootc=1.
 
 ###############################################################################
-# Push the bootc container to Quay
+# Push image to Quay
 ###############################################################################
 
 - name: IMAGE MODE AMI | Push bootc container to Quay

@@ -95,7 +95,7 @@
           }}
       register: image_mode_ami_build_command
       changed_when: true
-      no_log: true
+      no_log: false
 
     - name: IMAGE MODE AMI | Discover newly registered AMI
       ansible.builtin.command:

@@ -1925,25 +1925,18 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
 
     Statement = [
       {
-        Sid    = "InspectImageModeArtifactBucket"
+        Sid    = "InspectAndConfigureImageModeArtifactBucket"
         Effect = "Allow"
 
         Action = [
           "s3:GetBucketLocation",
           "s3:GetBucketVersioning",
           "s3:GetBucketPublicAccessBlock",
+          "s3:GetEncryptionConfiguration",
           "s3:ListBucket",
-          "s3:ListBucketMultipartUploads"
-        ]
-
-        Resource = aws_s3_bucket.image_mode_artifacts.arn
-      },
-      {
-        Sid    = "ManageImageModeBucketPublicAccessBlock"
-        Effect = "Allow"
-
-        Action = [
-          "s3:PutBucketPublicAccessBlock"
+          "s3:ListBucketMultipartUploads",
+          "s3:PutBucketPublicAccessBlock",
+          "s3:PutEncryptionConfiguration"
         ]
 
         Resource = aws_s3_bucket.image_mode_artifacts.arn

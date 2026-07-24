@@ -39,7 +39,7 @@ controller_templates:
     timeout: 21600
     allow_simultaneous: false
 
-    ask_limit_on_launch: true
+    ask_limit_on_launch: false
     ask_variables_on_launch: false
 
     survey_enabled: true

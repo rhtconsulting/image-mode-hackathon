@@ -1926,10 +1926,6 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
     Statement = [
       #########################################################################
       # Account-level S3 discovery
-      #
-      # bootc-image-builder calls the ListBuckets API before accessing the
-      # configured artifact bucket. The API requires s3:ListAllMyBuckets and
-      # does not support restricting Resource to a specific bucket.
       #########################################################################
 
       {
@@ -1944,7 +1940,7 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
       },
 
       #########################################################################
-      # Inspect the Image Mode artifact bucket
+      # Inspect and configure the Image Mode artifact bucket
       #########################################################################
 
       {
@@ -1952,6 +1948,7 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
         Effect = "Allow"
 
         Action = [
+          "s3:GetBucketAcl",
           "s3:GetBucketLocation",
           "s3:GetBucketVersioning",
           "s3:GetBucketPublicAccessBlock",
@@ -1987,6 +1984,8 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
     ]
   })
 }
+
+
 
 ############################################################
 # Shared S3 Access For Existing EC2 Roles

@@ -55,7 +55,7 @@
       - text
   environment: "{{ image_mode_aws_environment }}"
   changed_when: false
-  no_log: true
+  no_log: false
 
 - name: IMAGE MODE AMI | Check artifacts bucket
   ansible.builtin.command:

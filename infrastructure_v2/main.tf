@@ -2119,11 +2119,6 @@ resource "aws_iam_role_policy" "vmimport" {
 }
 
 
-
-############################################################
-# Bootc AMI Import Caller Policy
-############################################################
-
 ############################################################
 # Bootc AMI Import Caller Policy
 ############################################################
@@ -2131,18 +2126,43 @@ resource "aws_iam_role_policy" "vmimport" {
 resource "aws_iam_policy" "bootc_ami_import_caller" {
   name = "${var.environment_name}-bootc-ami-import-caller"
 
+  description = (
+    "Allow Image Mode automation identities to import AMIs and use the VM Import/Export service role."
+  )
+
   depends_on = [
     terraform_data.preflight_cleanup
   ]
-
-  description = "Allow Image Mode automation identities to import AMIs and use the VM Import/Export service role."
 
   policy = jsonencode({
     Version = "2012-10-17"
 
     Statement = [
       #########################################################################
-      # Create and inspect bootc AMI imports
+      # Discover AWS regions and EC2 resources
+      #
+      # bootc-image-builder calls DescribeRegions before starting the import.
+      # EC2 Describe actions require Resource = "*".
+      #########################################################################
+
+      {
+        Sid    = "DiscoverBootcAMIImportResources"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:DescribeRegions",
+          "ec2:DescribeImages",
+          "ec2:DescribeSnapshots",
+          "ec2:DescribeImportImageTasks",
+          "ec2:DescribeImportSnapshotTasks",
+          "ec2:DescribeTags"
+        ]
+
+        Resource = "*"
+      },
+
+      #########################################################################
+      # Create and manage bootc AMI imports
       #########################################################################
 
       {
@@ -2151,11 +2171,12 @@ resource "aws_iam_policy" "bootc_ami_import_caller" {
 
         Action = [
           "ec2:ImportImage",
-          "ec2:DescribeImportImageTasks",
+          "ec2:ImportSnapshot",
           "ec2:CancelImportTask",
-          "ec2:DescribeImages",
-          "ec2:DescribeSnapshots",
-          "ec2:CreateTags"
+          "ec2:RegisterImage",
+          "ec2:CreateTags",
+          "ec2:ModifyImageAttribute",
+          "ec2:ModifySnapshotAttribute"
         ]
 
         Resource = "*"
@@ -2163,10 +2184,6 @@ resource "aws_iam_policy" "bootc_ami_import_caller" {
 
       #########################################################################
       # Inspect the VM Import/Export service role
-      #
-      # Required by:
-      #
-      #   aws iam get-role --role-name vmimport
       #########################################################################
 
       {

@@ -1,26 +1,33 @@
-FROM {{ image_mode_base_image }}
+ARG IMAGE_MODE_BASE_IMAGE
+FROM ${IMAGE_MODE_BASE_IMAGE}
 
 ###############################################################################
-# Pin package resolution to the selected RHEL release
+# Validate the selected RHEL bootc base image
+#
+# Do not write /etc/dnf/vars/releasever when using a floating bootc tag such
+# as :latest. Package resolution must remain aligned with the repositories
+# and release metadata contained in the selected bootc base image.
 ###############################################################################
 
-RUN mkdir -p /etc/dnf/vars \
-    && printf '%s\n' '{{ image_mode_rhel_release }}' > /etc/dnf/vars/releasever
+RUN test -r /etc/os-release \
+    && . /etc/os-release \
+    && test "${ID}" = "rhel" \
+    && printf 'Building from %s %s\n' "${NAME}" "${VERSION_ID}"
 
 ###############################################################################
 # Install application and EC2 prerequisites
 ###############################################################################
 
-RUN dnf clean all \
+RUN dnf -y clean all \
     && rm -rf /var/cache/dnf \
-    && dnf --releasever={{ image_mode_rhel_release }} -y install \
+    && dnf -y install \
         nginx \
         cloud-init \
         openssh-server \
         chrony \
         sudo \
         curl \
-    && dnf clean all \
+    && dnf -y clean all \
     && rm -rf /var/cache/dnf
 
 ###############################################################################
@@ -33,9 +40,10 @@ COPY files/index.html /usr/share/nginx/html/index.html
 # Configure EC2 cloud-init
 ###############################################################################
 
-RUN printf '%s\n' \
-      'datasource_list: [ Ec2, None ]' \
-      > /etc/cloud/cloud.cfg.d/99-ec2-datasource.cfg
+RUN mkdir -p /etc/cloud/cloud.cfg.d \
+    && printf '%s\n' \
+        'datasource_list: [ Ec2, None ]' \
+        > /etc/cloud/cloud.cfg.d/99-ec2-datasource.cfg
 
 ###############################################################################
 # Enable deployed services
@@ -53,13 +61,24 @@ RUN systemctl enable nginx.service \
 # Record image metadata
 ###############################################################################
 
-RUN printf '%s\n' \
-      'IMAGE_NAME="{{ image_mode_image_name }}"' \
-      'IMAGE_VERSION="{{ image_mode_image_tag }}"' \
-      'RHEL_VERSION="{{ image_mode_rhel_release }}"' \
-      'APPLICATION="{{ image_mode_application_name }}"' \
-      'CONTAINER_IMAGE="{{ image_mode_image_reference }}"' \
-      > /etc/image-mode-release
+RUN . /etc/os-release \
+    && printf '%s\n' \
+        'IMAGE_NAME="{{ image_mode_image_name }}"' \
+        'IMAGE_VERSION="{{ image_mode_image_tag }}"' \
+        "RHEL_VERSION=${VERSION_ID}" \
+        'APPLICATION="{{ image_mode_application_name }}"' \
+        'CONTAINER_IMAGE="{{ image_mode_image_reference }}"' \
+        'BASE_IMAGE={{ image_mode_base_image }}' \
+        > /etc/image-mode-release
+
+###############################################################################
+# Confirm that the resulting image remains a bootc image
+###############################################################################
+
+RUN test -x /usr/bin/bootc \
+    || test -x /usr/libexec/bootc
+
+LABEL containers.bootc="1"
 
 EXPOSE 22
 EXPOSE 80

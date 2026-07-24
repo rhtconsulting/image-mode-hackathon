@@ -181,3 +181,4 @@
   roles:
     - role: deploy_satellite
     - role: satellite_content_bootstrap
+    - role: satellite_ec2_keypair_ui_patch

@@ -1913,6 +1913,10 @@ resource "aws_s3_bucket_versioning" "image_mode_artifacts" {
 # Shared Image Mode Artifact Bucket Access Policy
 ############################################################
 
+############################################################
+# Shared Image Mode Artifact Bucket Access Policy
+############################################################
+
 resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
   name = "${var.environment_name}-image-mode-artifact-bucket-rw"
 
@@ -1921,13 +1925,17 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
   ]
 
   description = (
-    "Push and pull Image Mode build artifacts from the shared S3 bucket."
+    "Manage the shared Image Mode artifact bucket and push or pull build artifacts."
   )
 
   policy = jsonencode({
     Version = "2012-10-17"
 
     Statement = [
+      #########################################################################
+      # Inspect the artifact bucket
+      #########################################################################
+
       {
         Sid    = "InspectImageModeArtifactBucket"
         Effect = "Allow"
@@ -1935,6 +1943,7 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
         Action = [
           "s3:GetBucketLocation",
           "s3:GetBucketVersioning",
+          "s3:GetBucketPublicAccessBlock",
           "s3:ListBucket",
           "s3:ListBucketMultipartUploads"
         ]
@@ -1943,6 +1952,28 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
           aws_s3_bucket.image_mode_artifacts.arn
         ]
       },
+
+      #########################################################################
+      # Enforce bucket-level S3 Block Public Access
+      #########################################################################
+
+      {
+        Sid    = "ManageImageModeBucketPublicAccessBlock"
+        Effect = "Allow"
+
+        Action = [
+          "s3:PutBucketPublicAccessBlock"
+        ]
+
+        Resource = [
+          aws_s3_bucket.image_mode_artifacts.arn
+        ]
+      },
+
+      #########################################################################
+      # Push and pull Image Mode artifacts
+      #########################################################################
+
       {
         Sid    = "PushAndPullImageModeArtifacts"
         Effect = "Allow"

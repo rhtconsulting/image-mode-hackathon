@@ -1,13 +1,6 @@
 ---
 ###############################################################################
-# Image Mode sample-image deployment workflow
-#
-# Workflow order:
-#
-#   1. Build Image Mode AMI
-#   2. Configure Satellite for New AMI
-#
-# The Satellite job runs only when the AMI build completes successfully.
+# Image Mode workflow job templates
 ###############################################################################
 
 controller_workflows:
@@ -18,25 +11,34 @@ controller_workflows:
       AWS AMI, publish the AMI metadata as workflow artifacts, and configure
       the Satellite AWS compute-resource image to use the newly created AMI.
     organization: "Image Mode Lab"
-
     destroy_current_nodes: true
 
     workflow_nodes:
 
       #########################################################################
-      # Build and register the AWS AMI
+      # Build Image Mode AMI
       #########################################################################
 
       - identifier: "build_image_mode_ami"
-        unified_job_template: "Build Image Mode AMI"
+
+        unified_job_template:
+          name: "Build Image Mode AMI"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
 
         related:
           success_nodes:
             - identifier: "configure_satellite_for_new_ami"
 
       #########################################################################
-      # Configure the Satellite compute-resource image
+      # Configure Satellite for New AMI
       #########################################################################
 
       - identifier: "configure_satellite_for_new_ami"
-        unified_job_template: "Configure Satellite for New AMI"
+
+        unified_job_template:
+          name: "Configure Satellite for New AMI"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"

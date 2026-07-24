@@ -708,6 +708,76 @@
           not a valid PEM private key.
       no_log: true
 
+
+    ###########################################################################
+    # Derive Terraform-generated SSH public key
+    ###########################################################################
+    - name: Create temporary Terraform SSH private-key file
+      ansible.builtin.tempfile:
+        state: file
+        prefix: image-mode-terraform-ssh-
+        suffix: .pem
+      register: image_mode_ssh_private_key_tempfile
+      no_log: true
+
+    - name: Derive Terraform-generated SSH public key
+      block:
+
+        - name: Write temporary Terraform SSH private key
+          ansible.builtin.copy:
+            dest: "{{ image_mode_ssh_private_key_tempfile.path }}"
+            content: "{{ image_mode_ssh_private_key | trim }}\n"
+            mode: "0600"
+          no_log: true
+
+        - name: Generate public key from Terraform private key
+          ansible.builtin.command:
+            argv:
+              - ssh-keygen
+              - -y
+              - -f
+              - "{{ image_mode_ssh_private_key_tempfile.path }}"
+          register: image_mode_ssh_public_key_command
+          changed_when: false
+          no_log: true
+
+        - name: Set Image Mode AMI SSH public key
+          ansible.builtin.set_fact:
+            image_mode_ssh_public_key: >-
+              {{
+                image_mode_ssh_public_key_command.stdout
+                | string
+                | trim
+              }}
+          no_log: true
+
+        - name: Validate Image Mode AMI SSH public key
+          ansible.builtin.assert:
+            that:
+              - image_mode_ssh_public_key | length > 32
+              - >-
+                image_mode_ssh_public_key
+                is match(
+                  '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp[0-9]+) '
+                )
+            fail_msg: >-
+              A valid OpenSSH public key could not be derived from the
+              Terraform-generated SSH private key.
+          no_log: true
+
+      always:
+
+        - name: Remove temporary Terraform SSH private-key file
+          ansible.builtin.file:
+            path: "{{ image_mode_ssh_private_key_tempfile.path }}"
+            state: absent
+          when:
+            - image_mode_ssh_private_key_tempfile is defined
+            - image_mode_ssh_private_key_tempfile.path is defined
+          no_log: true
+
+
+
     ###########################################################################
     # Read Red Hat registry credentials
     ###########################################################################

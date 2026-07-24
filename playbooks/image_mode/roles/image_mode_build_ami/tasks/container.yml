@@ -1,12 +1,56 @@
 ---
+###############################################################################
+# Build and publish the bootc container image
+###############################################################################
+
+- name: IMAGE MODE AMI | Validate Image Builder operating system facts
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution is defined
+      - ansible_facts.distribution_major_version is defined
+      - ansible_facts.distribution == "RedHat"
+      - ansible_facts.distribution_major_version in image_mode_base_images
+    fail_msg: >-
+      The Image Mode build requires a supported Red Hat Enterprise Linux
+      builder host. Detected distribution={{
+      ansible_facts.distribution | default('unknown') }}, version={{
+      ansible_facts.distribution_version | default('unknown') }}. Supported
+      RHEL major versions are {{
+      image_mode_base_images.keys() | list | join(', ') }}.
+
+- name: IMAGE MODE AMI | Select bootc base image for builder operating system
+  ansible.builtin.set_fact:
+    image_mode_base_image: >-
+      {{
+        image_mode_base_images[
+          ansible_facts.distribution_major_version
+        ]
+      }}
+
+- name: IMAGE MODE AMI | Display selected bootc base image
+  ansible.builtin.debug:
+    msg: >-
+      Image Builder {{ inventory_hostname }} is running RHEL
+      {{ ansible_facts.distribution_major_version }}. The container build will
+      use {{ image_mode_base_image }}.
+
+###############################################################################
+# Pull the matching RHEL bootc base image
+###############################################################################
+
 - name: IMAGE MODE AMI | Pull bootc base image
   ansible.builtin.command:
     argv:
       - podman
       - pull
       - "{{ image_mode_base_image }}"
+  register: image_mode_base_image_pull
   changed_when: true
   when: image_mode_pull_base_image | bool
+
+###############################################################################
+# Build the bootc container
+###############################################################################
 
 - name: IMAGE MODE AMI | Build bootc container
   ansible.builtin.command:
@@ -14,11 +58,17 @@
       - podman
       - build
       - --pull=always
+      - --build-arg
+      - "IMAGE_MODE_BASE_IMAGE={{ image_mode_base_image }}"
       - --tag
       - "{{ image_mode_image_reference }}"
       - "{{ image_mode_workspace }}"
   register: image_mode_container_build
   changed_when: true
+
+###############################################################################
+# Validate the built bootc container
+###############################################################################
 
 - name: IMAGE MODE AMI | Inspect bootc label
   ansible.builtin.command:
@@ -37,7 +87,12 @@
     that:
       - image_mode_bootc_label.stdout | trim == "1"
     fail_msg: >-
-      The built container does not expose containers.bootc=1.
+      The built container {{ image_mode_image_reference }} does not expose
+      the required containers.bootc=1 label.
+
+###############################################################################
+# Push the bootc container to Quay
+###############################################################################
 
 - name: IMAGE MODE AMI | Push bootc container to Quay
   ansible.builtin.command:
@@ -45,5 +100,6 @@
       - podman
       - push
       - "{{ image_mode_image_reference }}"
+  register: image_mode_container_push
   changed_when: true
   when: image_mode_push_container | bool

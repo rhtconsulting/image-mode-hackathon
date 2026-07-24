@@ -163,3 +163,8 @@ image_mode_ami_tags:
   Application: "{{ image_mode_application_name }}"
   ContainerImage: "{{ image_mode_image_reference }}"
   ManagedBy: "Ansible Automation Platform"
+
+#Default bootc base images
+image_mode_base_images:
+  "9": "registry.redhat.io/rhel9/rhel-bootc:latest"
+  "10": "registry.redhat.io/rhel10/rhel-bootc:latest"

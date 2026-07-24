@@ -1913,29 +1913,17 @@ resource "aws_s3_bucket_versioning" "image_mode_artifacts" {
 # Shared Image Mode Artifact Bucket Access Policy
 ############################################################
 
-############################################################
-# Shared Image Mode Artifact Bucket Access Policy
-############################################################
-
 resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
   name = "${var.environment_name}-image-mode-artifact-bucket-rw"
 
-  depends_on = [
-    terraform_data.preflight_cleanup
-  ]
-
   description = (
-    "Manage the shared Image Mode artifact bucket and push or pull build artifacts."
+    "Push and pull Image Mode build artifacts from the shared S3 bucket."
   )
 
   policy = jsonencode({
     Version = "2012-10-17"
 
     Statement = [
-      #########################################################################
-      # Inspect the artifact bucket
-      #########################################################################
-
       {
         Sid    = "InspectImageModeArtifactBucket"
         Effect = "Allow"
@@ -1948,15 +1936,8 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
           "s3:ListBucketMultipartUploads"
         ]
 
-        Resource = [
-          aws_s3_bucket.image_mode_artifacts.arn
-        ]
+        Resource = aws_s3_bucket.image_mode_artifacts.arn
       },
-
-      #########################################################################
-      # Enforce bucket-level S3 Block Public Access
-      #########################################################################
-
       {
         Sid    = "ManageImageModeBucketPublicAccessBlock"
         Effect = "Allow"
@@ -1965,15 +1946,8 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
           "s3:PutBucketPublicAccessBlock"
         ]
 
-        Resource = [
-          aws_s3_bucket.image_mode_artifacts.arn
-        ]
+        Resource = aws_s3_bucket.image_mode_artifacts.arn
       },
-
-      #########################################################################
-      # Push and pull Image Mode artifacts
-      #########################################################################
-
       {
         Sid    = "PushAndPullImageModeArtifacts"
         Effect = "Allow"
@@ -1986,9 +1960,7 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
           "s3:ListMultipartUploadParts"
         ]
 
-        Resource = [
-          "${aws_s3_bucket.image_mode_artifacts.arn}/*"
-        ]
+        Resource = "${aws_s3_bucket.image_mode_artifacts.arn}/*"
       }
     ]
   })

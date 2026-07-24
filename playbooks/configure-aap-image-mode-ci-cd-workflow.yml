@@ -1588,19 +1588,19 @@
         # 9. Workflow job templates
         #######################################################################
 
-        # - name: Configure AAP workflow job templates
-        #   ansible.builtin.include_role:
-        #     name: infra.aap_configuration.controller_workflow_job_templates
-        #   vars:
-        #     controller_hostname: "{{ controller_host }}"
-        #     controller_username: "{{ gateway_admin_username }}"
-        #     controller_password: "{{ gateway_admin_password }}"
-        #     controller_validate_certs: false
-        #   when:
-        #     - controller_workflows is defined
-        #     - controller_workflows | length > 0
-        #   tags:
-        #     - workflow_job_templates
+        - name: Configure AAP workflow job templates
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_workflow_job_templates
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
+          when:
+            - controller_workflows is defined
+            - controller_workflows | length > 0
+          tags:
+            - workflow_job_templates
 
       # Uncomment this environment block if the included roles or lookups need
       # AWS CLI environment variables.

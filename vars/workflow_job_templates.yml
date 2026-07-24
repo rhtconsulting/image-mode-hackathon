@@ -1,39 +1,42 @@
 ---
+###############################################################################
+# Image Mode sample-image deployment workflow
+#
+# Workflow order:
+#
+#   1. Build Image Mode AMI
+#   2. Configure Satellite for New AMI
+#
+# The Satellite job runs only when the AMI build completes successfully.
+###############################################################################
+
 controller_workflows:
-  - name: "Image Mode CI/CD Pipeline"
+
+  - name: "Image Mode Deploy Sample Image to AWS"
+    description: >-
+      Build the sample RHEL Image Mode container image, create and register an
+      AWS AMI, publish the AMI metadata as workflow artifacts, and configure
+      the Satellite AWS compute-resource image to use the newly created AMI.
     organization: "Image Mode Lab"
+
     destroy_current_nodes: true
 
     workflow_nodes:
-      - identifier: "deploy_quay"
-        unified_job_template: "Deploy Quay"
+
+      #########################################################################
+      # Build and register the AWS AMI
+      #########################################################################
+
+      - identifier: "build_image_mode_ami"
+        unified_job_template: "Build Image Mode AMI"
+
         related:
           success_nodes:
-            - identifier: "build"
+            - identifier: "configure_satellite_for_new_ami"
 
-      - identifier: "build"
-        unified_job_template: "Build Image"
-        related:
-          success_nodes:
-            - identifier: "publish"
+      #########################################################################
+      # Configure the Satellite compute-resource image
+      #########################################################################
 
-      - identifier: "publish"
-        unified_job_template: "Publish Image"
-        related:
-          success_nodes:
-            - identifier: "deploy_dev"
-
-      - identifier: "deploy_dev"
-        unified_job_template: "Deploy Development"
-        related:
-          success_nodes:
-            - identifier: "validate"
-
-      - identifier: "validate"
-        unified_job_template: "Validate Image"
-        related:
-          failure_nodes:
-            - identifier: "rollback"
-
-      - identifier: "rollback"
-        unified_job_template: "Rollback"
+      - identifier: "configure_satellite_for_new_ami"
+        unified_job_template: "Configure Satellite for New AMI"

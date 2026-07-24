@@ -2,13 +2,33 @@
 # Image Mode Bootc Container
 ###############################################################################
 
+#
+# These ARGs are available only for the FROM instruction.
+#
 ARG IMAGE_MODE_BASE_IMAGE
 ARG IMAGE_MODE_RHEL_RELEASE
 
 FROM ${IMAGE_MODE_BASE_IMAGE}
 
+#
+# Re-declare the build arguments so they are available throughout
+# the build stage.
+#
+ARG IMAGE_MODE_BASE_IMAGE
+ARG IMAGE_MODE_RHEL_RELEASE
+
 ###############################################################################
-# Validate the selected bootc base image
+# Validate build arguments
+###############################################################################
+
+RUN set -eux; \
+    test -n "${IMAGE_MODE_BASE_IMAGE}"; \
+    test -n "${IMAGE_MODE_RHEL_RELEASE}"; \
+    printf 'Selected base image: %s\n' "${IMAGE_MODE_BASE_IMAGE}"; \
+    printf 'Selected Satellite release: %s\n' "${IMAGE_MODE_RHEL_RELEASE}"
+
+###############################################################################
+# Validate bootc base image
 ###############################################################################
 
 RUN set -eux; \
@@ -18,12 +38,13 @@ RUN set -eux; \
     printf 'Building from %s %s\n' "${NAME}" "${VERSION_ID}"
 
 ###############################################################################
-# Configure DNF to use the Satellite release lock
+# Configure DNF release
 ###############################################################################
 
-RUN mkdir -p /etc/dnf/vars \
-    && printf '%s\n' "${IMAGE_MODE_RHEL_RELEASE}" \
-       > /etc/dnf/vars/releasever
+RUN set -eux; \
+    mkdir -p /etc/dnf/vars; \
+    printf '%s\n' "${IMAGE_MODE_RHEL_RELEASE}" \
+        > /etc/dnf/vars/releasever
 
 ###############################################################################
 # Validate release consistency
@@ -34,16 +55,17 @@ RUN set -eux; \
     base_major="${VERSION_ID%%.*}"; \
     selected_major="${IMAGE_MODE_RHEL_RELEASE%%.*}"; \
     test "${base_major}" = "${selected_major}"; \
-    printf 'Base Image Version      : %s\n' "${VERSION_ID}"; \
-    printf 'Satellite Release       : %s\n' "${IMAGE_MODE_RHEL_RELEASE}"
+    printf 'Base image version : %s\n' "${VERSION_ID}"; \
+    printf 'Satellite release  : %s\n' "${IMAGE_MODE_RHEL_RELEASE}"
 
 ###############################################################################
-# Install application and EC2 prerequisites
+# Install packages
 ###############################################################################
 
-RUN dnf -y clean all \
-    && rm -rf /var/cache/dnf \
-    && dnf \
+RUN set -eux; \
+    dnf -y clean all; \
+    rm -rf /var/cache/dnf; \
+    dnf \
         --releasever="${IMAGE_MODE_RHEL_RELEASE}" \
         -y install \
             nginx \
@@ -51,19 +73,19 @@ RUN dnf -y clean all \
             openssh-server \
             chrony \
             sudo \
-            curl \
-    && dnf -y clean all \
-    && rm -rf /var/cache/dnf
+            curl; \
+    dnf -y clean all; \
+    rm -rf /var/cache/dnf
 
 ###############################################################################
-# Add application content
+# Application content
 ###############################################################################
 
 COPY files/index.html \
      /usr/share/nginx/html/index.html
 
 ###############################################################################
-# Configure EC2 cloud-init
+# Configure cloud-init
 ###############################################################################
 
 RUN mkdir -p /etc/cloud/cloud.cfg.d \
@@ -72,7 +94,7 @@ RUN mkdir -p /etc/cloud/cloud.cfg.d \
         > /etc/cloud/cloud.cfg.d/99-ec2-datasource.cfg
 
 ###############################################################################
-# Enable required services
+# Enable services
 ###############################################################################
 
 RUN systemctl enable nginx.service \
@@ -84,20 +106,20 @@ RUN systemctl enable nginx.service \
     && systemctl enable cloud-final.service
 
 ###############################################################################
-# Record image metadata
+# Image metadata
 ###############################################################################
 
 RUN printf '%s\n' \
         'IMAGE_NAME={{ image_mode_image_name }}' \
         'IMAGE_VERSION={{ image_mode_image_tag }}' \
-        "RHEL_VERSION=${IMAGE_MODE_RHEL_RELEASE}" \
+        'RHEL_VERSION='"${IMAGE_MODE_RHEL_RELEASE}" \
         'APPLICATION={{ image_mode_application_name }}' \
         'CONTAINER_IMAGE={{ image_mode_image_reference }}' \
-        "BASE_IMAGE=${IMAGE_MODE_BASE_IMAGE}" \
+        'BASE_IMAGE='"${IMAGE_MODE_BASE_IMAGE}" \
         > /etc/image-mode-release
 
 ###############################################################################
-# Validate bootc support
+# Validate bootc
 ###############################################################################
 
 RUN test -x /usr/bin/bootc \
@@ -113,7 +135,7 @@ EXPOSE 22
 EXPOSE 80
 
 ###############################################################################
-# Default init process
+# Default init
 ###############################################################################
 
 CMD ["/sbin/init"]

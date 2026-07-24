@@ -28,7 +28,7 @@ controller_templates:
 
     credentials:
       - "Image Mode Machine Credential"
-      - "Image Mode AWS Credential"
+      - "AWS IAM Service Account Credential"
       - "Image Mode Red Hat Registry Credential"
       - "Image Mode Quay Registry Credential"
 

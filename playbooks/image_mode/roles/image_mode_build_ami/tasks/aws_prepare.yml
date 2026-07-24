@@ -136,7 +136,7 @@
       - "{{ image_mode_aws_region }}"
   environment: "{{ image_mode_aws_environment }}"
   changed_when: true
-  no_log: true
+  no_log: false
 
 - name: IMAGE MODE AMI | Configure S3 encryption
   ansible.builtin.command:

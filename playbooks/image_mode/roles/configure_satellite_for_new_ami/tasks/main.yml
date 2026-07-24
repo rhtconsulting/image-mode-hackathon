@@ -1,7 +1,57 @@
 ---
+
 ###############################################################################
 # Configure Satellite for a newly built AWS AMI
 ###############################################################################
+
+###############################################################################
+# PHASE 0 | Normalize workflow artifacts
+###############################################################################
+
+- name: PHASE 0 | Resolve AMI values from workflow artifacts
+  ansible.builtin.set_fact:
+    configure_satellite_ami_resolved_id: >-
+      {{
+        configure_satellite_ami_id
+        | default(
+            image_mode_ami_id
+            | default(
+                image_mode_ami_result.ami_id
+                | default('')
+              )
+          )
+      }}
+    configure_satellite_ami_resolved_architecture: >-
+      {{
+        configure_satellite_ami_architecture
+        | default(
+            image_mode_ami_result.architecture
+            | default('x86_64')
+          )
+      }}
+    configure_satellite_ami_resolved_region: >-
+      {{
+        image_mode_ami_region
+        | default(
+            image_mode_ami_result.aws_region
+            | default('')
+          )
+      }}
+    configure_satellite_ami_resolved_name: >-
+      {{
+        image_mode_ami_name
+        | default(
+            image_mode_ami_result.ami_name
+            | default('')
+          )
+      }}
+
+- name: PHASE 0 | Promote normalized AMI values
+  ansible.builtin.set_fact:
+    configure_satellite_ami_id: >-
+      {{ configure_satellite_ami_resolved_id }}
+    configure_satellite_ami_architecture: >-
+      {{ configure_satellite_ami_resolved_architecture }}
 
 ###############################################################################
 # PHASE 1 | Validate inputs and Satellite services
@@ -10,18 +60,22 @@
 - name: PHASE 1 | Validate required AMI configuration variables
   ansible.builtin.assert:
     that:
-      - configure_satellite_ami_compute_resource_name | length > 0
-      - configure_satellite_ami_image_name | length > 0
-      - configure_satellite_ami_username | length > 0
-      - configure_satellite_ami_architecture | length > 0
-      - configure_satellite_ami_id | length > 0
+      - configure_satellite_ami_compute_resource_name | string | length > 0
+      - configure_satellite_ami_image_name | string | length > 0
+      - configure_satellite_ami_username | string | length > 0
+      - configure_satellite_ami_architecture | string | length > 0
+      - configure_satellite_ami_id | string | length > 0
       - configure_satellite_ami_id is match('^ami-[0-9a-fA-F]{8,17}$')
     fail_msg: >-
       The Satellite AMI configuration requires an existing compute resource,
-      image name, username, architecture, and a valid AWS AMI ID. Ensure the
-      Build AMI job publishes satellite_new_ami_id and that
-      configure_satellite_ami_compute_resource_name identifies an existing
-      Satellite EC2 compute resource.
+      image name, username, architecture, and a valid AWS AMI ID. The role
+      checked configure_satellite_ami_id, image_mode_ami_id, and
+      image_mode_ami_result.ami_id. Received AMI ID:
+      {{ configure_satellite_ami_id | default('undefined') }}.
+    success_msg: >-
+      Configuring Satellite image {{ configure_satellite_ami_image_name }}
+      with AMI {{ configure_satellite_ami_id }} in region
+      {{ configure_satellite_ami_resolved_region | default('unknown') }}
 
 - name: PHASE 1 | Verify Hammer CLI is available
   ansible.builtin.command:

@@ -145,43 +145,63 @@
   changed_when: true
 
 ###############################################################################
-# Validate resulting image
+# Validate resulting image without starting a container
 ###############################################################################
 
-- name: IMAGE MODE AMI | Inspect built image release
+- name: IMAGE MODE AMI | Inspect built image RHEL release label
   ansible.builtin.command:
     argv:
       - podman
-      - run
-      - --rm
+      - image
+      - inspect
       - "{{ image_mode_image_reference }}"
-      - bash
-      - -c
-      - |
-        source /etc/os-release
-        printf '%s\n' "${VERSION_ID}"
+      - --format
+      - >-
+        {{ '{{' }} index .Config.Labels
+        "com.redhat.image-mode.rhel-release" {{ '}}' }}
   register: image_mode_built_image_release
   changed_when: false
 
-- name: IMAGE MODE AMI | Validate built image major version
+- name: IMAGE MODE AMI | Validate built image RHEL release label
+  ansible.builtin.assert:
+    that:
+      - image_mode_built_image_release.stdout | trim | length > 0
+      - >-
+        image_mode_built_image_release.stdout | trim
+        == image_mode_rhel_release
+    fail_msg: >-
+      The built image reports RHEL release
+      {{ image_mode_built_image_release.stdout | trim | default('unknown') }},
+      but the selected Satellite release is
+      {{ image_mode_rhel_release }}.
+
+- name: IMAGE MODE AMI | Inspect built image RHEL major version
+  ansible.builtin.set_fact:
+    image_mode_built_image_major_version: >-
+      {{
+        image_mode_built_image_release.stdout
+        | trim
+        | split('.')
+        | first
+      }}
+
+- name: IMAGE MODE AMI | Validate built image RHEL major version
   ansible.builtin.assert:
     that:
       - >-
-        (
-          image_mode_built_image_release.stdout
-          | trim
-          | split('.')
-          | first
-        ) == image_mode_rhel_major_version
+        image_mode_built_image_major_version
+        == image_mode_rhel_major_version
     fail_msg: >-
-      Built image reports RHEL
+      The built image release label reports RHEL
       {{ image_mode_built_image_release.stdout | trim }},
-      expected RHEL {{ image_mode_rhel_major_version }}.
+      but the selected bootc base-image family is RHEL
+      {{ image_mode_rhel_major_version }}.
 
 - name: IMAGE MODE AMI | Inspect bootc label
   ansible.builtin.command:
     argv:
       - podman
+      - image
       - inspect
       - "{{ image_mode_image_reference }}"
       - --format

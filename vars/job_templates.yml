@@ -54,7 +54,7 @@ controller_templates:
       and create or update the AWS-RHEL-Dev compute-resource image.
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
-    inventory: "Infrastructure"
+    inventory: "Image Mode Lab Infrastructure"
     playbook: "playbooks/image_mode/configure-satellite-for-new-ami.yml"
     execution_environment: "Image Mode EE"
     credentials:

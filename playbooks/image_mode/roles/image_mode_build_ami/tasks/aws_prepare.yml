@@ -55,7 +55,7 @@
       - text
   environment: "{{ image_mode_aws_environment }}"
   changed_when: false
-  no_log: false
+  no_log: true
 
 - name: IMAGE MODE AMI | Check artifacts bucket
   ansible.builtin.command:
@@ -136,7 +136,7 @@
       - "{{ image_mode_aws_region }}"
   environment: "{{ image_mode_aws_environment }}"
   changed_when: true
-  no_log: false
+  no_log: true
 
 - name: IMAGE MODE AMI | Configure S3 encryption
   ansible.builtin.command:
@@ -154,4 +154,4 @@
       - "{{ image_mode_aws_region }}"
   environment: "{{ image_mode_aws_environment }}"
   changed_when: true
-  no_log: true
+  no_log: false

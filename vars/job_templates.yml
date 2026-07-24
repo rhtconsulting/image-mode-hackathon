@@ -46,6 +46,39 @@ controller_templates:
     survey_spec: "{{ image_mode_build_ami_survey }}"
 
 
+  - name: "Configure Satellite for New AMI"
+    description: >-
+      Configure the Satellite AWS compute resource to use the AMI produced by
+      the Build Image Mode AMI job. Resolve the corresponding Satellite
+      operating system, assign the x86_64 architecture and cloud-user account,
+      and create or update the AWS-RHEL-Dev compute-resource image.
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Infrastructure"
+    playbook: "playbooks/image_mode/configure-satellite-for-new-ami.yml"
+    execution_environment: "Image Mode EE"
+    credentials:
+      - "Image Mode Machine Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 1
+    timeout: 1800
+    allow_simultaneous: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+    survey_enabled: false
+    extra_vars:
+
+      configure_satellite_ami_compute_resource_name: "us-east-2-EC2"
+      configure_satellite_ami_image_name: "AWS-RHEL-Dev"
+      configure_satellite_ami_username: "cloud-user"
+      configure_satellite_ami_architecture: "x86_64"
+      configure_satellite_ami_update_existing: true
+
+
+
+
   # - name: "Bootstrap Satellite Content"
   #   description: >-
   #     Bootstrap connected RHEL content, content views, lifecycle environments,

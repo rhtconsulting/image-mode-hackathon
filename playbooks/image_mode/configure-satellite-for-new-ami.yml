@@ -1,0 +1,15 @@
+---
+###############################################################################
+# Configure Satellite for a newly built AWS AMI
+#
+# The AMI ID and related metadata are expected to be supplied by the preceding
+# Build Image Mode AMI workflow job through AAP workflow artifacts.
+###############################################################################
+
+- name: Configure Satellite for newly built AWS AMI
+  hosts: satellite*
+  gather_facts: true
+  become: true
+
+  roles:
+    - role: configure_satellite_for_new_ami

@@ -1924,6 +1924,29 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
     Version = "2012-10-17"
 
     Statement = [
+      #########################################################################
+      # Account-level S3 discovery
+      #
+      # bootc-image-builder calls the ListBuckets API before accessing the
+      # configured artifact bucket. The API requires s3:ListAllMyBuckets and
+      # does not support restricting Resource to a specific bucket.
+      #########################################################################
+
+      {
+        Sid    = "DiscoverAWSBuckets"
+        Effect = "Allow"
+
+        Action = [
+          "s3:ListAllMyBuckets"
+        ]
+
+        Resource = "*"
+      },
+
+      #########################################################################
+      # Inspect the Image Mode artifact bucket
+      #########################################################################
+
       {
         Sid    = "InspectAndConfigureImageModeArtifactBucket"
         Effect = "Allow"
@@ -1941,6 +1964,11 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
 
         Resource = aws_s3_bucket.image_mode_artifacts.arn
       },
+
+      #########################################################################
+      # Read and write Image Mode artifacts
+      #########################################################################
+
       {
         Sid    = "PushAndPullImageModeArtifacts"
         Effect = "Allow"
@@ -1949,6 +1977,7 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
           "s3:GetObject",
           "s3:GetObjectVersion",
           "s3:PutObject",
+          "s3:DeleteObject",
           "s3:AbortMultipartUpload",
           "s3:ListMultipartUploadParts"
         ]

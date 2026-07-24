@@ -13,6 +13,38 @@ controller_templates:
       - "Image Mode Quay Registry Credential"
       - "Image Mode IdM Administrator Credential"
 
+
+  - name: "Build Image Mode AMI"
+    description: >-
+      Build a RHEL bootc container image on an Image Builder host, push the
+      image to Quay, create and register an AWS AMI through
+      bootc-image-builder, tag the resulting AMI and root EBS snapshot,
+      and publish the AMI information as AAP workflow artifacts.
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Builders"
+    playbook: "playbooks/image_mode/build-image-mode-ami.yml"
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Image Mode Machine Credential"
+      - "Image Mode AWS Credential"
+      - "Image Mode Red Hat Registry Credential"
+      - "Image Mode Quay Registry Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 1
+    timeout: 21600
+    allow_simultaneous: false
+
+    ask_limit_on_launch: true
+    ask_variables_on_launch: false
+
+    survey_enabled: true
+    survey_spec: "{{ image_mode_build_ami_survey }}"
+
+
   # - name: "Bootstrap Satellite Content"
   #   description: >-
   #     Bootstrap connected RHEL content, content views, lifecycle environments,

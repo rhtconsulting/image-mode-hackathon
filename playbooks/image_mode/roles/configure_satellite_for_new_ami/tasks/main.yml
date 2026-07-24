@@ -63,7 +63,7 @@
         }}
       resolved_ami_id: "{{ configure_satellite_ami_resolved_id }}"
 
-      
+
 ###############################################################################
 # PHASE 1 | Validate inputs and Satellite services
 ###############################################################################
@@ -147,8 +147,6 @@
       - json
       - compute-resource
       - list
-      - --organization-label
-      - "{{ configure_satellite_ami_organization_label }}"
       - --search
       - "name = {{ configure_satellite_ami_compute_resource_name }}"
   register: configure_satellite_ami_compute_resource_lookup

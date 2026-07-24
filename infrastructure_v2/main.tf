@@ -2128,17 +2128,27 @@ resource "aws_iam_role_policy" "vmimport" {
 # Bootc AMI Import Caller Policy
 ############################################################
 
+############################################################
+# Bootc AMI Import Caller Policy
+############################################################
+
 resource "aws_iam_policy" "bootc_ami_import_caller" {
   name = "${var.environment_name}-bootc-ami-import-caller"
 
-    depends_on = [
+  depends_on = [
     terraform_data.preflight_cleanup
   ]
+
+  description = "Allow Image Mode automation identities to import AMIs and use the VM Import/Export service role."
 
   policy = jsonencode({
     Version = "2012-10-17"
 
     Statement = [
+      #########################################################################
+      # Create and inspect bootc AMI imports
+      #########################################################################
+
       {
         Sid    = "ManageBootcAMIImports"
         Effect = "Allow"
@@ -2154,6 +2164,30 @@ resource "aws_iam_policy" "bootc_ami_import_caller" {
 
         Resource = "*"
       },
+
+      #########################################################################
+      # Inspect the VM Import/Export service role
+      #
+      # Required by:
+      #
+      #   aws iam get-role --role-name vmimport
+      #########################################################################
+
+      {
+        Sid    = "ReadVMImportRole"
+        Effect = "Allow"
+
+        Action = [
+          "iam:GetRole"
+        ]
+
+        Resource = aws_iam_role.vmimport.arn
+      },
+
+      #########################################################################
+      # Allow VM Import/Export to use the service role
+      #########################################################################
+
       {
         Sid    = "PassVMImportRole"
         Effect = "Allow"
@@ -2162,9 +2196,7 @@ resource "aws_iam_policy" "bootc_ami_import_caller" {
           "iam:PassRole"
         ]
 
-        Resource = [
-          aws_iam_role.vmimport.arn
-        ]
+        Resource = aws_iam_role.vmimport.arn
 
         Condition = {
           StringEquals = {
@@ -2175,7 +2207,6 @@ resource "aws_iam_policy" "bootc_ami_import_caller" {
     ]
   })
 }
-
 
 ############################################################
 # Image Builder EC2 Role

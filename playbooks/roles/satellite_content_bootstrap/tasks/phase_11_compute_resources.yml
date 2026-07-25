@@ -67,7 +67,7 @@
   become: false
   register: satellite_compute_resource_credentials_result
   changed_when: false
-  no_log: true
+  no_log: false
   when: satellite_compute_resource_retrieve_credentials | bool
 
 - name: PHASE 11 | Parse RHEL AWS service-account credentials

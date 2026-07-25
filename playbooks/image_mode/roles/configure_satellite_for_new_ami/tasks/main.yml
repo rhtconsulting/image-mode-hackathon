@@ -890,20 +890,17 @@
       - >-
         {{
           configure_satellite_ami_user_data
-          | default(false)
+          | default(true)
           | bool
           | ternary('true', 'false')
         }}
       - --uuid
       - "{{ configure_satellite_ami_id }}"
-      - --organization-label
-      - "{{ configure_satellite_ami_organization_label }}"
   register: configure_satellite_ami_update_result
   changed_when: true
   when:
     - configure_satellite_ami_existing_images | length == 1
-    - configure_satellite_ami_update_required | bool
-    - configure_satellite_ami_update_existing | default(true) | bool
+    - configure_satellite_ami_update_existing | bool
 
 ###############################################################################
 # PHASE 8 | Verify resulting Satellite image

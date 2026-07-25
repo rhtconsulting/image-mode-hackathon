@@ -4,43 +4,100 @@
 ###############################################################################
 
 ###############################################################################
-# PHASE 0 | Normalize workflow artifacts
+# PHASE 0 | Resolve operating system from Image Builder
 ###############################################################################
 
-- name: PHASE 0 | Resolve AMI workflow values
+- name: PHASE 0 | Select first Image Builder host
   ansible.builtin.set_fact:
-    configure_satellite_ami_id: >-
+    configure_satellite_ami_selected_builder: >-
       {{
-        configure_satellite_ami_id
-        | default(
-            image_mode_ami_id
-            | default(
-                image_mode_ami_result.ami_id
-                | default('', true),
-                true
-              ),
-            true
-          )
+        groups.get(
+          configure_satellite_ami_builder_group | default('image_builder'),
+          []
+        )
+        | first
+        | default('', true)
+      }}
+
+- name: PHASE 0 | Validate selected Image Builder host
+  ansible.builtin.assert:
+    that:
+      - configure_satellite_ami_selected_builder | length > 0
+      - configure_satellite_ami_selected_builder in hostvars
+    fail_msg: >-
+      No Image Builder host was found in inventory group
+      {{
+        configure_satellite_ami_builder_group
+        | default('image_builder')
+      }}.
+      Available inventory groups:
+      {{ groups.keys() | list | sort }}.
+
+- name: PHASE 0 | Gather operating-system facts from Image Builder
+  ansible.builtin.setup:
+    gather_subset:
+      - min
+    filter:
+      - ansible_distribution
+      - ansible_distribution_major_version
+      - ansible_distribution_version
+  delegate_to: "{{ configure_satellite_ami_selected_builder }}"
+  delegate_facts: true
+
+- name: PHASE 0 | Validate Image Builder operating-system facts
+  ansible.builtin.assert:
+    that:
+      - >-
+        hostvars[configure_satellite_ami_selected_builder]
+        ['ansible_distribution']
+        | default('')
+        == 'RedHat'
+      - >-
+        hostvars[configure_satellite_ami_selected_builder]
+        ['ansible_distribution_major_version']
+        | default('')
+        | length > 0
+      - >-
+        hostvars[configure_satellite_ami_selected_builder]
+        ['ansible_distribution_version']
+        | default('')
+        | length > 0
+    fail_msg: >-
+      Unable to determine the Red Hat Enterprise Linux version from Image
+      Builder host {{ configure_satellite_ami_selected_builder }}.
+
+- name: PHASE 0 | Calculate Satellite operating-system title
+  ansible.builtin.set_fact:
+    configure_satellite_ami_builder_rhel_major: >-
+      {{
+        hostvars[configure_satellite_ami_selected_builder]
+        ['ansible_distribution_major_version']
         | trim
       }}
-    configure_satellite_ami_architecture: >-
+    configure_satellite_ami_builder_rhel_version: >-
       {{
-        configure_satellite_ami_architecture
-        | default(
-            image_mode_ami_result.architecture
-            | default('x86_64', true),
-            true
-          )
+        hostvars[configure_satellite_ami_selected_builder]
+        ['ansible_distribution_version']
+        | trim
+      }}
+    configure_satellite_ami_operating_system: >-
+      RedHat {{
+        hostvars[configure_satellite_ami_selected_builder]
+        ['ansible_distribution_version']
         | trim
       }}
 
-- name: PHASE 0 | Display received AMI workflow values
+- name: PHASE 0 | Display resolved Image Builder operating system
   ansible.builtin.debug:
     msg:
-      - "AMI ID: {{ configure_satellite_ami_id }}"
-      - "Architecture: {{ configure_satellite_ami_architecture }}"
       - >-
-        Operating system:
+        Image Builder:
+        {{ configure_satellite_ami_selected_builder }}
+      - >-
+        Detected RHEL version:
+        {{ configure_satellite_ami_builder_rhel_version }}
+      - >-
+        Satellite operating-system title:
         {{ configure_satellite_ami_operating_system }}
 
 ###############################################################################

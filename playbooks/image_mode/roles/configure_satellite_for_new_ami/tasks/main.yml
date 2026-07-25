@@ -4,12 +4,96 @@
 ###############################################################################
 
 ###############################################################################
-# PHASE 0 | Resolve operating system from Image Builder
-###############################################################################
-
-###############################################################################
 # PHASE 0 | Resolve AMI workflow artifacts
 ###############################################################################
+
+
+- name: PHASE 0 | Resolve Satellite AMI configuration inputs
+  ansible.builtin.set_fact:
+    configure_satellite_ami_compute_resource_name: >-
+      {{
+        configure_satellite_ami_compute_resource_name
+        | default(
+            create_satellite_hosts_on_aws_compute_resource
+            | default('AWS Image Mode', true),
+            true
+          )
+        | trim
+      }}
+
+    configure_satellite_ami_image_name: >-
+      {{
+        configure_satellite_ami_image_name
+        | default(
+            create_satellite_hosts_on_aws_compute_image
+            | default('AWS-RHEL-Dev', true),
+            true
+          )
+        | trim
+      }}
+
+    configure_satellite_ami_organization_label: >-
+      {{
+        configure_satellite_ami_organization_label
+        | default(
+            create_satellite_hosts_on_aws_organization_label
+            | default('Image_Mode_Lab', true),
+            true
+          )
+        | trim
+      }}
+
+    configure_satellite_ami_username: >-
+      {{
+        configure_satellite_ami_username
+        | default('cloud-user', true)
+        | trim
+      }}
+
+    configure_satellite_ami_architecture: >-
+      {{
+        configure_satellite_ami_architecture
+        | default(
+            image_mode_ami_result.architecture
+            | default(
+                create_satellite_hosts_on_aws_architecture
+                | default('x86_64', true),
+                true
+              ),
+            true
+          )
+        | trim
+      }}
+
+    configure_satellite_ami_id: >-
+      {{
+        configure_satellite_ami_id
+        | default(
+            image_mode_ami_id
+            | default(
+                image_mode_ami_result.ami_id
+                | default('', true),
+                true
+              ),
+            true
+          )
+        | trim
+      }}
+
+    configure_satellite_ami_region: >-
+      {{
+        configure_satellite_ami_region
+        | default(
+            image_mode_ami_region
+            | default(
+                image_mode_ami_result.aws_region
+                | default('', true),
+                true
+              ),
+            true
+          )
+        | trim
+      }}
 
 - name: PHASE 0 | Resolve AMI ID from workflow artifacts
   ansible.builtin.set_fact:

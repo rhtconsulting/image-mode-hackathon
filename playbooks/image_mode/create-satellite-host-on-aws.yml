@@ -1,39 +1,54 @@
 ---
 ###############################################################################
-# Configure Satellite for a newly built AWS AMI
+# Create a Satellite-managed AWS host
 #
-# The AMI ID and related metadata are supplied by the preceding Image Mode AMI
-# build workflow job through AAP workflow artifacts.
+# The role uses the current Image Builder operating-system version to select
+# the appropriate RHEL9 or RHEL10 Satellite content view, activation key, and
+# operating-system record before provisioning the EC2 instance through the
+# Satellite AWS compute resource.
 ###############################################################################
 
 ###############################################################################
 # Gather Image Builder operating-system facts
 ###############################################################################
 
-- name: Gather Image Builder facts for Satellite AMI configuration
+- name: Gather Image Builder facts for Satellite AWS host deployment
   hosts: image-builder*
   gather_facts: true
   become: true
 
   tasks:
+
     - name: Validate Image Builder operating system
       ansible.builtin.assert:
         that:
           - ansible_distribution == "RedHat"
-          - ansible_distribution_major_version | length > 0
-          - ansible_distribution_version | length > 0
+          - ansible_distribution_major_version | string | length > 0
+          - ansible_distribution_version | string | length > 0
+          - ansible_distribution_major_version | string in ["9", "10"]
         fail_msg: >-
-          Unable to determine the Red Hat Enterprise Linux version for Image
-          Builder host {{ inventory_hostname }}.
+          Unable to determine a supported Red Hat Enterprise Linux version for
+          Image Builder host {{ inventory_hostname }}.
+
+          Detected distribution:
+          {{ ansible_distribution | default('undefined') }}
+
+          Detected major version:
+          {{ ansible_distribution_major_version | default('undefined') }}
+
+          Detected release:
+          {{ ansible_distribution_version | default('undefined') }}
+
+          The create_satellite_hosts_on_aws role supports RHEL 9 and RHEL 10.
 
 ###############################################################################
-# Configure Satellite AMI
+# Create Satellite-managed AWS host
 ###############################################################################
 
-- name: Configure Satellite for newly built AWS AMI
+- name: Use Satellite to create and deploy an AWS EC2 host
   hosts: satellite*
   gather_facts: true
   become: true
 
   roles:
-    - role: configure_satellite_for_new_ami
+    - role: create_satellite_hosts_on_aws

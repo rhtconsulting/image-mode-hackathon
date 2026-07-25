@@ -770,23 +770,6 @@
       {{ satellite_compute_resource_name }}
       is configured with the Amazon EC2 provider.
 
-###############################################################################
-# Validate compute-resource connection
-###############################################################################
-
-- name: PHASE 11 | Validate Satellite EC2 compute-resource connection
-  ansible.builtin.command:
-    argv:
-      - hammer
-      - compute-resource
-      - test-connection
-      - --id
-      - "{{ satellite_compute_resource_id }}"
-  register: satellite_compute_resource_connection_test
-  changed_when: false
-  when:
-    - satellite_compute_resource_validate_connection | bool
-  no_log: false
 
 ###############################################################################
 # Display configured compute resource

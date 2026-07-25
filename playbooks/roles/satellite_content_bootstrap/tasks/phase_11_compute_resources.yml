@@ -493,7 +493,7 @@
   changed_when: satellite_compute_resource_create_result.rc == 0
   when:
     - satellite_compute_resources | length == 0
-  no_log: true
+  no_log: false
 
 ###############################################################################
 # Validate existing compute-resource provider

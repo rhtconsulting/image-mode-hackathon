@@ -1,0 +1,52 @@
+---
+###############################################################################
+# PHASE 10 | Validate activation keys and display registration commands
+###############################################################################
+
+- name: PHASE 10 | Read activation key details
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - activation-key
+      - info
+      - --name
+      - "{{ item.activation_key }}"
+      - --organization-label
+      - "{{ satellite_organization_label }}"
+  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop_control:
+    label: "{{ item.activation_key }}"
+  register: satellite_content_bootstrap_activation_key_validation
+  changed_when: false
+  when: satellite_manage_activation_keys | bool
+
+- name: PHASE 10 | Verify activation key validation succeeded
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim | length > 0
+    fail_msg: >-
+      Activation key {{ item.item.activation_key }} could not be validated.
+  loop: "{{ satellite_content_bootstrap_activation_key_validation.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.activation_key }}"
+  when: satellite_manage_activation_keys | bool
+
+- name: PHASE 10 | Display registration commands
+  ansible.builtin.debug:
+    msg:
+      - "Satellite content bootstrap completed."
+      - >-
+        RHEL 9: subscription-manager register
+        --org={{ satellite_organization_label }}
+        --activationkey={{ satellite_rhel9_activation_key }}
+      - >-
+        RHEL 10: subscription-manager register
+        --org={{ satellite_organization_label }}
+        --activationkey={{ satellite_rhel10_activation_key }}
+      - >-
+        Install the current Katello CA consumer RPM from
+        https://{{ inventory_hostname }}/pub/katello-ca-consumer-latest.noarch.rpm
+        before registering each host.

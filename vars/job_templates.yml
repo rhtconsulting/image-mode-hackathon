@@ -88,7 +88,7 @@ controller_templates:
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
     inventory: "Image Mode Lab Infrastructure"
-    playbook: "playbooks/image_mode/create-satellite-hosts-on-aws.yml"
+    playbook: "playbooks/image_mode/create-satellite-host-on-aws.yml"
     execution_environment: "Image Mode EE"
 
     credentials:

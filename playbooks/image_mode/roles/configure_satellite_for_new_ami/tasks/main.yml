@@ -676,6 +676,7 @@
         Satellite compute resource:
         {{ configure_satellite_ami_compute_resource_name }}
 
+
 ###############################################################################
 # PHASE 6 | Resolve existing Satellite image
 ###############################################################################
@@ -691,8 +692,6 @@
       - list
       - --compute-resource-id
       - "{{ configure_satellite_ami_compute_resource_id }}"
-      - --organization-label
-      - "{{ configure_satellite_ami_organization_label }}"
       - --per-page
       - "1000"
   register: configure_satellite_ami_existing_image_lookup
@@ -706,7 +705,7 @@
         | from_json
       }}
 
-- name: PHASE 6 | Select existing Satellite image
+- name: PHASE 6 | Select existing Satellite image by exact name
   ansible.builtin.set_fact:
     configure_satellite_ami_existing_images: >-
       {{
@@ -727,10 +726,29 @@
       More than one Satellite image named
       {{ configure_satellite_ami_image_name }} exists under compute resource
       {{ configure_satellite_ami_compute_resource_name }}.
+      Matching images:
+      {{
+        configure_satellite_ami_existing_images
+        | map(attribute='Name')
+        | list
+      }}.
 
-###############################################################################
-# PHASE 7 | Create or update Satellite image
-###############################################################################
+- name: PHASE 6 | Display existing image lookup
+  ansible.builtin.debug:
+    msg:
+      - >-
+        Compute resource:
+        {{ configure_satellite_ami_compute_resource_name }}
+      - >-
+        Compute resource ID:
+        {{ configure_satellite_ami_compute_resource_id }}
+      - >-
+        Requested Satellite image:
+        {{ configure_satellite_ami_image_name }}
+      - >-
+        Existing matching images:
+        {{ configure_satellite_ami_existing_images | length }}
+
 
 ###############################################################################
 # PHASE 7 | Create or update Satellite image

@@ -593,62 +593,88 @@
         Satellite operating-system ID:
         {{ configure_satellite_ami_operating_system_id }}
 
+
 ###############################################################################
-# PHASE 5 | Verify AMI visibility
+# PHASE 5 | Validate AMI workflow artifact
 ###############################################################################
 
-- name: PHASE 5 | List AWS images visible to Satellite
-  ansible.builtin.command:
-    argv:
-      - hammer
-      - --output
-      - json
-      - compute-resource
-      - image
-      - available
-      - --compute-resource-id
-      - "{{ configure_satellite_ami_compute_resource_id }}"
-  register: configure_satellite_ami_available_images_lookup
-  changed_when: false
-
-- name: PHASE 5 | Parse AWS images visible to Satellite
-  ansible.builtin.set_fact:
-    configure_satellite_ami_available_images: >-
-      {{
-        configure_satellite_ami_available_images_lookup.stdout
-        | from_json
-      }}
-
-- name: PHASE 5 | Select requested AWS AMI
-  ansible.builtin.set_fact:
-    configure_satellite_ami_available_matches: >-
-      {{
-        configure_satellite_ami_available_images
-        | selectattr(
-            'Uuid',
-            'equalto',
-            configure_satellite_ami_id
-          )
-        | list
-      }}
-
-- name: PHASE 5 | Validate AMI visibility
+- name: PHASE 5 | Validate AMI information from build workflow
   ansible.builtin.assert:
     that:
-      - configure_satellite_ami_available_matches | length == 1
+      - configure_satellite_ami_id | string | length > 0
+      - configure_satellite_ami_id is match('^ami-[0-9a-fA-F]{8,17}$')
+      - >-
+        image_mode_ami_result.state
+        | default('available', true)
+        == 'available'
+      - >-
+        image_mode_ami_result.aws_region
+        | default(image_mode_ami_region | default('', true), true)
+        | length > 0
     fail_msg: >-
-      AMI {{ configure_satellite_ami_id }} is not visible through Satellite
-      compute resource {{ configure_satellite_ami_compute_resource_name }}.
-      Verify that the AMI exists in the compute resource AWS account and
-      region, has reached the available state, and that the Satellite AWS
-      identity has permission to describe the image.
+      The AMI build workflow did not supply a valid available AWS AMI.
+      AMI ID: {{ configure_satellite_ami_id | default('undefined', true) }}.
+      State:
+      {{
+        image_mode_ami_result.state
+        | default('undefined', true)
+      }}.
+      Region:
+      {{
+        image_mode_ami_result.aws_region
+        | default(
+            image_mode_ami_region
+            | default('undefined', true),
+            true
+          )
+      }}.
     success_msg: >-
-      AMI {{ configure_satellite_ami_id }} is visible through compute resource
+      AMI {{ configure_satellite_ami_id }} is available in AWS and will be
+      registered with Satellite compute resource
       {{ configure_satellite_ami_compute_resource_name }}.
 
-- name: PHASE 5 | Display matched AWS AMI
+- name: PHASE 5 | Display AMI registration inputs
   ansible.builtin.debug:
-    var: configure_satellite_ami_available_matches
+    msg:
+      - "AMI ID: {{ configure_satellite_ami_id }}"
+      - >-
+        AMI name:
+        {{
+          image_mode_ami_result.ami_name
+          | default(
+              image_mode_ami_name
+              | default(configure_satellite_ami_image_name, true),
+              true
+            )
+        }}
+      - >-
+        AMI state:
+        {{
+          image_mode_ami_result.state
+          | default('available', true)
+        }}
+      - >-
+        AMI region:
+        {{
+          image_mode_ami_result.aws_region
+          | default(
+              image_mode_ami_region
+              | default('unknown', true),
+              true
+            )
+        }}
+      - >-
+        AMI architecture:
+        {{
+          image_mode_ami_result.architecture
+          | default(configure_satellite_ami_architecture, true)
+        }}
+      - >-
+        Satellite image name:
+        {{ configure_satellite_ami_image_name }}
+      - >-
+        Satellite compute resource:
+        {{ configure_satellite_ami_compute_resource_name }}
 
 ###############################################################################
 # PHASE 6 | Resolve existing Satellite image
@@ -706,7 +732,11 @@
 # PHASE 7 | Create or update Satellite image
 ###############################################################################
 
-- name: PHASE 7 | Create Satellite image
+###############################################################################
+# PHASE 7 | Create or update Satellite image
+###############################################################################
+
+- name: PHASE 7 | Create Satellite image for AWS AMI
   ansible.builtin.command:
     argv:
       - hammer
@@ -733,8 +763,6 @@
         }}
       - --uuid
       - "{{ configure_satellite_ami_id }}"
-      - --organization-label
-      - "{{ configure_satellite_ami_organization_label }}"
   register: configure_satellite_ami_create_result
   changed_when: true
   when:

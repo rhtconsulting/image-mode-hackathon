@@ -119,7 +119,7 @@
       - organization
       - list
       - --per-page
-      - all
+      - "1000"
   register: configure_satellite_ami_organization_lookup
   changed_when: false
 

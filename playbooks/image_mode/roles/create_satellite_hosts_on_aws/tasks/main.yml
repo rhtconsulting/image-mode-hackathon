@@ -1,156 +1,30 @@
 ---
 ###############################################################################
-# Configure Satellite for a newly built AWS AMI
+# PHASE 0 | Discover builder and derive target RHEL release
 ###############################################################################
 
-###############################################################################
-# PHASE 0 | Resolve operating system from Image Builder
-###############################################################################
-
-###############################################################################
-# PHASE 0 | Resolve AMI workflow artifacts
-###############################################################################
-
-- name: PHASE 0 | Resolve AMI ID from workflow artifacts
+- name: PHASE 0 | Resolve matching Image Builder hosts
   ansible.builtin.set_fact:
-    configure_satellite_ami_resolved_id: >-
-      {{
-        configure_satellite_ami_id
-        | default('', true)
-        | trim
-        if (
-          configure_satellite_ami_id
-          | default('', true)
-          | trim
-          | length > 0
-        )
-        else (
-          image_mode_ami_id
-          | default('', true)
-          | trim
-          if (
-            image_mode_ami_id
-            | default('', true)
-            | trim
-            | length > 0
-          )
-          else (
-            image_mode_ami_result.ami_id
-            | default('', true)
-            | trim
-          )
-        )
-      }}
-
-- name: PHASE 0 | Resolve AMI architecture from workflow artifacts
-  ansible.builtin.set_fact:
-    configure_satellite_ami_resolved_architecture: >-
-      {{
-        configure_satellite_ami_architecture
-        | default('', true)
-        | trim
-        if (
-          configure_satellite_ami_architecture
-          | default('', true)
-          | trim
-          | length > 0
-        )
-        else (
-          image_mode_ami_result.architecture
-          | default('x86_64', true)
-          | trim
-        )
-      }}
-
-- name: PHASE 0 | Promote resolved AMI workflow values
-  ansible.builtin.set_fact:
-    configure_satellite_ami_id: >-
-      {{ configure_satellite_ami_resolved_id }}
-    configure_satellite_ami_architecture: >-
-      {{ configure_satellite_ami_resolved_architecture }}
-
-- name: PHASE 0 | Display received AMI workflow artifacts
-  ansible.builtin.debug:
-    msg:
-      configure_satellite_ami_id_input: >-
-        {{
-          configure_satellite_ami_id
-          | default('UNDEFINED', true)
-        }}
-      image_mode_ami_id: >-
-        {{
-          image_mode_ami_id
-          | default('UNDEFINED', true)
-        }}
-      image_mode_ami_result: >-
-        {{
-          image_mode_ami_result
-          | default('UNDEFINED', true)
-        }}
-      image_mode_ami_result_ami_id: >-
-        {{
-          image_mode_ami_result.ami_id
-          | default('UNDEFINED', true)
-        }}
-      resolved_ami_id: >-
-        {{
-          configure_satellite_ami_resolved_id
-          | default('UNDEFINED', true)
-        }}
-      resolved_architecture: >-
-        {{
-          configure_satellite_ami_resolved_architecture
-          | default('UNDEFINED', true)
-        }}
-
-- name: PHASE 0 | Validate received AMI workflow artifact
-  ansible.builtin.assert:
-    that:
-      - configure_satellite_ami_id | default('', true) | length > 0
-      - >-
-        configure_satellite_ami_id
-        is match('^ami-[0-9a-fA-F]{8,17}$')
-    fail_msg: >-
-      No valid AMI ID was received from the preceding workflow job. The role
-      checked configure_satellite_ami_id, image_mode_ami_id, and
-      image_mode_ami_result.ami_id. Resolved value:
-      {{ configure_satellite_ami_id | default('undefined', true) }}.
-
-- name: PHASE 0 | Resolve Image Builder inventory hosts
-  ansible.builtin.set_fact:
-    configure_satellite_ami_builder_hosts: >-
+    create_satellite_hosts_on_aws_builder_hosts: >-
       {{
         query(
           'inventory_hostnames',
-          configure_satellite_ami_builder_pattern
-          | default('image-builder*')
+          create_satellite_hosts_on_aws_builder_pattern
         )
       }}
 
-- name: PHASE 0 | Select first Image Builder host
-  ansible.builtin.set_fact:
-    configure_satellite_ami_selected_builder: >-
-      {{
-        configure_satellite_ami_builder_hosts
-        | first
-        | default('', true)
-      }}
-
-- name: PHASE 0 | Validate selected Image Builder host
+- name: PHASE 0 | Validate Image Builder host discovery
   ansible.builtin.assert:
     that:
-      - configure_satellite_ami_selected_builder | length > 0
-      - configure_satellite_ami_selected_builder in hostvars
+      - create_satellite_hosts_on_aws_builder_hosts | length > 0
     fail_msg: >-
-      No Image Builder host was found using inventory pattern
-      {{
-        configure_satellite_ami_builder_pattern
-        | default('image-builder*')
-      }}.
-      Matching hosts:
-      {{ configure_satellite_ami_builder_hosts }}.
-      Available inventory hosts:
-      {{ hostvars.keys() | list | sort }}.
+      No Image Builder hosts matched inventory pattern
+      {{ create_satellite_hosts_on_aws_builder_pattern }}.
+
+- name: PHASE 0 | Select first Image Builder host
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_selected_builder: >-
+      {{ create_satellite_hosts_on_aws_builder_hosts | first }}
 
 - name: PHASE 0 | Gather operating-system facts from Image Builder
   ansible.builtin.setup:
@@ -160,176 +34,162 @@
       - ansible_distribution
       - ansible_distribution_major_version
       - ansible_distribution_version
-  delegate_to: "{{ configure_satellite_ami_selected_builder }}"
+  delegate_to: "{{ create_satellite_hosts_on_aws_selected_builder }}"
   delegate_facts: true
 
-- name: PHASE 0 | Validate Image Builder operating-system facts
-  ansible.builtin.assert:
-    that:
-      - >-
-        hostvars[configure_satellite_ami_selected_builder]
-        ['ansible_distribution']
-        | default('')
-        == 'RedHat'
-      - >-
-        hostvars[configure_satellite_ami_selected_builder]
-        ['ansible_distribution_major_version']
-        | default('')
-        | string
-        | length > 0
-      - >-
-        hostvars[configure_satellite_ami_selected_builder]
-        ['ansible_distribution_version']
-        | default('')
-        | string
-        | length > 0
-    fail_msg: >-
-      Unable to determine the Red Hat Enterprise Linux version from Image
-      Builder host {{ configure_satellite_ami_selected_builder }}.
-      Distribution:
-      {{
-        hostvars[configure_satellite_ami_selected_builder]
-        ['ansible_distribution']
-        | default('undefined')
-      }}.
-      Major version:
-      {{
-        hostvars[configure_satellite_ami_selected_builder]
-        ['ansible_distribution_major_version']
-        | default('undefined')
-      }}.
-      Distribution version:
-      {{
-        hostvars[configure_satellite_ami_selected_builder]
-        ['ansible_distribution_version']
-        | default('undefined')
-      }}.
-
-- name: PHASE 0 | Calculate Image Builder RHEL version
+- name: PHASE 0 | Resolve builder RHEL version
   ansible.builtin.set_fact:
-    configure_satellite_ami_builder_rhel_major: >-
+    create_satellite_hosts_on_aws_rhel_major: >-
       {{
-        hostvars[configure_satellite_ami_selected_builder]
-        ['ansible_distribution_major_version']
+        hostvars[
+          create_satellite_hosts_on_aws_selected_builder
+        ].ansible_distribution_major_version
         | string
         | trim
       }}
-    configure_satellite_ami_builder_rhel_version: >-
+    create_satellite_hosts_on_aws_rhel_version: >-
       {{
-        hostvars[configure_satellite_ami_selected_builder]
-        ['ansible_distribution_version']
+        hostvars[
+          create_satellite_hosts_on_aws_selected_builder
+        ].ansible_distribution_version
         | string
         | trim
       }}
 
-- name: PHASE 0 | Calculate Satellite operating-system title
-  ansible.builtin.set_fact:
-    configure_satellite_ami_operating_system: >-
-      RedHat {{ configure_satellite_ami_builder_rhel_version }}
-
-- name: PHASE 0 | Display resolved Image Builder operating system
-  ansible.builtin.debug:
-    msg:
-      - >-
-        Image Builder inventory pattern:
-        {{
-          configure_satellite_ami_builder_pattern
-          | default('image-builder*')
-        }}
-      - >-
-        Matching Image Builder hosts:
-        {{ configure_satellite_ami_builder_hosts }}
-      - >-
-        Selected Image Builder:
-        {{ configure_satellite_ami_selected_builder }}
-      - >-
-        Detected distribution:
-        {{
-          hostvars[configure_satellite_ami_selected_builder]
-          ['ansible_distribution']
-        }}
-      - >-
-        Detected RHEL major version:
-        {{ configure_satellite_ami_builder_rhel_major }}
-      - >-
-        Detected RHEL version:
-        {{ configure_satellite_ami_builder_rhel_version }}
-      - >-
-        Satellite operating-system title:
-        {{ configure_satellite_ami_operating_system }}
-
-###############################################################################
-# PHASE 1 | Validate inputs and Satellite
-###############################################################################
-
-- name: PHASE 1 | Validate required AMI configuration
+- name: PHASE 0 | Validate supported builder operating system
   ansible.builtin.assert:
     that:
       - >-
-        configure_satellite_ami_compute_resource_name
-        | default('', true)
-        | trim
-        | length > 0
-      - >-
-        configure_satellite_ami_organization_label
-        | default('', true)
-        | trim
-        | length > 0
-      - >-
-        configure_satellite_ami_image_name
-        | default('', true)
-        | trim
-        | length > 0
-      - >-
-        configure_satellite_ami_username
-        | default('', true)
-        | trim
-        | length > 0
-      - >-
-        configure_satellite_ami_architecture
-        | default('', true)
-        | trim
-        | length > 0
-      - >-
-        configure_satellite_ami_operating_system
-        | default('', true)
-        | trim
-        | length > 0
-      - >-
-        configure_satellite_ami_id
-        is match('^ami-[0-9a-fA-F]{8,17}$')
+        hostvars[
+          create_satellite_hosts_on_aws_selected_builder
+        ].ansible_distribution == 'RedHat'
+      - create_satellite_hosts_on_aws_rhel_major in ['9', '10']
     fail_msg: >-
-      Satellite AMI configuration requires a compute-resource name,
-      organization label, image name, username, architecture, exact Satellite
-      operating-system title, and valid AWS AMI ID. Received AMI:
-      {{ configure_satellite_ami_id | default('undefined', true) }}.
-    success_msg: >-
-      Configuring Satellite image
-      {{ configure_satellite_ami_image_name }}
-      with AMI {{ configure_satellite_ami_id }}.
+      Image Builder {{ create_satellite_hosts_on_aws_selected_builder }}
+      must run RHEL 9 or RHEL 10.
 
-- name: PHASE 1 | Verify Hammer CLI
-  ansible.builtin.command:
-    argv:
-      - hammer
-      - --version
-  register: configure_satellite_ami_hammer_version
-  changed_when: false
+      Detected distribution:
+      {{
+        hostvars[
+          create_satellite_hosts_on_aws_selected_builder
+        ].ansible_distribution
+        | default('unknown')
+      }}
 
-- name: PHASE 1 | Verify Satellite services
-  ansible.builtin.command:
-    argv:
-      - satellite-maintain
-      - service
-      - status
-  register: configure_satellite_ami_service_status
-  changed_when: false
+      Detected version:
+      {{ create_satellite_hosts_on_aws_rhel_version }}
+
+- name: PHASE 0 | Select release-dependent Satellite content
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_content_view: >-
+      {{
+        create_satellite_hosts_on_aws_rhel9_content_view
+        if create_satellite_hosts_on_aws_rhel_major == '9'
+        else create_satellite_hosts_on_aws_rhel10_content_view
+      }}
+    create_satellite_hosts_on_aws_activation_key: >-
+      {{
+        create_satellite_hosts_on_aws_rhel9_activation_key
+        if create_satellite_hosts_on_aws_rhel_major == '9'
+        else create_satellite_hosts_on_aws_rhel10_activation_key
+      }}
+    create_satellite_hosts_on_aws_operating_system: >-
+      {{
+        create_satellite_hosts_on_aws_operating_system_prefix
+      }} {{ create_satellite_hosts_on_aws_rhel_version }}
 
 ###############################################################################
-# PHASE 2 | Resolve organization and compute resource
+# PHASE 1 | Resolve host domain and FQDN
 ###############################################################################
 
-- name: PHASE 2 | List Satellite organizations
+- name: PHASE 1 | Resolve Satellite server FQDN
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_satellite_fqdn: >-
+      {{
+        ansible_fqdn
+        | default(inventory_hostname, true)
+        | lower
+        | trim
+      }}
+
+- name: PHASE 1 | Derive domain from Satellite server FQDN
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_resolved_domain: >-
+      {{
+        create_satellite_hosts_on_aws_domain
+        | default('', true)
+        | trim
+        if (
+          create_satellite_hosts_on_aws_domain
+          | default('', true)
+          | trim
+          | length
+        ) > 0
+        else (
+          create_satellite_hosts_on_aws_satellite_fqdn
+          | regex_replace('^[^.]+\.', '')
+        )
+      }}
+
+- name: PHASE 1 | Resolve requested host FQDN
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_fqdn: >-
+      {{
+        create_satellite_hosts_on_aws_hostname
+        | lower
+        | trim
+      }}.{{ create_satellite_hosts_on_aws_resolved_domain }}
+
+- name: PHASE 1 | Resolve content source
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_resolved_content_source: >-
+      {{
+        create_satellite_hosts_on_aws_content_source
+        | default('', true)
+        | trim
+        if (
+          create_satellite_hosts_on_aws_content_source
+          | default('', true)
+          | trim
+          | length
+        ) > 0
+        else create_satellite_hosts_on_aws_satellite_fqdn
+      }}
+
+###############################################################################
+# PHASE 2 | Validate required variables
+###############################################################################
+
+- name: PHASE 2 | Validate role inputs
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_hostname | trim | length > 0
+      - create_satellite_hosts_on_aws_resolved_domain | trim | length > 0
+      - create_satellite_hosts_on_aws_organization | trim | length > 0
+      - create_satellite_hosts_on_aws_location | trim | length > 0
+      - create_satellite_hosts_on_aws_content_view | trim | length > 0
+      - >-
+        create_satellite_hosts_on_aws_lifecycle_environment
+        | trim
+        | length > 0
+      - create_satellite_hosts_on_aws_compute_resource | trim | length > 0
+      - create_satellite_hosts_on_aws_compute_image | trim | length > 0
+      - create_satellite_hosts_on_aws_flavor | trim | length > 0
+      - create_satellite_hosts_on_aws_availability_zone | trim | length > 0
+      - >-
+        create_satellite_hosts_on_aws_subnet_network
+        | trim
+        | length > 0
+      - create_satellite_hosts_on_aws_architecture | trim | length > 0
+    fail_msg: >-
+      One or more required create_satellite_hosts_on_aws role variables
+      are missing.
+
+###############################################################################
+# PHASE 3 | Resolve Satellite resources
+###############################################################################
+
+- name: PHASE 3 | List organizations
   ansible.builtin.command:
     argv:
       - hammer
@@ -337,36 +197,75 @@
       - json
       - organization
       - list
+      - --search
+      - "name=\"{{ create_satellite_hosts_on_aws_organization }}\""
       - --per-page
       - "1000"
-  register: configure_satellite_ami_organization_lookup
+  register: create_satellite_hosts_on_aws_organization_lookup
   changed_when: false
 
-- name: PHASE 2 | Select Satellite organization
+- name: PHASE 3 | Parse organization lookup
   ansible.builtin.set_fact:
-    configure_satellite_ami_organizations: >-
+    create_satellite_hosts_on_aws_organization_matches: >-
       {{
-        (
-          configure_satellite_ami_organization_lookup.stdout
-          | from_json
-        )
-        | selectattr(
-            'Label',
-            'equalto',
-            configure_satellite_ami_organization_label | trim
-          )
-        | list
+        create_satellite_hosts_on_aws_organization_lookup.stdout
+        | from_json
       }}
 
-- name: PHASE 2 | Validate Satellite organization
+- name: PHASE 3 | Validate organization lookup
   ansible.builtin.assert:
     that:
-      - configure_satellite_ami_organizations | length == 1
+      - create_satellite_hosts_on_aws_organization_matches | length == 1
     fail_msg: >-
-      Unable to uniquely resolve Satellite organization label
-      {{ configure_satellite_ami_organization_label }}.
+      Unable to uniquely resolve Satellite organization
+      {{ create_satellite_hosts_on_aws_organization }}.
 
-- name: PHASE 2 | List Satellite compute resources
+- name: PHASE 3 | Set organization ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_organization_id: >-
+      {{
+        create_satellite_hosts_on_aws_organization_matches[0]['Id']
+      }}
+
+- name: PHASE 3 | List locations
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - location
+      - list
+      - --search
+      - "name=\"{{ create_satellite_hosts_on_aws_location }}\""
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_location_lookup
+  changed_when: false
+
+- name: PHASE 3 | Parse location lookup
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_location_matches: >-
+      {{
+        create_satellite_hosts_on_aws_location_lookup.stdout
+        | from_json
+      }}
+
+- name: PHASE 3 | Validate location lookup
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_location_matches | length == 1
+    fail_msg: >-
+      Unable to uniquely resolve Satellite location
+      {{ create_satellite_hosts_on_aws_location }}.
+
+- name: PHASE 3 | Set location ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_location_id: >-
+      {{
+        create_satellite_hosts_on_aws_location_matches[0]['Id']
+      }}
+
+- name: PHASE 3 | List compute resources
   ansible.builtin.command:
     argv:
       - hammer
@@ -374,58 +273,134 @@
       - json
       - compute-resource
       - list
+      - --search
+      - "name=\"{{ create_satellite_hosts_on_aws_compute_resource }}\""
       - --per-page
       - "1000"
-  register: configure_satellite_ami_compute_resource_lookup
+  register: create_satellite_hosts_on_aws_compute_resource_lookup
   changed_when: false
 
-- name: PHASE 2 | Parse Satellite compute resources
+- name: PHASE 3 | Parse compute-resource lookup
   ansible.builtin.set_fact:
-    configure_satellite_ami_all_compute_resources: >-
+    create_satellite_hosts_on_aws_compute_resource_matches: >-
       {{
-        configure_satellite_ami_compute_resource_lookup.stdout
+        create_satellite_hosts_on_aws_compute_resource_lookup.stdout
         | from_json
       }}
 
-- name: PHASE 2 | Select AWS compute resource
+- name: PHASE 3 | Validate compute-resource lookup
+  ansible.builtin.assert:
+    that:
+      - >-
+        create_satellite_hosts_on_aws_compute_resource_matches
+        | length == 1
+    fail_msg: >-
+      Unable to uniquely resolve Satellite compute resource
+      {{ create_satellite_hosts_on_aws_compute_resource }}.
+
+- name: PHASE 3 | Set compute-resource ID
   ansible.builtin.set_fact:
-    configure_satellite_ami_compute_resources: >-
+    create_satellite_hosts_on_aws_compute_resource_id: >-
       {{
-        configure_satellite_ami_all_compute_resources
+        create_satellite_hosts_on_aws_compute_resource_matches[0]['Id']
+      }}
+
+###############################################################################
+# PHASE 4 | Resolve domain, subnet, architecture, OS and image
+###############################################################################
+
+- name: PHASE 4 | List matching Satellite domains
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - domain
+      - list
+      - --search
+      - "name=\"{{ create_satellite_hosts_on_aws_resolved_domain }}\""
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_domain_lookup
+  changed_when: false
+
+- name: PHASE 4 | Parse domain lookup
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_domain_matches: >-
+      {{
+        create_satellite_hosts_on_aws_domain_lookup.stdout
+        | from_json
+      }}
+
+- name: PHASE 4 | Validate domain lookup
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_domain_matches | length == 1
+    fail_msg: >-
+      Unable to uniquely resolve Satellite domain
+      {{ create_satellite_hosts_on_aws_resolved_domain }}.
+
+- name: PHASE 4 | Set domain ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_domain_id: >-
+      {{ create_satellite_hosts_on_aws_domain_matches[0]['Id'] }}
+
+- name: PHASE 4 | List matching Satellite subnets
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - subnet
+      - list
+      - --organization-id
+      - "{{ create_satellite_hosts_on_aws_organization_id }}"
+      - --location-id
+      - "{{ create_satellite_hosts_on_aws_location_id }}"
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_subnet_lookup
+  changed_when: false
+
+- name: PHASE 4 | Parse matching subnet
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_subnet_matches: >-
+      {{
+        create_satellite_hosts_on_aws_subnet_lookup.stdout
+        | from_json
         | selectattr(
-            'Name',
+            'Network',
+            'defined'
+          )
+        | selectattr(
+            'Network',
             'equalto',
-            configure_satellite_ami_compute_resource_name | trim
+            create_satellite_hosts_on_aws_subnet_network
+            | regex_replace('/.*$', '')
           )
         | list
       }}
 
-- name: PHASE 2 | Validate AWS compute resource
+- name: PHASE 4 | Validate subnet lookup
   ansible.builtin.assert:
     that:
-      - configure_satellite_ami_compute_resources | length == 1
+      - create_satellite_hosts_on_aws_subnet_matches | length == 1
     fail_msg: >-
-      Unable to uniquely resolve Satellite compute resource
-      {{ configure_satellite_ami_compute_resource_name }}.
-      Available compute resources:
-      {{
-        configure_satellite_ami_all_compute_resources
-        | map(attribute='Name')
-        | list
-      }}.
+      Unable to uniquely resolve Satellite subnet for network
+      {{ create_satellite_hosts_on_aws_subnet_network }}.
 
-- name: PHASE 2 | Set compute-resource ID
-  ansible.builtin.set_fact:
-    configure_satellite_ami_compute_resource_id: >-
+      Available subnets:
       {{
-        configure_satellite_ami_compute_resources[0]['Id']
+        create_satellite_hosts_on_aws_subnet_lookup.stdout
+        | from_json
       }}
 
-###############################################################################
-# PHASE 3 | Resolve architecture
-###############################################################################
+- name: PHASE 4 | Set subnet ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_subnet_id: >-
+      {{ create_satellite_hosts_on_aws_subnet_matches[0]['Id'] }}
 
-- name: PHASE 3 | List Satellite architectures
+- name: PHASE 4 | Resolve architecture
   ansible.builtin.command:
     argv:
       - hammer
@@ -433,58 +408,35 @@
       - json
       - architecture
       - list
+      - --search
+      - "name=\"{{ create_satellite_hosts_on_aws_architecture }}\""
       - --per-page
       - "1000"
-  register: configure_satellite_ami_architecture_lookup
+  register: create_satellite_hosts_on_aws_architecture_lookup
   changed_when: false
 
-- name: PHASE 3 | Parse Satellite architectures
+- name: PHASE 4 | Parse architecture lookup
   ansible.builtin.set_fact:
-    configure_satellite_ami_all_architectures: >-
+    create_satellite_hosts_on_aws_architecture_matches: >-
       {{
-        configure_satellite_ami_architecture_lookup.stdout
+        create_satellite_hosts_on_aws_architecture_lookup.stdout
         | from_json
       }}
 
-- name: PHASE 3 | Select Satellite architecture
-  ansible.builtin.set_fact:
-    configure_satellite_ami_architectures: >-
-      {{
-        configure_satellite_ami_all_architectures
-        | selectattr(
-            'Name',
-            'equalto',
-            configure_satellite_ami_architecture | trim
-          )
-        | list
-      }}
-
-- name: PHASE 3 | Validate Satellite architecture
+- name: PHASE 4 | Validate architecture lookup
   ansible.builtin.assert:
     that:
-      - configure_satellite_ami_architectures | length == 1
+      - create_satellite_hosts_on_aws_architecture_matches | length == 1
     fail_msg: >-
       Unable to uniquely resolve Satellite architecture
-      {{ configure_satellite_ami_architecture }}.
-      Available architectures:
-      {{
-        configure_satellite_ami_all_architectures
-        | map(attribute='Name')
-        | list
-      }}.
+      {{ create_satellite_hosts_on_aws_architecture }}.
 
-- name: PHASE 3 | Set architecture ID
+- name: PHASE 4 | Set architecture ID
   ansible.builtin.set_fact:
-    configure_satellite_ami_architecture_id: >-
-      {{
-        configure_satellite_ami_architectures[0]['Id']
-      }}
+    create_satellite_hosts_on_aws_architecture_id: >-
+      {{ create_satellite_hosts_on_aws_architecture_matches[0]['Id'] }}
 
-###############################################################################
-# PHASE 4 | Resolve Satellite operating system
-###############################################################################
-
-- name: PHASE 4 | List Satellite operating systems
+- name: PHASE 4 | Resolve operating system
   ansible.builtin.command:
     argv:
       - hammer
@@ -492,196 +444,35 @@
       - json
       - os
       - list
+      - --search
+      - "title=\"{{ create_satellite_hosts_on_aws_operating_system }}\""
       - --per-page
       - "1000"
-  register: configure_satellite_ami_operating_system_lookup
+  register: create_satellite_hosts_on_aws_os_lookup
   changed_when: false
 
-- name: PHASE 4 | Parse Satellite operating systems
+- name: PHASE 4 | Parse operating-system lookup
   ansible.builtin.set_fact:
-    configure_satellite_ami_all_operating_systems: >-
+    create_satellite_hosts_on_aws_os_matches: >-
       {{
-        configure_satellite_ami_operating_system_lookup.stdout
+        create_satellite_hosts_on_aws_os_lookup.stdout
         | from_json
       }}
 
-- name: PHASE 4 | Build acceptable operating-system titles
-  ansible.builtin.set_fact:
-    configure_satellite_ami_expected_operating_system_titles:
-      - "RHEL {{ configure_satellite_ami_builder_rhel_version }}"
-      - "RedHat {{ configure_satellite_ami_builder_rhel_version }}"
-      - "Red Hat Enterprise Linux {{ configure_satellite_ami_builder_rhel_version }}"
-      - "RHEL {{ configure_satellite_ami_builder_rhel_major }}"
-      - "RedHat {{ configure_satellite_ami_builder_rhel_major }}"
-      - "Red Hat Enterprise Linux {{ configure_satellite_ami_builder_rhel_major }}"
-
-- name: PHASE 4 | Select exact minor-version operating system
-  ansible.builtin.set_fact:
-    configure_satellite_ami_matching_operating_systems: >-
-      {{
-        configure_satellite_ami_all_operating_systems
-        | selectattr(
-            'Title',
-            'in',
-            [
-              'RHEL ' ~ configure_satellite_ami_builder_rhel_version,
-              'RedHat ' ~ configure_satellite_ami_builder_rhel_version,
-              'Red Hat Enterprise Linux '
-              ~ configure_satellite_ami_builder_rhel_version
-            ]
-          )
-        | list
-      }}
-
-- name: PHASE 4 | Fall back to major-version operating system
-  ansible.builtin.set_fact:
-    configure_satellite_ami_matching_operating_systems: >-
-      {{
-        configure_satellite_ami_all_operating_systems
-        | selectattr(
-            'Title',
-            'in',
-            [
-              'RHEL ' ~ configure_satellite_ami_builder_rhel_major,
-              'RedHat ' ~ configure_satellite_ami_builder_rhel_major,
-              'Red Hat Enterprise Linux '
-              ~ configure_satellite_ami_builder_rhel_major
-            ]
-          )
-        | list
-      }}
-  when:
-    - configure_satellite_ami_matching_operating_systems | length == 0
-
-- name: PHASE 4 | Validate Satellite operating system
+- name: PHASE 4 | Validate operating-system lookup
   ansible.builtin.assert:
     that:
-      - configure_satellite_ami_matching_operating_systems | length == 1
+      - create_satellite_hosts_on_aws_os_matches | length == 1
     fail_msg: >-
-      Unable to uniquely resolve a Satellite operating system for Image
-      Builder {{ configure_satellite_ami_selected_builder }}.
-      Expected one of:
-      {{ configure_satellite_ami_expected_operating_system_titles }}.
-      Available operating systems:
-      {{
-        configure_satellite_ami_all_operating_systems
-        | map(attribute='Title')
-        | list
-      }}.
+      Unable to uniquely resolve Satellite operating system
+      {{ create_satellite_hosts_on_aws_operating_system }}.
 
-- name: PHASE 4 | Set resolved operating-system facts
+- name: PHASE 4 | Set operating-system ID
   ansible.builtin.set_fact:
-    configure_satellite_ami_operating_system_id: >-
-      {{
-        configure_satellite_ami_matching_operating_systems[0]['Id']
-      }}
-    configure_satellite_ami_operating_system_title: >-
-      {{
-        configure_satellite_ami_matching_operating_systems[0]['Title']
-      }}
+    create_satellite_hosts_on_aws_operating_system_id: >-
+      {{ create_satellite_hosts_on_aws_os_matches[0]['Id'] }}
 
-- name: PHASE 4 | Display resolved Satellite operating system
-  ansible.builtin.debug:
-    msg:
-      - >-
-        Builder RHEL version:
-        {{ configure_satellite_ami_builder_rhel_version }}
-      - >-
-        Satellite operating-system title:
-        {{ configure_satellite_ami_operating_system_title }}
-      - >-
-        Satellite operating-system ID:
-        {{ configure_satellite_ami_operating_system_id }}
-
-
-###############################################################################
-# PHASE 5 | Validate AMI workflow artifact
-###############################################################################
-
-- name: PHASE 5 | Validate AMI information from build workflow
-  ansible.builtin.assert:
-    that:
-      - configure_satellite_ami_id | string | length > 0
-      - configure_satellite_ami_id is match('^ami-[0-9a-fA-F]{8,17}$')
-      - >-
-        image_mode_ami_result.state
-        | default('available', true)
-        == 'available'
-      - >-
-        image_mode_ami_result.aws_region
-        | default(image_mode_ami_region | default('', true), true)
-        | length > 0
-    fail_msg: >-
-      The AMI build workflow did not supply a valid available AWS AMI.
-      AMI ID: {{ configure_satellite_ami_id | default('undefined', true) }}.
-      State:
-      {{
-        image_mode_ami_result.state
-        | default('undefined', true)
-      }}.
-      Region:
-      {{
-        image_mode_ami_result.aws_region
-        | default(
-            image_mode_ami_region
-            | default('undefined', true),
-            true
-          )
-      }}.
-    success_msg: >-
-      AMI {{ configure_satellite_ami_id }} is available in AWS and will be
-      registered with Satellite compute resource
-      {{ configure_satellite_ami_compute_resource_name }}.
-
-- name: PHASE 5 | Display AMI registration inputs
-  ansible.builtin.debug:
-    msg:
-      - "AMI ID: {{ configure_satellite_ami_id }}"
-      - >-
-        AMI name:
-        {{
-          image_mode_ami_result.ami_name
-          | default(
-              image_mode_ami_name
-              | default(configure_satellite_ami_image_name, true),
-              true
-            )
-        }}
-      - >-
-        AMI state:
-        {{
-          image_mode_ami_result.state
-          | default('available', true)
-        }}
-      - >-
-        AMI region:
-        {{
-          image_mode_ami_result.aws_region
-          | default(
-              image_mode_ami_region
-              | default('unknown', true),
-              true
-            )
-        }}
-      - >-
-        AMI architecture:
-        {{
-          image_mode_ami_result.architecture
-          | default(configure_satellite_ami_architecture, true)
-        }}
-      - >-
-        Satellite image name:
-        {{ configure_satellite_ami_image_name }}
-      - >-
-        Satellite compute resource:
-        {{ configure_satellite_ami_compute_resource_name }}
-
-
-###############################################################################
-# PHASE 6 | Resolve existing Satellite image
-###############################################################################
-
-- name: PHASE 6 | List Satellite compute-resource images
+- name: PHASE 4 | List compute-resource images
   ansible.builtin.command:
     argv:
       - hammer
@@ -691,339 +482,286 @@
       - image
       - list
       - --compute-resource-id
-      - "{{ configure_satellite_ami_compute_resource_id }}"
+      - "{{ create_satellite_hosts_on_aws_compute_resource_id }}"
       - --per-page
       - "1000"
-  register: configure_satellite_ami_existing_image_lookup
+  register: create_satellite_hosts_on_aws_image_lookup
   changed_when: false
 
-- name: PHASE 6 | Parse Satellite compute-resource images
+- name: PHASE 4 | Select compute-resource image
   ansible.builtin.set_fact:
-    configure_satellite_ami_all_existing_images: >-
+    create_satellite_hosts_on_aws_image_matches: >-
       {{
-        configure_satellite_ami_existing_image_lookup.stdout
+        create_satellite_hosts_on_aws_image_lookup.stdout
         | from_json
-      }}
-
-- name: PHASE 6 | Select existing Satellite image by exact name
-  ansible.builtin.set_fact:
-    configure_satellite_ami_existing_images: >-
-      {{
-        configure_satellite_ami_all_existing_images
         | selectattr(
             'Name',
             'equalto',
-            configure_satellite_ami_image_name | trim
+            create_satellite_hosts_on_aws_compute_image
           )
         | list
       }}
 
-- name: PHASE 6 | Validate existing image uniqueness
+- name: PHASE 4 | Validate compute-resource image
   ansible.builtin.assert:
     that:
-      - configure_satellite_ami_existing_images | length <= 1
+      - create_satellite_hosts_on_aws_image_matches | length == 1
     fail_msg: >-
-      More than one Satellite image named
-      {{ configure_satellite_ami_image_name }} exists under compute resource
-      {{ configure_satellite_ami_compute_resource_name }}.
-      Matching images:
-      {{
-        configure_satellite_ami_existing_images
-        | map(attribute='Name')
-        | list
-      }}.
+      Unable to uniquely resolve image
+      {{ create_satellite_hosts_on_aws_compute_image }}
+      under compute resource
+      {{ create_satellite_hosts_on_aws_compute_resource }}.
 
-- name: PHASE 6 | Display existing image lookup
+- name: PHASE 4 | Set compute-resource image ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_image_id: >-
+      {{ create_satellite_hosts_on_aws_image_matches[0]['Id'] }}
+
+###############################################################################
+# PHASE 5 | Resolve security groups and existing host
+###############################################################################
+
+- name: PHASE 5 | Build effective security-group list
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_effective_security_groups: >-
+      {{
+        (
+          [create_satellite_hosts_on_aws_security_group]
+          if (
+            create_satellite_hosts_on_aws_security_group
+            | default('', true)
+            | trim
+            | length > 0
+          )
+          else []
+        )
+        +
+        (
+          create_satellite_hosts_on_aws_security_groups
+          | default([])
+        )
+        | unique
+        | list
+      }}
+
+- name: PHASE 5 | Validate security-group list
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_effective_security_groups | length > 0
+      - >-
+        create_satellite_hosts_on_aws_effective_security_groups
+        | reject('match', '^sg-[0-9a-fA-F]+$')
+        | list
+        | length == 0
+    fail_msg: >-
+      At least one valid AWS security group ID must be supplied through
+      create_satellite_hosts_on_aws_security_group or
+      create_satellite_hosts_on_aws_security_groups.
+
+- name: PHASE 5 | Find existing Satellite host
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - host
+      - list
+      - --search
+      - "name=\"{{ create_satellite_hosts_on_aws_fqdn }}\""
+      - --organization-id
+      - "{{ create_satellite_hosts_on_aws_organization_id }}"
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_existing_host_lookup
+  changed_when: false
+
+- name: PHASE 5 | Parse existing Satellite host
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_existing_hosts: >-
+      {{
+        create_satellite_hosts_on_aws_existing_host_lookup.stdout
+        | from_json
+      }}
+
+- name: PHASE 5 | Validate existing host uniqueness
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_existing_hosts | length <= 1
+    fail_msg: >-
+      More than one Satellite host matched
+      {{ create_satellite_hosts_on_aws_fqdn }}.
+
+###############################################################################
+# PHASE 6 | Generate root password for a new host
+###############################################################################
+
+- name: PHASE 6 | Generate random root password
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_root_password: >-
+      {{
+        lookup(
+          'ansible.builtin.password',
+          '/dev/null',
+          length=create_satellite_hosts_on_aws_root_password_length,
+          chars=['ascii_letters', 'digits']
+        )
+      }}
+  no_log: true
+  when:
+    - create_satellite_hosts_on_aws_existing_hosts | length == 0
+
+###############################################################################
+# PHASE 7 | Create AWS host through Satellite
+###############################################################################
+
+- name: PHASE 7 | Create Satellite-managed AWS host
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - host
+      - create
+
+      - --name
+      - "{{ create_satellite_hosts_on_aws_hostname }}"
+
+      - --organization-id
+      - "{{ create_satellite_hosts_on_aws_organization_id }}"
+
+      - --location-id
+      - "{{ create_satellite_hosts_on_aws_location_id }}"
+
+      - --domain-id
+      - "{{ create_satellite_hosts_on_aws_domain_id }}"
+
+      - --subnet-id
+      - "{{ create_satellite_hosts_on_aws_subnet_id }}"
+
+      - --architecture-id
+      - "{{ create_satellite_hosts_on_aws_architecture_id }}"
+
+      - --operatingsystem-id
+      - "{{ create_satellite_hosts_on_aws_operating_system_id }}"
+
+      - --compute-resource-id
+      - "{{ create_satellite_hosts_on_aws_compute_resource_id }}"
+
+      - --compute-profile
+      - "1-Small"
+
+      - --image-id
+      - "{{ create_satellite_hosts_on_aws_image_id }}"
+
+      - --content-source
+      - "{{ create_satellite_hosts_on_aws_resolved_content_source }}"
+
+      - --content-view
+      - "{{ create_satellite_hosts_on_aws_content_view }}"
+
+      - --lifecycle-environment
+      - "{{ create_satellite_hosts_on_aws_lifecycle_environment }}"
+
+      - --activation-keys
+      - "{{ create_satellite_hosts_on_aws_activation_key }}"
+
+      - --root-password
+      - "{{ create_satellite_hosts_on_aws_root_password }}"
+
+      - --managed
+      - "{{ create_satellite_hosts_on_aws_managed | bool | ternary('true', 'false') }}"
+
+      - --build
+      - "{{ create_satellite_hosts_on_aws_build | bool | ternary('true', 'false') }}"
+
+      - --enabled
+      - "{{ create_satellite_hosts_on_aws_enabled | bool | ternary('true', 'false') }}"
+
+      - --provision-method
+      - "{{ create_satellite_hosts_on_aws_provision_method }}"
+
+      - --interface
+      - >-
+        primary={{ create_satellite_hosts_on_aws_interface_primary | bool | ternary('true', 'false') }},
+        provision={{ create_satellite_hosts_on_aws_interface_provision | bool | ternary('true', 'false') }},
+        managed={{ create_satellite_hosts_on_aws_interface_managed | bool | ternary('true', 'false') }},
+        domain_id={{ create_satellite_hosts_on_aws_domain_id }},
+        subnet_id={{ create_satellite_hosts_on_aws_subnet_id }}
+
+      - --compute-attributes
+      - >-
+        flavor_id={{ create_satellite_hosts_on_aws_flavor }},
+        availability_zone={{ create_satellite_hosts_on_aws_availability_zone }},
+        security_group_ids={{ create_satellite_hosts_on_aws_effective_security_groups | join(';') }}
+  register: create_satellite_hosts_on_aws_create_result
+  changed_when: true
+  no_log: true
+  when:
+    - create_satellite_hosts_on_aws_existing_hosts | length == 0
+
+- name: PHASE 7 | Reject an existing host when updates are disabled
+  ansible.builtin.assert:
+    that:
+      - >-
+        create_satellite_hosts_on_aws_existing_hosts | length == 0
+        or create_satellite_hosts_on_aws_update_existing | bool
+    fail_msg: >-
+      Satellite host {{ create_satellite_hosts_on_aws_fqdn }} already exists.
+      Set create_satellite_hosts_on_aws_update_existing=true to permit an
+      update workflow.
+  when:
+    - create_satellite_hosts_on_aws_existing_hosts | length == 1
+
+###############################################################################
+# PHASE 8 | Verify resulting host
+###############################################################################
+
+- name: PHASE 8 | Read resulting Satellite host
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - host
+      - info
+      - --name
+      - "{{ create_satellite_hosts_on_aws_fqdn }}"
+      - --organization-id
+      - "{{ create_satellite_hosts_on_aws_organization_id }}"
+  register: create_satellite_hosts_on_aws_final_host
+  changed_when: false
+
+- name: PHASE 8 | Display resulting Satellite host
   ansible.builtin.debug:
     msg:
+      - >-
+        Host:
+        {{ create_satellite_hosts_on_aws_fqdn }}
+      - >-
+        Builder:
+        {{ create_satellite_hosts_on_aws_selected_builder }}
+      - >-
+        Builder OS:
+        RHEL {{ create_satellite_hosts_on_aws_rhel_version }}
+      - >-
+        Content view:
+        {{ create_satellite_hosts_on_aws_content_view }}
+      - >-
+        Lifecycle environment:
+        {{ create_satellite_hosts_on_aws_lifecycle_environment }}
       - >-
         Compute resource:
-        {{ configure_satellite_ami_compute_resource_name }}
+        {{ create_satellite_hosts_on_aws_compute_resource }}
       - >-
-        Compute resource ID:
-        {{ configure_satellite_ami_compute_resource_id }}
+        Compute image:
+        {{ create_satellite_hosts_on_aws_compute_image }}
       - >-
-        Requested Satellite image:
-        {{ configure_satellite_ami_image_name }}
+        AWS flavor:
+        {{ create_satellite_hosts_on_aws_flavor }}
       - >-
-        Existing matching images:
-        {{ configure_satellite_ami_existing_images | length }}
-
-
-###############################################################################
-# PHASE 7 | Create or update Satellite image
-###############################################################################
-
-- name: PHASE 7 | Create Satellite image for AWS AMI
-  ansible.builtin.command:
-    argv:
-      - hammer
-      - compute-resource
-      - image
-      - create
-      - --compute-resource-id
-      - "{{ configure_satellite_ami_compute_resource_id }}"
-      - --name
-      - "{{ configure_satellite_ami_image_name }}"
-      - --operatingsystem-id
-      - "{{ configure_satellite_ami_operating_system_id }}"
-      - --architecture-id
-      - "{{ configure_satellite_ami_architecture_id }}"
-      - --username
-      - "{{ configure_satellite_ami_username }}"
-      - --user-data
+        Availability zone:
+        {{ create_satellite_hosts_on_aws_availability_zone }}
       - >-
-        {{
-          configure_satellite_ami_user_data
-          | default(false)
-          | bool
-          | ternary('true', 'false')
-        }}
-      - --uuid
-      - "{{ configure_satellite_ami_id }}"
-  register: configure_satellite_ami_create_result
-  changed_when: true
-  when:
-    - configure_satellite_ami_existing_images | length == 0
-
-- name: PHASE 7 | Read existing Satellite image
-  ansible.builtin.command:
-    argv:
-      - hammer
-      - --output
-      - json
-      - compute-resource
-      - image
-      - info
-      - --id
-      - "{{ configure_satellite_ami_existing_images[0]['Id'] }}"
-      - --compute-resource-id
-      - "{{ configure_satellite_ami_compute_resource_id }}"
-  register: configure_satellite_ami_existing_image_info
-  changed_when: false
-  when:
-    - configure_satellite_ami_existing_images | length == 1
-
-- name: PHASE 7 | Parse existing Satellite image details
-  ansible.builtin.set_fact:
-    configure_satellite_ami_existing_image_details: >-
-      {{
-        configure_satellite_ami_existing_image_info.stdout
-        | from_json
-      }}
-  when:
-    - configure_satellite_ami_existing_images | length == 1
-
-- name: PHASE 7 | Parse existing Satellite image
-  ansible.builtin.set_fact:
-    configure_satellite_ami_existing_image_details: >-
-      {{
-        configure_satellite_ami_existing_image_info.stdout
-        | from_json
-      }}
-  when:
-    - configure_satellite_ami_existing_images | length == 1
-
-- name: PHASE 7 | Determine whether image update is required
-  ansible.builtin.set_fact:
-    configure_satellite_ami_update_required: >-
-      {{
-        (
-          configure_satellite_ami_existing_image_details['Uuid']
-          | default('')
-        )
-        != configure_satellite_ami_id
-        or
-        (
-          configure_satellite_ami_existing_image_details['Username']
-          | default('')
-        )
-        != configure_satellite_ami_username
-        or
-        (
-          configure_satellite_ami_existing_image_details['Architecture']
-          | default('')
-        )
-        != configure_satellite_ami_architecture
-        or
-        (
-          configure_satellite_ami_existing_image_details['Operating system']
-          | default('')
-        )
-        != configure_satellite_ami_operating_system_title
-      }}
-  when:
-    - configure_satellite_ami_existing_images | length == 1
-
-- name: PHASE 7 | Validate existing-image update permission
-  ansible.builtin.assert:
-    that:
-      - configure_satellite_ami_update_existing | default(true) | bool
-    fail_msg: >-
-      Satellite image {{ configure_satellite_ami_image_name }} exists but does
-      not match AMI {{ configure_satellite_ami_id }}. Set
-      configure_satellite_ami_update_existing=true to update it.
-  when:
-    - configure_satellite_ami_existing_images | length == 1
-    - configure_satellite_ami_update_required | bool
-
-- name: PHASE 7 | Update Satellite image
-  ansible.builtin.command:
-    argv:
-      - hammer
-      - compute-resource
-      - image
-      - update
-      - --id
-      - "{{ configure_satellite_ami_existing_images[0]['Id'] }}"
-      - --compute-resource-id
-      - "{{ configure_satellite_ami_compute_resource_id }}"
-      - --name
-      - "{{ configure_satellite_ami_image_name }}"
-      - --operatingsystem-id
-      - "{{ configure_satellite_ami_operating_system_id }}"
-      - --architecture-id
-      - "{{ configure_satellite_ami_architecture_id }}"
-      - --username
-      - "{{ configure_satellite_ami_username }}"
-      - --user-data
+        Subnet:
+        {{ create_satellite_hosts_on_aws_subnet_network }}
       - >-
-        {{
-          configure_satellite_ami_user_data
-          | default(true)
-          | bool
-          | ternary('true', 'false')
-        }}
-      - --uuid
-      - "{{ configure_satellite_ami_id }}"
-  register: configure_satellite_ami_update_result
-  changed_when: true
-  when:
-    - configure_satellite_ami_existing_images | length == 1
-    - configure_satellite_ami_update_existing | bool
-
-###############################################################################
-# PHASE 8 | Verify resulting Satellite image
-###############################################################################
-
-- name: PHASE 8 | List final Satellite images
-  ansible.builtin.command:
-    argv:
-      - hammer
-      - --output
-      - json
-      - compute-resource
-      - image
-      - list
-      - --compute-resource-id
-      - "{{ configure_satellite_ami_compute_resource_id }}"
-      - --per-page
-      - "1000"
-  register: configure_satellite_ami_final_lookup
-  changed_when: false
-
-- name: PHASE 8 | Parse final Satellite image list
-  ansible.builtin.set_fact:
-    configure_satellite_ami_all_final_images: >-
-      {{
-        configure_satellite_ami_final_lookup.stdout
-        | from_json
-      }}
-
-- name: PHASE 8 | Select final Satellite image by name
-  ansible.builtin.set_fact:
-    configure_satellite_ami_final_images: >-
-      {{
-        configure_satellite_ami_all_final_images
-        | selectattr(
-            'Name',
-            'equalto',
-            configure_satellite_ami_image_name | trim
-          )
-        | list
-      }}
-
-- name: PHASE 8 | Validate final Satellite image lookup
-  ansible.builtin.assert:
-    that:
-      - configure_satellite_ami_final_images | length == 1
-      - configure_satellite_ami_final_images[0]['Id'] is defined
-    fail_msg: >-
-      Unable to uniquely locate Satellite image
-      {{ configure_satellite_ami_image_name }} under compute resource
-      {{ configure_satellite_ami_compute_resource_name }}.
-      Matching images:
-      {{ configure_satellite_ami_final_images }}.
-
-- name: PHASE 8 | Read final Satellite image details
-  ansible.builtin.command:
-    argv:
-      - hammer
-      - --output
-      - json
-      - compute-resource
-      - image
-      - info
-      - --id
-      - "{{ configure_satellite_ami_final_images[0]['Id'] }}"
-      - --compute-resource-id
-      - "{{ configure_satellite_ami_compute_resource_id }}"
-  register: configure_satellite_ami_final_info
-  changed_when: false
-
-- name: PHASE 8 | Parse final Satellite image details
-  ansible.builtin.set_fact:
-    configure_satellite_ami_final_image: >-
-      {{
-        configure_satellite_ami_final_info.stdout
-        | from_json
-      }}
-
-- name: PHASE 8 | Resolve final image UUID
-  ansible.builtin.set_fact:
-    configure_satellite_ami_final_uuid: >-
-      {{
-        configure_satellite_ami_final_image['Uuid']
-        | default(
-            configure_satellite_ami_final_image['UUID']
-            | default(
-                configure_satellite_ami_final_image['uuid']
-                | default('', true),
-                true
-              ),
-            true
-          )
-      }}
-
-- name: PHASE 8 | Validate final Satellite image
-  ansible.builtin.assert:
-    that:
-      - configure_satellite_ami_final_uuid | length > 0
-      - configure_satellite_ami_final_uuid == configure_satellite_ami_id
-    fail_msg: >-
-      Satellite image {{ configure_satellite_ami_image_name }} does not contain
-      the expected AWS AMI ID.
-
-      Expected AMI:
-      {{ configure_satellite_ami_id }}
-
-      Satellite UUID:
-      {{ configure_satellite_ami_final_uuid | default('undefined', true) }}
-
-      Satellite image details:
-      {{ configure_satellite_ami_final_image }}
-    success_msg: >-
-      Satellite image {{ configure_satellite_ami_image_name }} is configured
-      with AWS AMI {{ configure_satellite_ami_id }}.
-
-- name: PHASE 8 | Display configured Satellite image
-  ansible.builtin.debug:
-    msg:
-      - "Satellite image: {{ configure_satellite_ami_image_name }}"
-      - "Satellite image ID: {{ configure_satellite_ami_final_images[0]['Id'] }}"
-      - "Compute resource: {{ configure_satellite_ami_compute_resource_name }}"
-      - "Compute resource ID: {{ configure_satellite_ami_compute_resource_id }}"
-      - "AMI ID: {{ configure_satellite_ami_final_uuid }}"
-      - "Operating system: {{ configure_satellite_ami_operating_system_title }}"
-      - "Architecture: {{ configure_satellite_ami_architecture }}"
-      - "Username: {{ configure_satellite_ami_username }}"
+        Security groups:
+        {{ create_satellite_hosts_on_aws_effective_security_groups }}

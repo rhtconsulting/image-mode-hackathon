@@ -81,3 +81,5 @@ configure_satellite_ami_operating_system: ""
 ###############################################################################
 
 configure_satellite_ami_update_existing: true
+
+configure_satellite_ami_builder_pattern: "image-builder*"

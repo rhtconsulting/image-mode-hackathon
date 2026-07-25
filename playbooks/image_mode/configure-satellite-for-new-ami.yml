@@ -2,8 +2,32 @@
 ###############################################################################
 # Configure Satellite for a newly built AWS AMI
 #
-# The AMI ID and related metadata are expected to be supplied by the preceding
-# Build Image Mode AMI workflow job through AAP workflow artifacts.
+# The AMI ID and related metadata are supplied by the preceding Image Mode AMI
+# build workflow job through AAP workflow artifacts.
+###############################################################################
+
+###############################################################################
+# Gather Image Builder operating-system facts
+###############################################################################
+
+- name: Gather Image Builder facts for Satellite AMI configuration
+  hosts: image-builder*
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Validate Image Builder operating system
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "RedHat"
+          - ansible_distribution_major_version | length > 0
+          - ansible_distribution_version | length > 0
+        fail_msg: >-
+          Unable to determine the Red Hat Enterprise Linux version for Image
+          Builder host {{ inventory_hostname }}.
+
+###############################################################################
+# Configure Satellite AMI
 ###############################################################################
 
 - name: Configure Satellite for newly built AWS AMI

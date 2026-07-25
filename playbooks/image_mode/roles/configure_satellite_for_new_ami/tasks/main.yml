@@ -7,14 +7,22 @@
 # PHASE 0 | Resolve operating system from Image Builder
 ###############################################################################
 
+- name: PHASE 0 | Resolve Image Builder inventory hosts
+  ansible.builtin.set_fact:
+    configure_satellite_ami_builder_hosts: >-
+      {{
+        query(
+          'inventory_hostnames',
+          configure_satellite_ami_builder_pattern
+          | default('image-builder*')
+        )
+      }}
+
 - name: PHASE 0 | Select first Image Builder host
   ansible.builtin.set_fact:
     configure_satellite_ami_selected_builder: >-
       {{
-        groups.get(
-          configure_satellite_ami_builder_group | default('image_builder'),
-          []
-        )
+        configure_satellite_ami_builder_hosts
         | first
         | default('', true)
       }}
@@ -25,13 +33,15 @@
       - configure_satellite_ami_selected_builder | length > 0
       - configure_satellite_ami_selected_builder in hostvars
     fail_msg: >-
-      No Image Builder host was found in inventory group
+      No Image Builder host was found using inventory pattern
       {{
-        configure_satellite_ami_builder_group
-        | default('image_builder')
+        configure_satellite_ami_builder_pattern
+        | default('image-builder*')
       }}.
-      Available inventory groups:
-      {{ groups.keys() | list | sort }}.
+      Matching hosts:
+      {{ configure_satellite_ami_builder_hosts }}.
+      Available inventory hosts:
+      {{ hostvars.keys() | list | sort }}.
 
 - name: PHASE 0 | Gather operating-system facts from Image Builder
   ansible.builtin.setup:
@@ -56,43 +66,82 @@
         hostvars[configure_satellite_ami_selected_builder]
         ['ansible_distribution_major_version']
         | default('')
+        | string
         | length > 0
       - >-
         hostvars[configure_satellite_ami_selected_builder]
         ['ansible_distribution_version']
         | default('')
+        | string
         | length > 0
     fail_msg: >-
       Unable to determine the Red Hat Enterprise Linux version from Image
       Builder host {{ configure_satellite_ami_selected_builder }}.
+      Distribution:
+      {{
+        hostvars[configure_satellite_ami_selected_builder]
+        ['ansible_distribution']
+        | default('undefined')
+      }}.
+      Major version:
+      {{
+        hostvars[configure_satellite_ami_selected_builder]
+        ['ansible_distribution_major_version']
+        | default('undefined')
+      }}.
+      Distribution version:
+      {{
+        hostvars[configure_satellite_ami_selected_builder]
+        ['ansible_distribution_version']
+        | default('undefined')
+      }}.
 
-- name: PHASE 0 | Calculate Satellite operating-system title
+- name: PHASE 0 | Calculate Image Builder RHEL version
   ansible.builtin.set_fact:
     configure_satellite_ami_builder_rhel_major: >-
       {{
         hostvars[configure_satellite_ami_selected_builder]
         ['ansible_distribution_major_version']
+        | string
         | trim
       }}
     configure_satellite_ami_builder_rhel_version: >-
       {{
         hostvars[configure_satellite_ami_selected_builder]
         ['ansible_distribution_version']
+        | string
         | trim
       }}
+
+- name: PHASE 0 | Calculate Satellite operating-system title
+  ansible.builtin.set_fact:
     configure_satellite_ami_operating_system: >-
-      RedHat {{
-        hostvars[configure_satellite_ami_selected_builder]
-        ['ansible_distribution_version']
-        | trim
-      }}
+      RedHat {{ configure_satellite_ami_builder_rhel_version }}
 
 - name: PHASE 0 | Display resolved Image Builder operating system
   ansible.builtin.debug:
     msg:
       - >-
-        Image Builder:
+        Image Builder inventory pattern:
+        {{
+          configure_satellite_ami_builder_pattern
+          | default('image-builder*')
+        }}
+      - >-
+        Matching Image Builder hosts:
+        {{ configure_satellite_ami_builder_hosts }}
+      - >-
+        Selected Image Builder:
         {{ configure_satellite_ami_selected_builder }}
+      - >-
+        Detected distribution:
+        {{
+          hostvars[configure_satellite_ami_selected_builder]
+          ['ansible_distribution']
+        }}
+      - >-
+        Detected RHEL major version:
+        {{ configure_satellite_ami_builder_rhel_major }}
       - >-
         Detected RHEL version:
         {{ configure_satellite_ami_builder_rhel_version }}

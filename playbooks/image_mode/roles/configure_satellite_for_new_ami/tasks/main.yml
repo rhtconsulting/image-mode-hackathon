@@ -7,6 +7,115 @@
 # PHASE 0 | Resolve operating system from Image Builder
 ###############################################################################
 
+###############################################################################
+# PHASE 0 | Resolve AMI workflow artifacts
+###############################################################################
+
+- name: PHASE 0 | Resolve AMI ID from workflow artifacts
+  ansible.builtin.set_fact:
+    configure_satellite_ami_resolved_id: >-
+      {{
+        configure_satellite_ami_id
+        | default('', true)
+        | trim
+        if (
+          configure_satellite_ami_id
+          | default('', true)
+          | trim
+          | length > 0
+        )
+        else (
+          image_mode_ami_id
+          | default('', true)
+          | trim
+          if (
+            image_mode_ami_id
+            | default('', true)
+            | trim
+            | length > 0
+          )
+          else (
+            image_mode_ami_result.ami_id
+            | default('', true)
+            | trim
+          )
+        )
+      }}
+
+- name: PHASE 0 | Resolve AMI architecture from workflow artifacts
+  ansible.builtin.set_fact:
+    configure_satellite_ami_resolved_architecture: >-
+      {{
+        configure_satellite_ami_architecture
+        | default('', true)
+        | trim
+        if (
+          configure_satellite_ami_architecture
+          | default('', true)
+          | trim
+          | length > 0
+        )
+        else (
+          image_mode_ami_result.architecture
+          | default('x86_64', true)
+          | trim
+        )
+      }}
+
+- name: PHASE 0 | Promote resolved AMI workflow values
+  ansible.builtin.set_fact:
+    configure_satellite_ami_id: >-
+      {{ configure_satellite_ami_resolved_id }}
+    configure_satellite_ami_architecture: >-
+      {{ configure_satellite_ami_resolved_architecture }}
+
+- name: PHASE 0 | Display received AMI workflow artifacts
+  ansible.builtin.debug:
+    msg:
+      configure_satellite_ami_id_input: >-
+        {{
+          configure_satellite_ami_id
+          | default('UNDEFINED', true)
+        }}
+      image_mode_ami_id: >-
+        {{
+          image_mode_ami_id
+          | default('UNDEFINED', true)
+        }}
+      image_mode_ami_result: >-
+        {{
+          image_mode_ami_result
+          | default('UNDEFINED', true)
+        }}
+      image_mode_ami_result_ami_id: >-
+        {{
+          image_mode_ami_result.ami_id
+          | default('UNDEFINED', true)
+        }}
+      resolved_ami_id: >-
+        {{
+          configure_satellite_ami_resolved_id
+          | default('UNDEFINED', true)
+        }}
+      resolved_architecture: >-
+        {{
+          configure_satellite_ami_resolved_architecture
+          | default('UNDEFINED', true)
+        }}
+
+- name: PHASE 0 | Validate received AMI workflow artifact
+  ansible.builtin.assert:
+    that:
+      - configure_satellite_ami_id | default('', true) | length > 0
+      - >-
+        configure_satellite_ami_id
+        is match('^ami-[0-9a-fA-F]{8,17}$')
+    fail_msg: >-
+      No valid AMI ID was received from the preceding workflow job. The role
+      checked configure_satellite_ami_id, image_mode_ami_id, and
+      image_mode_ami_result.ami_id. Resolved value:
+      {{ configure_satellite_ami_id | default('undefined', true) }}.
+
 - name: PHASE 0 | Resolve Image Builder inventory hosts
   ansible.builtin.set_fact:
     configure_satellite_ami_builder_hosts: >-

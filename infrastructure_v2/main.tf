@@ -1414,12 +1414,8 @@ resource "aws_iam_user" "satellite_provisioner" {
 # Satellite AWS EC2 Provisioning Policy
 ############################################################
 
-############################################################
-# Satellite AWS EC2 Provisioning Policy
-############################################################
-
 resource "aws_iam_user_policy" "satellite_provisioner" {
-  name = "${var.environment_name}-satellite-provisioner"
+  name = "${var.environment_name}-satellite-ec2-provisioning"
   user = aws_iam_user.satellite_provisioner.name
 
   policy = jsonencode({
@@ -1427,26 +1423,33 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
 
     Statement = [
       #########################################################################
-      # Inspect AWS EC2 resources
+      # Discover EC2 resources
       #########################################################################
 
       {
-        Sid    = "DescribeEC2Resources"
+        Sid    = "DiscoverEC2Resources"
         Effect = "Allow"
 
         Action = [
+          "ec2:DescribeAccountAttributes",
+          "ec2:DescribeAddresses",
           "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeIamInstanceProfileAssociations",
           "ec2:DescribeImages",
+          "ec2:DescribeInstanceAttribute",
           "ec2:DescribeInstances",
           "ec2:DescribeInstanceStatus",
           "ec2:DescribeInstanceTypes",
           "ec2:DescribeKeyPairs",
+          "ec2:DescribeNetworkInterfaces",
           "ec2:DescribeRegions",
+          "ec2:DescribeRouteTables",
           "ec2:DescribeSecurityGroups",
           "ec2:DescribeSnapshots",
           "ec2:DescribeSubnets",
           "ec2:DescribeTags",
           "ec2:DescribeVolumes",
+          "ec2:DescribeVolumeStatus",
           "ec2:DescribeVpcs"
         ]
 
@@ -1455,6 +1458,9 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
 
       #########################################################################
       # Manage Satellite-generated EC2 key pairs
+      #
+      # Satellite creates an EC2 key pair when the compute resource is created.
+      # Satellite-generated key-pair names normally begin with "foreman-".
       #########################################################################
 
       {
@@ -1474,26 +1480,101 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
       },
 
       #########################################################################
-      # Provision and manage EC2 instances
+      # Manage instances provisioned by Satellite
       #########################################################################
 
       {
-        Sid    = "ManageSatelliteEC2Instances"
+        Sid    = "ManageSatelliteProvisionedInstances"
         Effect = "Allow"
 
         Action = [
+          "ec2:AttachVolume",
           "ec2:CreateTags",
+          "ec2:CreateVolume",
+          "ec2:DeleteVolume",
+          "ec2:DetachVolume",
+          "ec2:ModifyInstanceAttribute",
+          "ec2:ModifyVolume",
+          "ec2:RebootInstances",
           "ec2:RunInstances",
           "ec2:StartInstances",
           "ec2:StopInstances",
-          "ec2:RebootInstances",
           "ec2:TerminateInstances"
         ]
 
         Resource = "*"
+      },
+
+      #########################################################################
+      # Manage IAM instance-profile associations
+      #########################################################################
+
+      {
+        Sid    = "ManageIAMInstanceProfileAssociations"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:AssociateIamInstanceProfile",
+          "ec2:DisassociateIamInstanceProfile",
+          "ec2:ReplaceIamInstanceProfileAssociation"
+        ]
+
+        Resource = "*"
+      },
+
+      #########################################################################
+      # Discover IAM instance profiles and roles
+      #########################################################################
+
+      {
+        Sid    = "DiscoverIAMInstanceProfiles"
+        Effect = "Allow"
+
+        Action = [
+          "iam:GetInstanceProfile",
+          "iam:GetRole",
+          "iam:ListInstanceProfiles",
+          "iam:ListInstanceProfilesForRole",
+          "iam:ListRoles"
+        ]
+
+        Resource = "*"
+      },
+
+      #########################################################################
+      # Pass approved runtime roles to EC2
+      #########################################################################
+
+      {
+        Sid    = "PassApprovedLabRuntimeRoles"
+        Effect = "Allow"
+
+        Action = [
+          "iam:PassRole"
+        ]
+
+        Resource = [
+          aws_iam_role.gitlab_runtime.arn,
+          aws_iam_role.lab_ec2_default.arn,
+          aws_iam_role.image_builder.arn
+        ]
+
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = "ec2.amazonaws.com"
+          }
+        }
       }
     ]
   })
+
+  depends_on = [
+    terraform_data.preflight_cleanup,
+    aws_iam_user.satellite_provisioner,
+    aws_iam_instance_profile.gitlab_runtime,
+    aws_iam_instance_profile.lab_ec2_default,
+    aws_iam_instance_profile.image_builder
+  ]
 }
 
 ############################################################

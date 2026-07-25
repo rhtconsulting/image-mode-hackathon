@@ -1473,10 +1473,7 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
           "ec2:ImportKeyPair"
         ]
 
-        Resource = (
-          "arn:aws:ec2:${var.aws_region}:"
-          "${data.aws_caller_identity.current.account_id}:key-pair/foreman-*"
-        )
+        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:key-pair/foreman-*"
       },
 
       #########################################################################

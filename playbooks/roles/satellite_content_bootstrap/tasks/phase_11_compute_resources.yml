@@ -7,17 +7,211 @@
 # Validate inputs
 ###############################################################################
 
-- name: PHASE 11 | Validate AWS EC2 compute-resource variables
+###############################################################################
+# Retrieve Satellite AWS provisioning credentials
+###############################################################################
+
+- name: PHASE 11 | Determine whether AWS access key retrieval is required
+  ansible.builtin.set_fact:
+    satellite_compute_resource_retrieve_access_key: >-
+      {{
+        satellite_compute_resource_access_key
+        | default('', true)
+        | trim
+        | length == 0
+      }}
+    satellite_compute_resource_retrieve_secret_key: >-
+      {{
+        satellite_compute_resource_secret_key
+        | default('', true)
+        | trim
+        | length == 0
+      }}
+  no_log: true
+
+- name: PHASE 11 | Verify Satellite AWS access-key secret exists
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          'aws',
+          'secretsmanager',
+          'describe-secret',
+          '--secret-id',
+          satellite_aws_access_key_secret_name,
+          '--region',
+          satellite_compute_resource_region
+        ]
+        +
+        (
+          ['--profile', aws_profile]
+          if aws_profile | default('') | trim | length > 0
+          else []
+        )
+      }}
+  delegate_to: localhost
+  become: false
+  register: satellite_compute_resource_access_key_secret_check
+  changed_when: false
+  failed_when: false
+  when: satellite_compute_resource_retrieve_access_key | bool
+
+- name: PHASE 11 | Validate Satellite AWS access-key secret
   ansible.builtin.assert:
     that:
-      - satellite_compute_resource_name | string | trim | length > 0
-      - satellite_compute_resource_provider == "EC2"
-      - satellite_compute_resource_region | string | trim | length > 0
-      - satellite_compute_resource_credentials_secret_name | string | trim | length > 0
+      - satellite_compute_resource_access_key_secret_check.rc == 0
     fail_msg: >-
-      AWS EC2 compute-resource management requires
-      satellite_compute_resource_name and a valid credentials secret name.
-      The provider must be EC2. The region defaults to us-east-2.
+      AWS Secrets Manager secret
+      {{ satellite_aws_access_key_secret_name }} was not found in region
+      {{ satellite_compute_resource_region }} using AWS profile
+      {{ aws_profile | default('default') }}.
+  when: satellite_compute_resource_retrieve_access_key | bool
+
+- name: PHASE 11 | Verify Satellite AWS secret-key secret exists
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          'aws',
+          'secretsmanager',
+          'describe-secret',
+          '--secret-id',
+          satellite_aws_secret_key_secret_name,
+          '--region',
+          satellite_compute_resource_region
+        ]
+        +
+        (
+          ['--profile', aws_profile]
+          if aws_profile | default('') | trim | length > 0
+          else []
+        )
+      }}
+  delegate_to: localhost
+  become: false
+  register: satellite_compute_resource_secret_key_secret_check
+  changed_when: false
+  failed_when: false
+  when: satellite_compute_resource_retrieve_secret_key | bool
+
+- name: PHASE 11 | Validate Satellite AWS secret-key secret
+  ansible.builtin.assert:
+    that:
+      - satellite_compute_resource_secret_key_secret_check.rc == 0
+    fail_msg: >-
+      AWS Secrets Manager secret
+      {{ satellite_aws_secret_key_secret_name }} was not found in region
+      {{ satellite_compute_resource_region }} using AWS profile
+      {{ aws_profile | default('default') }}.
+  when: satellite_compute_resource_retrieve_secret_key | bool
+
+- name: PHASE 11 | Read Satellite AWS access key
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          'aws',
+          'secretsmanager',
+          'get-secret-value',
+          '--secret-id',
+          satellite_aws_access_key_secret_name,
+          '--region',
+          satellite_compute_resource_region,
+          '--query',
+          'SecretString',
+          '--output',
+          'text'
+        ]
+        +
+        (
+          ['--profile', aws_profile]
+          if aws_profile | default('') | trim | length > 0
+          else []
+        )
+      }}
+  delegate_to: localhost
+  become: false
+  register: satellite_compute_resource_access_key_result
+  changed_when: false
+  no_log: true
+  when: satellite_compute_resource_retrieve_access_key | bool
+
+- name: PHASE 11 | Read Satellite AWS secret access key
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          'aws',
+          'secretsmanager',
+          'get-secret-value',
+          '--secret-id',
+          satellite_aws_secret_key_secret_name,
+          '--region',
+          satellite_compute_resource_region,
+          '--query',
+          'SecretString',
+          '--output',
+          'text'
+        ]
+        +
+        (
+          ['--profile', aws_profile]
+          if aws_profile | default('') | trim | length > 0
+          else []
+        )
+      }}
+  delegate_to: localhost
+  become: false
+  register: satellite_compute_resource_secret_key_result
+  changed_when: false
+  no_log: true
+  when: satellite_compute_resource_retrieve_secret_key | bool
+
+- name: PHASE 11 | Resolve Satellite AWS provisioning credentials
+  ansible.builtin.set_fact:
+    satellite_compute_resource_resolved_access_key: >-
+      {{
+        satellite_compute_resource_access_key
+        | default('', true)
+        | trim
+        if
+        satellite_compute_resource_access_key
+        | default('', true)
+        | trim
+        | length > 0
+        else
+        satellite_compute_resource_access_key_result.stdout
+        | default('', true)
+        | trim
+      }}
+    satellite_compute_resource_resolved_secret_key: >-
+      {{
+        satellite_compute_resource_secret_key
+        | default('', true)
+        | trim
+        if
+        satellite_compute_resource_secret_key
+        | default('', true)
+        | trim
+        | length > 0
+        else
+        satellite_compute_resource_secret_key_result.stdout
+        | default('', true)
+        | trim
+      }}
+  no_log: true
+
+- name: PHASE 11 | Validate Satellite AWS provisioning credentials
+  ansible.builtin.assert:
+    that:
+      - satellite_compute_resource_resolved_access_key | length > 0
+      - satellite_compute_resource_resolved_secret_key | length > 0
+      - satellite_compute_resource_resolved_access_key is match('^(AKIA|ASIA)[A-Z0-9]+$')
+    fail_msg: >-
+      The Satellite AWS provisioning credentials could not be retrieved from
+      {{ satellite_aws_access_key_secret_name }} and
+      {{ satellite_aws_secret_key_secret_name }}.
+  no_log: true
 
 ###############################################################################
 # Retrieve AWS service-account credentials

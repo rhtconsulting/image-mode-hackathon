@@ -56,8 +56,8 @@ satellite_manage_compute_resources: true
 ###############################################################################
 # AWS EC2 compute resource
 #
-# The name should normally be supplied by Terraform inventory or AAP
-# job-template variables.
+# The compute-resource name should normally be supplied by Terraform inventory,
+# an AAP job template, or another environment-specific variable source.
 ###############################################################################
 
 satellite_compute_resource_name: ""
@@ -66,38 +66,41 @@ satellite_compute_resource_description: >-
   Amazon EC2 compute resource managed by Image Mode automation
 
 satellite_compute_resource_provider: "EC2"
+
+###############################################################################
+# AWS Region
+#
+# This value is normally overridden by the Terraform-generated inventory.
+###############################################################################
+
 satellite_compute_resource_region: "us-east-2"
 
 ###############################################################################
-# AWS service-account credential source
+# Satellite AWS provisioning credential secrets
 #
-# The AWS secret should contain the RHEL service-account access key and secret
-# access key. Supported JSON formats include:
+# Terraform creates these two Secrets Manager secrets automatically:
 #
-# {
-#   "access_key_id": "AKIA...",
-#   "secret_access_key": "..."
-# }
+#   <secret_prefix>/satellite/aws_access_key_id
+#   <secret_prefix>/satellite/aws_secret_access_key
 #
-# or:
-#
-# {
-#   "aws_access_key_id": "AKIA...",
-#   "aws_secret_access_key": "..."
-# }
+# The generated inventory normally overrides these defaults.
 ###############################################################################
 
-satellite_compute_resource_credentials_secret_name: >-
-  {{ secret_prefix | default('image-mode-lab') }}/aws/service-accounts/rhel
+satellite_aws_access_key_secret_name: >-
+  {{
+    secret_prefix | default("image-mode-lab")
+  }}/satellite/aws_access_key_id
 
-satellite_compute_resource_access_key_json_key: "access_key_id"
-satellite_compute_resource_secret_key_json_key: "secret_access_key"
+satellite_aws_secret_key_secret_name: >-
+  {{
+    secret_prefix | default("image-mode-lab")
+  }}/satellite/aws_secret_access_key
 
 ###############################################################################
 # Direct credential overrides
 #
-# Leave empty when credentials are retrieved from AWS Secrets Manager.
-# Never commit real credentials to source control.
+# Leave empty to retrieve credentials from AWS Secrets Manager.
+# Never commit AWS credentials to source control.
 ###############################################################################
 
 satellite_compute_resource_access_key: ""

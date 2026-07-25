@@ -608,19 +608,22 @@
       - available
       - --compute-resource-id
       - "{{ configure_satellite_ami_compute_resource_id }}"
-      - --organization-label
-      - "{{ configure_satellite_ami_organization_label }}"
   register: configure_satellite_ami_available_images_lookup
   changed_when: false
+
+- name: PHASE 5 | Parse AWS images visible to Satellite
+  ansible.builtin.set_fact:
+    configure_satellite_ami_available_images: >-
+      {{
+        configure_satellite_ami_available_images_lookup.stdout
+        | from_json
+      }}
 
 - name: PHASE 5 | Select requested AWS AMI
   ansible.builtin.set_fact:
     configure_satellite_ami_available_matches: >-
       {{
-        (
-          configure_satellite_ami_available_images_lookup.stdout
-          | from_json
-        )
+        configure_satellite_ami_available_images
         | selectattr(
             'Uuid',
             'equalto',
@@ -634,9 +637,18 @@
     that:
       - configure_satellite_ami_available_matches | length == 1
     fail_msg: >-
-      AMI {{ configure_satellite_ami_id }} is not visible through compute
-      resource {{ configure_satellite_ami_compute_resource_name }}. Verify the
-      AWS account, region, AMI status, architecture, and IAM permissions.
+      AMI {{ configure_satellite_ami_id }} is not visible through Satellite
+      compute resource {{ configure_satellite_ami_compute_resource_name }}.
+      Verify that the AMI exists in the compute resource AWS account and
+      region, has reached the available state, and that the Satellite AWS
+      identity has permission to describe the image.
+    success_msg: >-
+      AMI {{ configure_satellite_ami_id }} is visible through compute resource
+      {{ configure_satellite_ami_compute_resource_name }}.
+
+- name: PHASE 5 | Display matched AWS AMI
+  ansible.builtin.debug:
+    var: configure_satellite_ami_available_matches
 
 ###############################################################################
 # PHASE 6 | Resolve existing Satellite image

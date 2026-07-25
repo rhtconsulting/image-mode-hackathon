@@ -922,7 +922,7 @@
   register: configure_satellite_ami_final_lookup
   changed_when: false
 
-- name: PHASE 8 | Parse final Satellite images
+- name: PHASE 8 | Parse final Satellite image list
   ansible.builtin.set_fact:
     configure_satellite_ami_all_final_images: >-
       {{
@@ -930,7 +930,7 @@
         | from_json
       }}
 
-- name: PHASE 8 | Select final Satellite image
+- name: PHASE 8 | Select final Satellite image by name
   ansible.builtin.set_fact:
     configure_satellite_ami_final_images: >-
       {{
@@ -943,26 +943,87 @@
         | list
       }}
 
-- name: PHASE 8 | Validate final Satellite image
+- name: PHASE 8 | Validate final Satellite image lookup
   ansible.builtin.assert:
     that:
       - configure_satellite_ami_final_images | length == 1
-      - >-
-        configure_satellite_ami_final_images[0]['Uuid']
-        == configure_satellite_ami_id
+      - configure_satellite_ami_final_images[0]['Id'] is defined
     fail_msg: >-
-      Satellite image {{ configure_satellite_ami_image_name }} was not
-      configured with AMI {{ configure_satellite_ami_id }}.
+      Unable to uniquely locate Satellite image
+      {{ configure_satellite_ami_image_name }} under compute resource
+      {{ configure_satellite_ami_compute_resource_name }}.
       Matching images:
       {{ configure_satellite_ami_final_images }}.
+
+- name: PHASE 8 | Read final Satellite image details
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - compute-resource
+      - image
+      - info
+      - --id
+      - "{{ configure_satellite_ami_final_images[0]['Id'] }}"
+      - --compute-resource-id
+      - "{{ configure_satellite_ami_compute_resource_id }}"
+  register: configure_satellite_ami_final_info
+  changed_when: false
+
+- name: PHASE 8 | Parse final Satellite image details
+  ansible.builtin.set_fact:
+    configure_satellite_ami_final_image: >-
+      {{
+        configure_satellite_ami_final_info.stdout
+        | from_json
+      }}
+
+- name: PHASE 8 | Resolve final image UUID
+  ansible.builtin.set_fact:
+    configure_satellite_ami_final_uuid: >-
+      {{
+        configure_satellite_ami_final_image['Uuid']
+        | default(
+            configure_satellite_ami_final_image['UUID']
+            | default(
+                configure_satellite_ami_final_image['uuid']
+                | default('', true),
+                true
+              ),
+            true
+          )
+      }}
+
+- name: PHASE 8 | Validate final Satellite image
+  ansible.builtin.assert:
+    that:
+      - configure_satellite_ami_final_uuid | length > 0
+      - configure_satellite_ami_final_uuid == configure_satellite_ami_id
+    fail_msg: >-
+      Satellite image {{ configure_satellite_ami_image_name }} does not contain
+      the expected AWS AMI ID.
+
+      Expected AMI:
+      {{ configure_satellite_ami_id }}
+
+      Satellite UUID:
+      {{ configure_satellite_ami_final_uuid | default('undefined', true) }}
+
+      Satellite image details:
+      {{ configure_satellite_ami_final_image }}
+    success_msg: >-
+      Satellite image {{ configure_satellite_ami_image_name }} is configured
+      with AWS AMI {{ configure_satellite_ami_id }}.
 
 - name: PHASE 8 | Display configured Satellite image
   ansible.builtin.debug:
     msg:
       - "Satellite image: {{ configure_satellite_ami_image_name }}"
+      - "Satellite image ID: {{ configure_satellite_ami_final_images[0]['Id'] }}"
       - "Compute resource: {{ configure_satellite_ami_compute_resource_name }}"
       - "Compute resource ID: {{ configure_satellite_ami_compute_resource_id }}"
-      - "AMI ID: {{ configure_satellite_ami_id }}"
+      - "AMI ID: {{ configure_satellite_ami_final_uuid }}"
       - "Operating system: {{ configure_satellite_ami_operating_system_title }}"
       - "Architecture: {{ configure_satellite_ami_architecture }}"
       - "Username: {{ configure_satellite_ami_username }}"

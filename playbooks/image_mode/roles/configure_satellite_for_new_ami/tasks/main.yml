@@ -912,8 +912,6 @@
       - list
       - --compute-resource-id
       - "{{ configure_satellite_ami_compute_resource_id }}"
-      - --organization-label
-      - "{{ configure_satellite_ami_organization_label }}"
       - --per-page
       - "1000"
   register: configure_satellite_ami_final_lookup
@@ -950,6 +948,8 @@
     fail_msg: >-
       Satellite image {{ configure_satellite_ami_image_name }} was not
       configured with AMI {{ configure_satellite_ami_id }}.
+      Matching images:
+      {{ configure_satellite_ami_final_images }}.
 
 - name: PHASE 8 | Display configured Satellite image
   ansible.builtin.debug:

@@ -77,6 +77,69 @@ controller_templates:
       configure_satellite_ami_update_existing: true
 
 
+  - name: "Use Satellite To Deploy EC2 Instances"
+    description: >-
+      Create and provision an AWS EC2 instance through the Satellite AWS
+      compute resource. Determine the appropriate RHEL9 or RHEL10 content view
+      from the current operating system of the selected Image Builder host,
+      assign the Development lifecycle environment, generate a random root
+      password, and deploy the instance from the AWS-RHEL-Dev image.
+
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Mode Lab Infrastructure"
+    playbook: "playbooks/image_mode/create-satellite-hosts-on-aws.yml"
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Image Mode Machine Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 1
+    timeout: 3600
+    allow_simultaneous: false
+
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+
+    survey_enabled: true
+    survey_spec: "{{ create_satellite_hosts_on_aws_survey }}"
+
+    extra_vars:
+      create_satellite_hosts_on_aws_compute_resource: "AWS Image Mode"
+      create_satellite_hosts_on_aws_compute_image: "AWS-RHEL-Dev"
+
+      create_satellite_hosts_on_aws_organization: "Image Mode Lab"
+      create_satellite_hosts_on_aws_organization_label: "Image_Mode_Lab"
+      create_satellite_hosts_on_aws_location: "AWS_West_Region"
+
+      create_satellite_hosts_on_aws_lifecycle_environment: "Development"
+
+      create_satellite_hosts_on_aws_rhel9_content_view: "RHEL9"
+      create_satellite_hosts_on_aws_rhel10_content_view: "RHEL10"
+
+      create_satellite_hosts_on_aws_rhel9_activation_key: "rhel9"
+      create_satellite_hosts_on_aws_rhel10_activation_key: "rhel10"
+
+      create_satellite_hosts_on_aws_builder_pattern: "image-builder*"
+
+      create_satellite_hosts_on_aws_flavor: "m6i.large"
+      create_satellite_hosts_on_aws_availability_zone: "us-east-2a"
+      create_satellite_hosts_on_aws_subnet_network: "10.20.1.0/24"
+
+      create_satellite_hosts_on_aws_security_groups:
+        - "image-mode-lab-gitlab-sg"
+        - "image-mode-lab-sg"
+        - "image-mode-lab-image-builder-sg"
+
+      create_satellite_hosts_on_aws_architecture: "x86_64"
+      create_satellite_hosts_on_aws_operating_system_prefix: "RHEL"
+
+      create_satellite_hosts_on_aws_build: true
+      create_satellite_hosts_on_aws_update_existing: false
+      create_satellite_hosts_on_aws_root_password_length: 32
+
 
 
   # - name: "Bootstrap Satellite Content"

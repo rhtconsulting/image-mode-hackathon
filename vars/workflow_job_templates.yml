@@ -8,8 +8,9 @@ controller_workflows:
   - name: "Image Mode Deploy Sample Image to AWS"
     description: >-
       Build the sample RHEL Image Mode container image, create and register an
-      AWS AMI, publish the AMI metadata as workflow artifacts, and configure
-      the Satellite AWS compute-resource image to use the newly created AMI.
+      AWS AMI, publish the AMI metadata as workflow artifacts, configure the
+      Satellite AWS compute-resource image to use the newly created AMI, and
+      then use Satellite to create and provision the resulting EC2 host.
     organization: "Image Mode Lab"
     destroy_current_nodes: true
 
@@ -39,6 +40,22 @@ controller_workflows:
 
         unified_job_template:
           name: "Configure Satellite for New AMI"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+
+        related:
+          success_nodes:
+            - identifier: "use_satellite_to_deploy_ec2_instances"
+
+      #########################################################################
+      # Use Satellite to Deploy EC2 Instance
+      #########################################################################
+
+      - identifier: "use_satellite_to_deploy_ec2_instances"
+
+        unified_job_template:
+          name: "Use Satellite To Deploy EC2 Instances"
           organization:
             name: "Image Mode Lab"
           type: "job_template"

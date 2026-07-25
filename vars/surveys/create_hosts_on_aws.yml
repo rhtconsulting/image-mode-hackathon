@@ -1,0 +1,308 @@
+---
+###############################################################################
+# Use Satellite to deploy EC2 instances survey
+###############################################################################
+
+create_satellite_hosts_on_aws_survey:
+  name: "Use Satellite To Deploy EC2 Instances"
+
+  description: >-
+    Create and provision an AWS EC2 instance through the Satellite AWS compute
+    resource. The role determines whether to use the RHEL9 or RHEL10 content
+    view from the operating system installed on the selected Image Builder
+    host, generates a random root password, and deploys the instance from the
+    AWS-RHEL-Dev compute-resource image.
+
+  spec:
+
+    ###########################################################################
+    # Host identity
+    ###########################################################################
+
+    - question_name: "Host name"
+      question_description: >-
+        Short hostname for the new Satellite-managed EC2 instance. Do not
+        include the DNS domain. The role derives the domain from the Satellite
+        server and creates the resulting FQDN automatically.
+      variable: "create_satellite_hosts_on_aws_hostname"
+      type: "text"
+      required: true
+      default: "aap-1"
+      min: 1
+      max: 63
+
+    - question_name: "DNS domain override"
+      question_description: >-
+        Optional DNS domain for the new host. Leave blank to derive the domain
+        from the Satellite server FQDN. For example, a Satellite server named
+        satellite-1.lab.example.com results in the domain lab.example.com.
+      variable: "create_satellite_hosts_on_aws_domain"
+      type: "text"
+      required: false
+      default: ""
+      min: 0
+      max: 253
+
+    ###########################################################################
+    # Satellite organization and location
+    ###########################################################################
+
+    - question_name: "Satellite organization"
+      question_description: >-
+        Satellite organization that owns the new host and its content
+        assignments.
+      variable: "create_satellite_hosts_on_aws_organization"
+      type: "text"
+      required: true
+      default: "Image Mode Lab"
+      min: 1
+      max: 128
+
+    - question_name: "Satellite organization label"
+      question_description: >-
+        Satellite organization label used by content-related Hammer commands.
+      variable: "create_satellite_hosts_on_aws_organization_label"
+      type: "text"
+      required: true
+      default: "Image_Mode_Lab"
+      min: 1
+      max: 128
+
+    - question_name: "Satellite location"
+      question_description: >-
+        Satellite location assigned to the new EC2 host.
+      variable: "create_satellite_hosts_on_aws_location"
+      type: "text"
+      required: true
+      default: "AWS_West_Region"
+      min: 1
+      max: 128
+
+    ###########################################################################
+    # Satellite content
+    ###########################################################################
+
+    - question_name: "Content source override"
+      question_description: >-
+        Optional Satellite or Capsule content source. Leave blank to use the
+        Satellite server executing the playbook.
+      variable: "create_satellite_hosts_on_aws_content_source"
+      type: "text"
+      required: false
+      default: ""
+      min: 0
+      max: 253
+
+    - question_name: "Lifecycle environment"
+      question_description: >-
+        Satellite lifecycle environment assigned to the new host.
+      variable: "create_satellite_hosts_on_aws_lifecycle_environment"
+      type: "text"
+      required: true
+      default: "Development"
+      min: 1
+      max: 128
+
+    - question_name: "RHEL 9 content view"
+      question_description: >-
+        Content view selected automatically when the Image Builder host is
+        running RHEL 9.
+      variable: "create_satellite_hosts_on_aws_rhel9_content_view"
+      type: "text"
+      required: true
+      default: "RHEL9"
+      min: 1
+      max: 128
+
+    - question_name: "RHEL 10 content view"
+      question_description: >-
+        Content view selected automatically when the Image Builder host is
+        running RHEL 10.
+      variable: "create_satellite_hosts_on_aws_rhel10_content_view"
+      type: "text"
+      required: true
+      default: "RHEL10"
+      min: 1
+      max: 128
+
+    - question_name: "RHEL 9 activation key"
+      question_description: >-
+        Activation key selected automatically when the Image Builder host is
+        running RHEL 9.
+      variable: "create_satellite_hosts_on_aws_rhel9_activation_key"
+      type: "text"
+      required: true
+      default: "rhel9"
+      min: 1
+      max: 128
+
+    - question_name: "RHEL 10 activation key"
+      question_description: >-
+        Activation key selected automatically when the Image Builder host is
+        running RHEL 10.
+      variable: "create_satellite_hosts_on_aws_rhel10_activation_key"
+      type: "text"
+      required: true
+      default: "rhel10"
+      min: 1
+      max: 128
+
+    ###########################################################################
+    # Image Builder selection
+    ###########################################################################
+
+    - question_name: "Image Builder host pattern"
+      question_description: >-
+        Inventory host pattern used to locate the Image Builder whose current
+        operating system determines whether RHEL9 or RHEL10 Satellite content
+        is assigned.
+      variable: "create_satellite_hosts_on_aws_builder_pattern"
+      type: "text"
+      required: true
+      default: "image-builder*"
+      min: 1
+      max: 128
+
+    ###########################################################################
+    # Satellite AWS compute resource
+    ###########################################################################
+
+    - question_name: "AWS compute resource"
+      question_description: >-
+        Satellite AWS compute resource used to deploy the EC2 instance.
+      variable: "create_satellite_hosts_on_aws_compute_resource"
+      type: "text"
+      required: true
+      default: "AWS Image Mode"
+      min: 1
+      max: 128
+
+    - question_name: "Satellite compute-resource image"
+      question_description: >-
+        Satellite image record containing the AWS AMI ID produced by the Image
+        Mode AMI workflow.
+      variable: "create_satellite_hosts_on_aws_compute_image"
+      type: "text"
+      required: true
+      default: "AWS-RHEL-Dev"
+      min: 1
+      max: 128
+
+    ###########################################################################
+    # AWS virtual machine settings
+    ###########################################################################
+
+    - question_name: "EC2 instance type"
+      question_description: >-
+        AWS EC2 instance type used for the new host. The architecture of the
+        instance type must match the x86_64 AMI architecture.
+      variable: "create_satellite_hosts_on_aws_flavor"
+      type: "text"
+      required: true
+      default: "m6i.large"
+      min: 1
+      max: 64
+
+    - question_name: "AWS availability zone"
+      question_description: >-
+        Availability zone where Satellite creates the EC2 instance.
+      variable: "create_satellite_hosts_on_aws_availability_zone"
+      type: "text"
+      required: true
+      default: "us-east-2a"
+      min: 1
+      max: 32
+
+    - question_name: "Satellite subnet network"
+      question_description: >-
+        IPv4 network used to locate the Satellite subnet assigned to the new
+        EC2 interface.
+      variable: "create_satellite_hosts_on_aws_subnet_network"
+      type: "text"
+      required: true
+      default: "10.20.1.0/24"
+      min: 9
+      max: 32
+
+    - question_name: "AWS security groups"
+      question_description: >-
+        AWS security groups assigned to the new EC2 instance. Select all groups
+        needed for AAP, general lab access, and Image Builder communication.
+      variable: "create_satellite_hosts_on_aws_security_groups"
+      type: "multiselect"
+      required: true
+      default:
+        - "image-mode-lab-gitlab-sg"
+        - "image-mode-lab-sg"
+        - "image-mode-lab-image-builder-sg"
+      choices:
+        - "image-mode-lab-gitlab-sg"
+        - "image-mode-lab-sg"
+        - "image-mode-lab-image-builder-sg"
+
+    ###########################################################################
+    # Host operating system
+    ###########################################################################
+
+    - question_name: "Architecture"
+      question_description: >-
+        Satellite architecture assigned to the host and expected by the AWS
+        AMI and EC2 instance type.
+      variable: "create_satellite_hosts_on_aws_architecture"
+      type: "multiplechoice"
+      required: true
+      default: "x86_64"
+      choices:
+        - "x86_64"
+
+    - question_name: "Operating-system title prefix"
+      question_description: >-
+        Prefix used with the Image Builder release to locate the Satellite
+        operating system. For example, a RHEL 9.8 builder resolves to
+        RHEL 9.8.
+      variable: "create_satellite_hosts_on_aws_operating_system_prefix"
+      type: "text"
+      required: true
+      default: "RHEL"
+      min: 1
+      max: 32
+
+    ###########################################################################
+    # Provisioning controls
+    ###########################################################################
+
+    - question_name: "Provision the EC2 instance"
+      question_description: >-
+        Instruct Satellite to build and provision the EC2 instance after
+        creating the host record.
+      variable: "create_satellite_hosts_on_aws_build"
+      type: "multiplechoice"
+      required: true
+      default: "true"
+      choices:
+        - "true"
+        - "false"
+
+    - question_name: "Update an existing Satellite host"
+      question_description: >-
+        Permit the role to update an existing Satellite host with the same
+        FQDN. Leave disabled to prevent an existing host from being modified.
+      variable: "create_satellite_hosts_on_aws_update_existing"
+      type: "multiplechoice"
+      required: true
+      default: "false"
+      choices:
+        - "false"
+        - "true"
+
+    - question_name: "Random root password length"
+      question_description: >-
+        Length of the randomly generated root password passed to Satellite.
+        The password is protected with Ansible no_log and is not requested from
+        the survey.
+      variable: "create_satellite_hosts_on_aws_root_password_length"
+      type: "integer"
+      required: true
+      default: 32
+      min: 20
+      max: 128

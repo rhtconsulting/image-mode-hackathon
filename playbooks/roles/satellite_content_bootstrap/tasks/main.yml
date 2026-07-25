@@ -35,3 +35,9 @@
 
 - name: Include final validation and registration summary tasks
   ansible.builtin.import_tasks: phase_10_validation_summary.yml
+
+- name: Include AWS EC2 compute-resource management tasks
+  ansible.builtin.import_tasks: phase_11_compute_resources.yml
+  when: satellite_manage_compute_resources | bool
+  tags:
+    - satellite_compute_resource

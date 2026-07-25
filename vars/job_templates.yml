@@ -112,7 +112,7 @@ controller_templates:
 
       create_satellite_hosts_on_aws_organization: "Image Mode Lab"
       create_satellite_hosts_on_aws_organization_label: "Image_Mode_Lab"
-      create_satellite_hosts_on_aws_location: "AWS_West_Region"
+      create_satellite_hosts_on_aws_location: "AWS Region - us-east-2"
 
       create_satellite_hosts_on_aws_lifecycle_environment: "Development"
 

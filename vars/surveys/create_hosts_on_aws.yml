@@ -231,14 +231,14 @@ create_satellite_hosts_on_aws_survey:
       variable: "create_satellite_hosts_on_aws_security_groups"
       type: "multiselect"
       required: true
-      default:
-        - "image-mode-lab-gitlab-sg"
-        - "image-mode-lab-sg"
-        - "image-mode-lab-image-builder-sg"
-      choices:
-        - "image-mode-lab-gitlab-sg"
-        - "image-mode-lab-sg"
-        - "image-mode-lab-image-builder-sg"
+      choices: |-
+        image-mode-lab-gitlab-sg
+        image-mode-lab-sg
+        image-mode-lab-image-builder-sg
+      default: |-
+        image-mode-lab-gitlab-sg
+        image-mode-lab-sg
+        image-mode-lab-image-builder-sg
 
     ###########################################################################
     # Host operating system

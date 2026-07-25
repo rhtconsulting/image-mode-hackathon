@@ -739,7 +739,7 @@
   changed_when: false
   when:
     - satellite_compute_resource_validate_connection | bool
-  no_log: true
+  no_log: false
 
 ###############################################################################
 # Display configured compute resource

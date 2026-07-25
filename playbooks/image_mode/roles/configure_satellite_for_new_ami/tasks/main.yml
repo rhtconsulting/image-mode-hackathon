@@ -799,10 +799,18 @@
       - "{{ configure_satellite_ami_existing_images[0]['Id'] }}"
       - --compute-resource-id
       - "{{ configure_satellite_ami_compute_resource_id }}"
-      - --organization-label
-      - "{{ configure_satellite_ami_organization_label }}"
   register: configure_satellite_ami_existing_image_info
   changed_when: false
+  when:
+    - configure_satellite_ami_existing_images | length == 1
+
+- name: PHASE 7 | Parse existing Satellite image details
+  ansible.builtin.set_fact:
+    configure_satellite_ami_existing_image_details: >-
+      {{
+        configure_satellite_ami_existing_image_info.stdout
+        | from_json
+      }}
   when:
     - configure_satellite_ami_existing_images | length == 1
 

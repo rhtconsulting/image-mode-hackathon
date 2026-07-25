@@ -491,8 +491,55 @@
       - "{{ satellite_compute_resource_organization_id }}"
   register: satellite_compute_resource_create_result
   changed_when: satellite_compute_resource_create_result.rc == 0
+  failed_when: false
   when:
     - satellite_compute_resources | length == 0
+  no_log: true
+
+- name: PHASE 11 | Resolve compute-resource creation status
+  ansible.builtin.set_fact:
+    satellite_compute_resource_create_output: >-
+      {{
+        (
+          satellite_compute_resource_create_result.stdout
+          | default("")
+        )
+        ~ " "
+        ~
+        (
+          satellite_compute_resource_create_result.stderr
+          | default("")
+        )
+      }}
+  when:
+    - satellite_compute_resource_create_result is defined
+  no_log: true
+
+- name: PHASE 11 | Validate compute-resource creation result
+  ansible.builtin.assert:
+    that:
+      - >-
+        satellite_compute_resource_create_result.rc == 0
+        or
+        "already exists"
+        in
+        (
+          satellite_compute_resource_create_output
+          | lower
+        )
+        or
+        "has already been taken"
+        in
+        (
+          satellite_compute_resource_create_output
+          | lower
+        )
+    fail_msg: >-
+      Satellite failed to create compute resource
+      {{ satellite_compute_resource_name }}.
+      The failure was not an acceptable already-existing-resource response.
+  when:
+    - satellite_compute_resource_create_result is defined
   no_log: true
 
 ###############################################################################

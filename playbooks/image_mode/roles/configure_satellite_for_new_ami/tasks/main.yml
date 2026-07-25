@@ -481,7 +481,7 @@
       }}
 
 ###############################################################################
-# PHASE 4 | Resolve operating system
+# PHASE 4 | Resolve Satellite operating system
 ###############################################################################
 
 - name: PHASE 4 | List Satellite operating systems
@@ -505,26 +505,63 @@
         | from_json
       }}
 
-- name: PHASE 4 | Select Satellite operating system
+- name: PHASE 4 | Build acceptable operating-system titles
+  ansible.builtin.set_fact:
+    configure_satellite_ami_expected_operating_system_titles:
+      - "RHEL {{ configure_satellite_ami_builder_rhel_version }}"
+      - "RedHat {{ configure_satellite_ami_builder_rhel_version }}"
+      - "Red Hat Enterprise Linux {{ configure_satellite_ami_builder_rhel_version }}"
+      - "RHEL {{ configure_satellite_ami_builder_rhel_major }}"
+      - "RedHat {{ configure_satellite_ami_builder_rhel_major }}"
+      - "Red Hat Enterprise Linux {{ configure_satellite_ami_builder_rhel_major }}"
+
+- name: PHASE 4 | Select exact minor-version operating system
   ansible.builtin.set_fact:
     configure_satellite_ami_matching_operating_systems: >-
       {{
         configure_satellite_ami_all_operating_systems
         | selectattr(
             'Title',
-            'equalto',
-            configure_satellite_ami_operating_system | trim
+            'in',
+            [
+              'RHEL ' ~ configure_satellite_ami_builder_rhel_version,
+              'RedHat ' ~ configure_satellite_ami_builder_rhel_version,
+              'Red Hat Enterprise Linux '
+              ~ configure_satellite_ami_builder_rhel_version
+            ]
           )
         | list
       }}
+
+- name: PHASE 4 | Fall back to major-version operating system
+  ansible.builtin.set_fact:
+    configure_satellite_ami_matching_operating_systems: >-
+      {{
+        configure_satellite_ami_all_operating_systems
+        | selectattr(
+            'Title',
+            'in',
+            [
+              'RHEL ' ~ configure_satellite_ami_builder_rhel_major,
+              'RedHat ' ~ configure_satellite_ami_builder_rhel_major,
+              'Red Hat Enterprise Linux '
+              ~ configure_satellite_ami_builder_rhel_major
+            ]
+          )
+        | list
+      }}
+  when:
+    - configure_satellite_ami_matching_operating_systems | length == 0
 
 - name: PHASE 4 | Validate Satellite operating system
   ansible.builtin.assert:
     that:
       - configure_satellite_ami_matching_operating_systems | length == 1
     fail_msg: >-
-      Unable to uniquely resolve Satellite operating system
-      {{ configure_satellite_ami_operating_system }}.
+      Unable to uniquely resolve a Satellite operating system for Image
+      Builder {{ configure_satellite_ami_selected_builder }}.
+      Expected one of:
+      {{ configure_satellite_ami_expected_operating_system_titles }}.
       Available operating systems:
       {{
         configure_satellite_ami_all_operating_systems
@@ -532,7 +569,7 @@
         | list
       }}.
 
-- name: PHASE 4 | Set operating-system facts
+- name: PHASE 4 | Set resolved operating-system facts
   ansible.builtin.set_fact:
     configure_satellite_ami_operating_system_id: >-
       {{
@@ -542,6 +579,19 @@
       {{
         configure_satellite_ami_matching_operating_systems[0]['Title']
       }}
+
+- name: PHASE 4 | Display resolved Satellite operating system
+  ansible.builtin.debug:
+    msg:
+      - >-
+        Builder RHEL version:
+        {{ configure_satellite_ami_builder_rhel_version }}
+      - >-
+        Satellite operating-system title:
+        {{ configure_satellite_ami_operating_system_title }}
+      - >-
+        Satellite operating-system ID:
+        {{ configure_satellite_ami_operating_system_id }}
 
 ###############################################################################
 # PHASE 5 | Verify AMI visibility

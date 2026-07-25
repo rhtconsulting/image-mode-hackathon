@@ -70,7 +70,7 @@ controller_templates:
     survey_enabled: false
     extra_vars:
 
-      configure_satellite_ami_compute_resource_name: "AWS-POC"
+      configure_satellite_ami_compute_resource_name: "AWS Image Mode"
       configure_satellite_ami_image_name: "AWS-RHEL-Dev"
       configure_satellite_ami_username: "cloud-user"
       configure_satellite_ami_architecture: "x86_64"

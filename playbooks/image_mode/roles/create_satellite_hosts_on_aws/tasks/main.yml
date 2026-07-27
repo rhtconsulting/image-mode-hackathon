@@ -345,60 +345,98 @@
     create_satellite_hosts_on_aws_domain_id: >-
       {{ create_satellite_hosts_on_aws_domain_matches[0]['Id'] }}
 
-- name: PHASE 4 | List matching Satellite subnets
+###############################################################################
+# PHASE 4 | Resolve AWS EC2 subnet
+#
+# Satellite's `hammer subnet list` searches Satellite-managed subnet records.
+# The target subnet is Terraform-managed in AWS and is therefore resolved
+# directly through the AWS EC2 API.
+###############################################################################
+
+- name: PHASE 4 | Resolve requested AWS subnet CIDR
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_subnet_cidr: >-
+      {{
+        create_satellite_hosts_on_aws_subnet_network
+        | string
+        | trim
+      }}
+
+- name: PHASE 4 | Discover matching AWS EC2 subnet
   ansible.builtin.command:
     argv:
-      - hammer
+      - aws
+      - ec2
+      - describe-subnets
+      - --region
+      - "{{ create_satellite_hosts_on_aws_aws_region }}"
+      - --filters
+      - >-
+        Name=cidr-block,Values={{
+          create_satellite_hosts_on_aws_subnet_cidr
+        }}
+      - >-
+        Name=availability-zone,Values={{
+          create_satellite_hosts_on_aws_availability_zone
+        }}
+      - Name=state,Values=available
+      - --query
+      - >-
+        Subnets[].{
+          SubnetId:SubnetId,
+          CidrBlock:CidrBlock,
+          AvailabilityZone:AvailabilityZone,
+          VpcId:VpcId,
+          Name:Tags[?Key==`Name`]|[0].Value
+        }
       - --output
       - json
-      - subnet
-      - list
-      - --organization-id
-      - "{{ create_satellite_hosts_on_aws_organization_id }}"
-      - --location-id
-      - "{{ create_satellite_hosts_on_aws_location_id }}"
-      - --per-page
-      - "1000"
   register: create_satellite_hosts_on_aws_subnet_lookup
   changed_when: false
 
-- name: PHASE 4 | Parse matching subnet
+- name: PHASE 4 | Parse matching AWS EC2 subnets
   ansible.builtin.set_fact:
     create_satellite_hosts_on_aws_subnet_matches: >-
       {{
         create_satellite_hosts_on_aws_subnet_lookup.stdout
         | from_json
-        | selectattr(
-            'Network',
-            'defined'
-          )
-        | selectattr(
-            'Network',
-            'equalto',
-            create_satellite_hosts_on_aws_subnet_network
-            | regex_replace('/.*$', '')
-          )
-        | list
       }}
 
-- name: PHASE 4 | Validate subnet lookup
+- name: PHASE 4 | Validate AWS EC2 subnet lookup
   ansible.builtin.assert:
     that:
       - create_satellite_hosts_on_aws_subnet_matches | length == 1
     fail_msg: >-
-      Unable to uniquely resolve Satellite subnet for network
-      {{ create_satellite_hosts_on_aws_subnet_network }}.
+      Unable to uniquely resolve an available AWS subnet.
 
-      Available subnets:
-      {{
-        create_satellite_hosts_on_aws_subnet_lookup.stdout
-        | from_json
-      }}
+      Requested CIDR:
+      {{ create_satellite_hosts_on_aws_subnet_cidr }}
 
-- name: PHASE 4 | Set subnet ID
+      Requested availability zone:
+      {{ create_satellite_hosts_on_aws_availability_zone }}
+
+      AWS region:
+      {{ create_satellite_hosts_on_aws_aws_region }}
+
+      Matching AWS subnets:
+      {{ create_satellite_hosts_on_aws_subnet_matches }}
+
+- name: PHASE 4 | Set resolved AWS subnet details
   ansible.builtin.set_fact:
     create_satellite_hosts_on_aws_subnet_id: >-
-      {{ create_satellite_hosts_on_aws_subnet_matches[0]['Id'] }}
+      {{
+        create_satellite_hosts_on_aws_subnet_matches[0].SubnetId
+      }}
+    create_satellite_hosts_on_aws_subnet_vpc_id: >-
+      {{
+        create_satellite_hosts_on_aws_subnet_matches[0].VpcId
+      }}
+    create_satellite_hosts_on_aws_subnet_name: >-
+      {{
+        create_satellite_hosts_on_aws_subnet_matches[0].Name
+        | default('', true)
+      }}
+
 
 - name: PHASE 4 | Resolve architecture
   ansible.builtin.command:

@@ -1250,11 +1250,6 @@ resource "aws_iam_role_policy" "aap_s3_read" {
 ############################################################
 
 resource "aws_iam_policy" "ec2_discovery" {
-
-  depends_on = [
-    terraform_data.preflight_cleanup
-  ]
-
   name = "${var.environment_name}-ec2-discovery"
   description = (
 
@@ -1300,7 +1295,9 @@ resource "aws_iam_policy" "ec2_discovery" {
   })
 
   depends_on = [
-    terraform_data.preflight_cleanup
+    terraform_data.preflight_cleanup,
+     aws_iam_role.aap
+
   ]
 
   tags = {
@@ -2296,11 +2293,6 @@ resource "aws_iam_role_policy" "vmimport" {
 ############################################################
 
 resource "aws_iam_policy" "bootc_ami_import_caller" {
-
-  depends_on = [
-    terraform_data.preflight_cleanup
-  ]
-
   name = "${var.environment_name}-bootc-ami-import-caller"
 
   description = (

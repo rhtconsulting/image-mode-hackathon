@@ -2002,16 +2002,19 @@ resource "aws_iam_instance_profile" "gitlab_runtime" {
 ############################################################
 
 resource "aws_s3_bucket" "image_mode_artifacts" {
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
 
   bucket = "${var.environment_name}-image-mode-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
 
   force_destroy = true
 
   tags = {
-    Name        = "${var.environment_name}-image-mode-artifacts"
+    Name = "${var.environment_name}-image-mode-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+
     Environment = var.environment_name
-    ManagedBy   = "Terraform"
-    Purpose     = "Image Mode build artifacts and VM import staging"
+    Purpose     = "Image Mode AMI build artifacts"
   }
 }
 

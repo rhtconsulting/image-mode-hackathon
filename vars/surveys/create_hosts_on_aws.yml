@@ -27,7 +27,7 @@ create_satellite_hosts_on_aws_survey:
       variable: "create_satellite_hosts_on_aws_hostname"
       type: "text"
       required: true
-      default: "aap-1"
+      default: "sample-rhel-server"
       min: 1
       max: 63
 

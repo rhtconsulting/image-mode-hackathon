@@ -110,8 +110,9 @@ create_satellite_hosts_on_aws_operating_system_prefix: "RHEL"
 ###############################################################################
 
 create_satellite_hosts_on_aws_managed: true
-create_satellite_hosts_on_aws_build: true
+create_satellite_hosts_on_aws_build: false
 create_satellite_hosts_on_aws_enabled: true
+reate_satellite_hosts_on_aws_provision_method: "image"
 
 # Image-based provisioning normally uses cloud-init/user data.
 create_satellite_hosts_on_aws_provision_method: "image"

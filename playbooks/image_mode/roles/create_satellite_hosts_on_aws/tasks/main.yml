@@ -882,7 +882,7 @@
       - create
 
       - --name
-      - "{{ create_satellite_hosts_on_aws_target_hostname }}"
+      - "{{ create_satellite_hosts_on_aws_hostname }}"
 
       - --organization-id
       - "{{ create_satellite_hosts_on_aws_organization_id }}"
@@ -929,12 +929,7 @@
         }}
 
       - --build
-      - >-
-        {{
-          create_satellite_hosts_on_aws_build
-          | bool
-          | ternary('true', 'false')
-        }}
+      - "false"
 
       - --enabled
       - >-
@@ -945,7 +940,7 @@
         }}
 
       - --provision-method
-      - "{{ create_satellite_hosts_on_aws_provision_method }}"
+      - "image"
 
       - --interface
       - >-
@@ -978,7 +973,7 @@
         managed_ip=public_ip
   register: create_satellite_hosts_on_aws_create_result
   changed_when: true
-  no_log: false
+  no_log: true
   when:
     - create_satellite_hosts_on_aws_existing_hosts | length == 0
 

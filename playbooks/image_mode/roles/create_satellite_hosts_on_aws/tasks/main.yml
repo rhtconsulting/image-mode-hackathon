@@ -594,6 +594,83 @@
   ansible.builtin.set_fact:
     create_satellite_hosts_on_aws_operating_system_id: >-
       {{ create_satellite_hosts_on_aws_os_matches[0]['Id'] }}
+###############################################################################
+# PHASE 4 | Resolve partition table
+#
+# Hammer requires a partition table when the host is created without a host
+# group, including image-based provisioning. The table must be associated with
+# the selected operating system.
+###############################################################################
+
+- name: PHASE 4 | List partition tables for selected operating system
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - partition-table
+      - list
+      - --operatingsystem-id
+      - "{{ create_satellite_hosts_on_aws_operating_system_id }}"
+      - --organization-id
+      - "{{ create_satellite_hosts_on_aws_organization_id }}"
+      - --location-id
+      - "{{ create_satellite_hosts_on_aws_location_id }}"
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_partition_table_lookup
+  changed_when: false
+
+- name: PHASE 4 | Parse partition-table lookup
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_available_partition_tables: >-
+      {{
+        create_satellite_hosts_on_aws_partition_table_lookup.stdout
+        | default('[]', true)
+        | from_json
+      }}
+
+- name: PHASE 4 | Select requested partition table
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_partition_table_matches: >-
+      {{
+        create_satellite_hosts_on_aws_available_partition_tables
+        | selectattr('Name', 'defined')
+        | selectattr(
+            'Name',
+            'equalto',
+            create_satellite_hosts_on_aws_partition_table
+          )
+        | list
+      }}
+
+- name: PHASE 4 | Validate partition-table lookup
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_partition_table_matches | length == 1
+    fail_msg: >-
+      Unable to uniquely resolve partition table
+      {{ create_satellite_hosts_on_aws_partition_table }}
+      for operating system
+      {{ create_satellite_hosts_on_aws_operating_system }}.
+
+      Operating-system ID:
+      {{ create_satellite_hosts_on_aws_operating_system_id }}
+
+      Available partition tables:
+      {{
+        create_satellite_hosts_on_aws_available_partition_tables
+        | map(attribute='Name')
+        | list
+      }}
+
+- name: PHASE 4 | Set partition-table ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_partition_table_id: >-
+      {{
+        create_satellite_hosts_on_aws_partition_table_matches[0]['Id']
+      }}
+
 
 - name: PHASE 4 | List compute-resource images
   ansible.builtin.command:
@@ -874,52 +951,45 @@
 ###############################################################################
 # PHASE 7 | Create AWS host through Satellite
 ###############################################################################
+
 - name: PHASE 7 | Create Satellite-managed AWS host
   ansible.builtin.command:
     argv:
       - hammer
       - host
       - create
-
       - --name
-      - "{{ create_satellite_hosts_on_aws_hostname }}"
-
+      - "{{ create_satellite_hosts_on_aws_target_hostname }}"
       - --organization-id
       - "{{ create_satellite_hosts_on_aws_organization_id }}"
-
       - --location-id
       - "{{ create_satellite_hosts_on_aws_location_id }}"
-
       - --domain-id
       - "{{ create_satellite_hosts_on_aws_domain_id }}"
-
       - --architecture-id
       - "{{ create_satellite_hosts_on_aws_architecture_id }}"
-
       - --operatingsystem-id
       - "{{ create_satellite_hosts_on_aws_operating_system_id }}"
-
+      - --partition-table-id
+      - "{{ create_satellite_hosts_on_aws_partition_table_id }}"
       - --compute-resource-id
       - "{{ create_satellite_hosts_on_aws_compute_resource_id }}"
-
       - --compute-profile
-      - "{{ create_satellite_hosts_on_aws_compute_profile | default('1-Small') }}"
-
+      - >-
+        {{
+          create_satellite_hosts_on_aws_compute_profile
+          | default('1-Small')
+        }}
       - --image-id
       - "{{ create_satellite_hosts_on_aws_image_id }}"
-
       - --content-source
       - "{{ create_satellite_hosts_on_aws_resolved_content_source }}"
-
       - --content-view
       - "{{ create_satellite_hosts_on_aws_content_view }}"
-
       - --lifecycle-environment
       - "{{ create_satellite_hosts_on_aws_lifecycle_environment }}"
-
       - --root-password
       - "{{ create_satellite_hosts_on_aws_root_password }}"
-
       - --managed
       - >-
         {{
@@ -927,10 +997,8 @@
           | bool
           | ternary('true', 'false')
         }}
-
       - --build
       - "false"
-
       - --enabled
       - >-
         {{
@@ -938,10 +1006,8 @@
           | bool
           | ternary('true', 'false')
         }}
-
       - --provision-method
       - "image"
-
       - --interface
       - >-
         primary={{
@@ -960,7 +1026,6 @@
           | ternary('true', 'false')
         }},
         domain_id={{ create_satellite_hosts_on_aws_domain_id }}
-
       - --compute-attributes
       - >-
         flavor_id={{ create_satellite_hosts_on_aws_flavor }},
@@ -973,7 +1038,7 @@
         managed_ip=public_ip
   register: create_satellite_hosts_on_aws_create_result
   changed_when: true
-  no_log: false
+  no_log: true
   when:
     - create_satellite_hosts_on_aws_existing_hosts | length == 0
 

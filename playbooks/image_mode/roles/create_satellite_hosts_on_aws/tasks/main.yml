@@ -824,7 +824,7 @@
       - "{{ create_satellite_hosts_on_aws_activation_key }}"
 
       - --root-password
-      - "{{ create_satellite_hosts_on_aws_root_password }}"
+      - "{{ create_satellite_hosts_on_aws_root_password.stdout_lines }}"
 
       - --managed
       - "{{ create_satellite_hosts_on_aws_managed | bool | ternary('true', 'false') }}"
@@ -853,7 +853,7 @@
         security_group_ids={{ create_satellite_hosts_on_aws_effective_security_groups | join(';') }}
   register: create_satellite_hosts_on_aws_create_result
   changed_when: true
-  no_log: true
+  no_log: false
   when:
     - create_satellite_hosts_on_aws_existing_hosts | length == 0
 

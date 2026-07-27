@@ -762,7 +762,7 @@
       Effective security group IDs:
       {{ create_satellite_hosts_on_aws_effective_security_groups }}
 
-- name: PHASE 5 | Find existing Satellite host
+- name: PHASE 5 | List possible matching Satellite hosts
   ansible.builtin.command:
     argv:
       - hammer
@@ -770,8 +770,6 @@
       - json
       - host
       - list
-      - --search
-      - "name=\"{{ create_satellite_hosts_on_aws_fqdn }}\""
       - --organization-id
       - "{{ create_satellite_hosts_on_aws_organization_id }}"
       - --per-page
@@ -779,20 +777,43 @@
   register: create_satellite_hosts_on_aws_existing_host_lookup
   changed_when: false
 
-- name: PHASE 5 | Parse existing Satellite host lookup
+- name: PHASE 5 | Parse Satellite host list
   ansible.builtin.set_fact:
-    create_satellite_hosts_on_aws_existing_hosts: >-
+    create_satellite_hosts_on_aws_all_hosts: >-
       {{
         create_satellite_hosts_on_aws_existing_host_lookup.stdout
         | default('[]', true)
         | from_json
       }}
+
+- name: PHASE 5 | Select exact existing Satellite host
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_existing_hosts: >-
+      {{
+        create_satellite_hosts_on_aws_all_hosts
+        | selectattr('Name', 'defined')
+        | selectattr(
+            'Name',
+            'equalto',
+            create_satellite_hosts_on_aws_fqdn
+          )
+        | list
+      }}
+
+- name: PHASE 5 | Display existing-host lookup result
+  ansible.builtin.debug:
+    msg:
+      requested_host: "{{ create_satellite_hosts_on_aws_fqdn }}"
+      exact_matches: "{{ create_satellite_hosts_on_aws_existing_hosts }}"
+      exact_match_count: >-
+        {{ create_satellite_hosts_on_aws_existing_hosts | length }}
+
 - name: PHASE 5 | Validate existing host uniqueness
   ansible.builtin.assert:
     that:
       - create_satellite_hosts_on_aws_existing_hosts | length <= 1
     fail_msg: >-
-      More than one Satellite host matched
+      More than one exact Satellite host matched
       {{ create_satellite_hosts_on_aws_fqdn }}.
       Matching hosts:
       {{ create_satellite_hosts_on_aws_existing_hosts }}

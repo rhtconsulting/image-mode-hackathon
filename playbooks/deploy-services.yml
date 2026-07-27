@@ -23,9 +23,8 @@
 - name: Stage SSL Certs on Image Builder
   ansible.builtin.import_playbook: stage-certs-on-image-builder-hosts.yml
 
-- name: Configure Ansible Automation Platform For Image Mode Lab
-  ansible.builtin.import_playbook: configure-aap-image-mode-ci-cd-workflow.yml
-
-
 - name: Activate Satellite Registration On All Hosts
   ansible.builtin.import_playbook: activate-satellite-subscription.yml
+
+- name: Configure Ansible Automation Platform For Image Mode Lab
+  ansible.builtin.import_playbook: configure-aap-image-mode-ci-cd-workflow.yml

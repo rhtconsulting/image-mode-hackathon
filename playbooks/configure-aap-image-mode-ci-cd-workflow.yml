@@ -176,6 +176,22 @@
     image_builder_job_timeout: 3600
     image_builder_job_poll_interval: 10
 
+    ###########################################################################
+    # Image Mode deployment workflow launch configuration
+    ###########################################################################
+
+    image_mode_deployment_workflow_name: >-
+      Image Mode Deploy Sample Image to AWS
+
+    launch_image_mode_deployment_workflow: true
+    image_mode_deployment_workflow_timeout: 14400
+    image_mode_deployment_workflow_poll_interval: 15
+
+    # Optional workflow launch variables. These are passed as extra_vars when
+    # launching the workflow. Keep this as an empty mapping when the workflow
+    # surveys or job templates provide all required defaults.
+    image_mode_deployment_workflow_extra_vars: {}
+
   pre_tasks:
 
     #Instead of specifying all surveys above, we will load the entire directory at one time 
@@ -1873,6 +1889,309 @@
       tags:
         - launch_image_builders
 
+
+    ###########################################################################
+    # Automatically launch the Image Mode AWS deployment workflow
+    #
+    # This workflow is launched only after the Image Builder configuration job
+    # completes successfully. This ensures the builder hosts are prepared
+    # before the AMI build and Satellite configuration workflow begins.
+    ###########################################################################
+
+    - name: Look up Image Mode deployment workflow job template
+      ansible.builtin.uri:
+        url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/workflow_job_templates/?name='
+            ~ (
+                image_mode_deployment_workflow_name
+                | urlencode
+              )
+          }}
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ controller_validate_certs }}"
+        status_code: 200
+        timeout: 30
+        return_content: true
+      register: image_mode_deployment_workflow_lookup
+      changed_when: false
+      no_log: true
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - >-
+          (
+            not launch_image_builder_configuration | bool
+          )
+          or
+          (
+            configure_image_builder_job_status is defined
+            and configure_image_builder_job_status.json is defined
+            and configure_image_builder_job_status.json.status is defined
+            and configure_image_builder_job_status.json.status == 'successful'
+          )
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Validate Image Mode deployment workflow lookup
+      ansible.builtin.assert:
+        that:
+          - image_mode_deployment_workflow_lookup.json is defined
+          - image_mode_deployment_workflow_lookup.json.count | int == 1
+          - >-
+            image_mode_deployment_workflow_lookup.json.results
+            | length
+            == 1
+          - >-
+            image_mode_deployment_workflow_lookup.json.results[0].id
+            is defined
+          - >-
+            image_mode_deployment_workflow_lookup.json.results[0].name
+            == image_mode_deployment_workflow_name
+        fail_msg: >-
+          The '{{ image_mode_deployment_workflow_name }}' workflow job
+          template was not found uniquely in Automation Controller after the
+          CaaC configuration completed.
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_lookup is not skipped
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Set Image Mode deployment workflow template facts
+      ansible.builtin.set_fact:
+        image_mode_deployment_workflow_template_id: >-
+          {{
+            image_mode_deployment_workflow_lookup.json.results[0].id
+            | int
+          }}
+
+        image_mode_deployment_workflow_template_api_url: >-
+          {{
+            image_mode_deployment_workflow_lookup.json.results[0].url
+          }}
+
+        image_mode_deployment_workflow_template_ui_url: >-
+          {{
+            controller_host
+            ~ '/execution/templates/workflow-job-template/'
+            ~ (
+                image_mode_deployment_workflow_lookup.json.results[0].id
+                | string
+              )
+            ~ '/details'
+          }}
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_lookup is not skipped
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Launch Image Mode deployment workflow job template
+      ansible.builtin.uri:
+        url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/workflow_job_templates/'
+            ~ (image_mode_deployment_workflow_template_id | string)
+            ~ '/launch/'
+          }}
+        method: POST
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ controller_validate_certs }}"
+        status_code:
+          - 201
+          - 202
+        timeout: 30
+        return_content: true
+        body_format: json
+        body:
+          extra_vars: "{{ image_mode_deployment_workflow_extra_vars }}"
+      register: image_mode_deployment_workflow_launch_result
+      changed_when: true
+      no_log: true
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_template_id is defined
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Validate Image Mode deployment workflow launch response
+      ansible.builtin.assert:
+        that:
+          - image_mode_deployment_workflow_launch_result.json is defined
+          - image_mode_deployment_workflow_launch_result.json.id is defined
+          - image_mode_deployment_workflow_launch_result.json.id | int > 0
+        fail_msg: >-
+          Automation Controller accepted the workflow launch request but did
+          not return a valid workflow job identifier for
+          '{{ image_mode_deployment_workflow_name }}'.
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_launch_result is not skipped
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Set launched Image Mode deployment workflow facts
+      ansible.builtin.set_fact:
+        image_mode_deployment_workflow_job_id: >-
+          {{
+            image_mode_deployment_workflow_launch_result.json.id
+            | int
+          }}
+
+        image_mode_deployment_workflow_job_api_url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/workflow_jobs/'
+            ~ (
+                image_mode_deployment_workflow_launch_result.json.id
+                | string
+              )
+            ~ '/'
+          }}
+
+        image_mode_deployment_workflow_job_ui_url: >-
+          {{
+            controller_host
+            ~ '/execution/jobs/workflow/'
+            ~ (
+                image_mode_deployment_workflow_launch_result.json.id
+                | string
+              )
+            ~ '/output'
+          }}
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_launch_result is not skipped
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Display launched Image Mode deployment workflow
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Launched workflow job template:
+            {{ image_mode_deployment_workflow_name }}
+          - >-
+            Workflow job ID:
+            {{ image_mode_deployment_workflow_job_id }}
+          - >-
+            Workflow job URL:
+            {{ image_mode_deployment_workflow_job_ui_url }}
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_job_id is defined
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Wait for Image Mode deployment workflow to finish
+      ansible.builtin.uri:
+        url: "{{ image_mode_deployment_workflow_job_api_url }}"
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ controller_validate_certs }}"
+        status_code: 200
+        timeout: 30
+        return_content: true
+      register: image_mode_deployment_workflow_status
+      changed_when: false
+      failed_when: false
+      until:
+        - image_mode_deployment_workflow_status.json is defined
+        - image_mode_deployment_workflow_status.json.status is defined
+        - >-
+          image_mode_deployment_workflow_status.json.status
+          in
+          [
+            'successful',
+            'failed',
+            'error',
+            'canceled'
+          ]
+      retries: >-
+        {{
+          (
+            image_mode_deployment_workflow_timeout
+            | int
+          )
+          //
+          (
+            image_mode_deployment_workflow_poll_interval
+            | int
+          )
+        }}
+      delay: "{{ image_mode_deployment_workflow_poll_interval | int }}"
+      no_log: true
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_job_api_url is defined
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Validate Image Mode deployment workflow result
+      ansible.builtin.assert:
+        that:
+          - image_mode_deployment_workflow_status.json is defined
+          - image_mode_deployment_workflow_status.json.status is defined
+          - >-
+            image_mode_deployment_workflow_status.json.status
+            == 'successful'
+        fail_msg:
+          - >-
+            The '{{ image_mode_deployment_workflow_name }}' workflow did not
+            complete successfully.
+          - >-
+            Workflow job ID:
+            {{
+              image_mode_deployment_workflow_job_id
+              | default('unknown')
+            }}
+          - >-
+            Final status:
+            {{
+              image_mode_deployment_workflow_status.json.status
+              | default('unknown')
+            }}
+          - >-
+            Explanation:
+            {{
+              image_mode_deployment_workflow_status.json.job_explanation
+              | default('No workflow job explanation was returned.')
+            }}
+          - >-
+            Review the workflow output:
+            {{
+              image_mode_deployment_workflow_job_ui_url
+              | default(controller_host)
+            }}
+        success_msg: >-
+          The '{{ image_mode_deployment_workflow_name }}' workflow completed
+          successfully.
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_status is defined
+        - image_mode_deployment_workflow_status is not skipped
+      tags:
+        - launch_image_mode_workflow
+
+
     ###########################################################################
     # Display completed configuration
     ###########################################################################
@@ -1884,22 +2203,29 @@
           - "Organization: {{ aap_organization_name }}"
           - "AAP API endpoint: {{ controller_host }}"
           - "AAP administrator username: {{ controller_username }}"
+
           - >-
             Infrastructure inventory:
             {{ infrastructure_inventory_name }}
+
           - "Image builder inventory: {{ image_builder_inventory_name }}"
           - "Quay registry: {{ resolved_quay_hostname }}"
+
           - >-
             Infrastructure hosts configured:
             {{ terraform_infrastructure_hosts | length }}
+
           - >-
             Image builder hosts configured:
             {{ terraform_image_builder_hosts | length }}
+
           - >-
             Managed-host connection addresses:
             private_ip from the Terraform-generated inventory
+
           - "Machine credential key source: AWS Secrets Manager"
           - "Quay credential source: AWS Secrets Manager"
+
           - >-
             Builder configuration automatically launched:
             {{
@@ -1910,12 +2236,14 @@
               )
               | ternary('yes', 'no')
             }}
+
           - >-
             Builder configuration job ID:
             {{
               configure_image_builder_job_id
               | default('not launched')
             }}
+
           - >-
             Builder configuration job status:
             {{
@@ -1924,8 +2252,72 @@
                 if (
                   configure_image_builder_job_status is defined
                   and configure_image_builder_job_status.json is defined
-                  and configure_image_builder_job_status.json.status is defined
+                  and
+                  configure_image_builder_job_status.json.status
+                  is defined
                 )
                 else 'not launched'
               )
             }}
+
+          - >-
+            Builder configuration job URL:
+            {{
+              configure_image_builder_job_ui_url
+              | default('not launched')
+            }}
+
+          - >-
+            Image Mode deployment workflow automatically launched:
+            {{
+              (
+                launch_image_mode_deployment_workflow
+                | bool
+                and not ansible_check_mode
+              )
+              | ternary('yes', 'no')
+            }}
+
+          - >-
+            Image Mode deployment workflow:
+            {{
+              image_mode_deployment_workflow_name
+              | default(
+                  'Image Mode Deploy Sample Image to AWS',
+                  true
+                )
+            }}
+
+          - >-
+            Image Mode deployment workflow job ID:
+            {{
+              image_mode_deployment_workflow_job_id
+              | default('not launched')
+            }}
+
+          - >-
+            Image Mode deployment workflow job status:
+            {{
+              (
+                image_mode_deployment_workflow_status.json.status
+                if (
+                  image_mode_deployment_workflow_status is defined
+                  and
+                  image_mode_deployment_workflow_status.json is defined
+                  and
+                  image_mode_deployment_workflow_status.json.status
+                  is defined
+                )
+                else 'not launched'
+              )
+            }}
+
+          - >-
+            Image Mode deployment workflow job URL:
+            {{
+              image_mode_deployment_workflow_job_ui_url
+              | default('not launched')
+            }}
+      tags:
+        - always
+        - summary

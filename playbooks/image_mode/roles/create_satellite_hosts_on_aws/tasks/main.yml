@@ -769,17 +769,8 @@
 ###############################################################################
 
 - name: PHASE 6 | Generate random root password
-  ansible.builtin.set_fact:
-    create_satellite_hosts_on_aws_root_password: >-
-      {{
-        lookup(
-          'ansible.builtin.password',
-          '/dev/null',
-          length=create_satellite_hosts_on_aws_root_password_length,
-          chars=['ascii_letters', 'digits']
-        )
-      }}
-  no_log: true
+  ansible.builtin.shell: "date +%s | sha256sum | base64 | head -c 32 ; echo"
+  no_log: false
   when:
     - create_satellite_hosts_on_aws_existing_hosts | length == 0
 

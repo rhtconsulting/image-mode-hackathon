@@ -175,7 +175,22 @@
       - create_satellite_hosts_on_aws_compute_resource | trim | length > 0
       - create_satellite_hosts_on_aws_compute_image | trim | length > 0
       - create_satellite_hosts_on_aws_flavor | trim | length > 0
-      - create_satellite_hosts_on_aws_aws_region | trim | length > 0
+      - >-
+        (
+          create_satellite_hosts_on_aws_region
+          | default(
+              satellite_compute_region
+              | default(
+                  aws_region
+                  | default('', true),
+                  true
+                ),
+              true
+            )
+          | string
+          | trim
+          | length
+        ) > 0
       - create_satellite_hosts_on_aws_availability_zone | trim | length > 0
       - >-
         create_satellite_hosts_on_aws_subnet_network
@@ -186,6 +201,11 @@
       One or more required create_satellite_hosts_on_aws role variables
       are missing.
 
+      The AWS region must be supplied through one of:
+
+      - create_satellite_hosts_on_aws_region
+      - satellite_compute_region
+      - aws_region
 ###############################################################################
 # PHASE 3 | Resolve Satellite resources
 ###############################################################################

@@ -140,3 +140,7 @@ create_satellite_hosts_on_aws_interface_provision: true
 ###############################################################################
 
 create_satellite_hosts_on_aws_parameters: {}
+
+
+# Partition table associated with the target RHEL operating system.
+create_satellite_hosts_on_aws_partition_table: "Kickstart default"

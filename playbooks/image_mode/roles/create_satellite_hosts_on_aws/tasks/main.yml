@@ -949,6 +949,46 @@
     - create_satellite_hosts_on_aws_existing_hosts | length == 0
 
 ###############################################################################
+# PHASE 7 | Build EC2 compute attributes
+###############################################################################
+
+- name: PHASE 7 | Build AWS EC2 compute attributes
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_compute_attributes:
+      flavor_id: "{{ create_satellite_hosts_on_aws_flavor }}"
+      availability_zone: >-
+        {{ create_satellite_hosts_on_aws_availability_zone }}
+      subnet_id: "{{ create_satellite_hosts_on_aws_subnet_id }}"
+      security_group_ids: >-
+        {{ create_satellite_hosts_on_aws_effective_security_groups }}
+      managed_ip: public_ip
+
+- name: PHASE 7 | Validate AWS EC2 compute attributes
+  ansible.builtin.assert:
+    that:
+      - >-
+        create_satellite_hosts_on_aws_compute_attributes
+        is mapping
+      - >-
+        create_satellite_hosts_on_aws_compute_attributes.security_group_ids
+        is sequence
+      - >-
+        create_satellite_hosts_on_aws_compute_attributes.security_group_ids
+        is not string
+      - >-
+        create_satellite_hosts_on_aws_compute_attributes.security_group_ids
+        | length > 0
+    fail_msg: >-
+      EC2 compute attribute security_group_ids must be an array of AWS
+      security-group IDs, not a semicolon-delimited string.
+
+      Effective value:
+      {{
+        create_satellite_hosts_on_aws_compute_attributes.security_group_ids
+        | default('undefined')
+      }}
+
+###############################################################################
 # PHASE 7 | Create AWS host through Satellite
 ###############################################################################
 
@@ -958,38 +998,53 @@
       - hammer
       - host
       - create
+
       - --name
       - "{{ create_satellite_hosts_on_aws_target_hostname }}"
+
       - --organization-id
       - "{{ create_satellite_hosts_on_aws_organization_id }}"
+
       - --location-id
       - "{{ create_satellite_hosts_on_aws_location_id }}"
+
       - --domain-id
       - "{{ create_satellite_hosts_on_aws_domain_id }}"
+
       - --architecture-id
       - "{{ create_satellite_hosts_on_aws_architecture_id }}"
+
       - --operatingsystem-id
       - "{{ create_satellite_hosts_on_aws_operating_system_id }}"
+
       - --partition-table-id
       - "{{ create_satellite_hosts_on_aws_partition_table_id }}"
+
       - --compute-resource-id
       - "{{ create_satellite_hosts_on_aws_compute_resource_id }}"
+
       - --compute-profile
       - >-
         {{
           create_satellite_hosts_on_aws_compute_profile
           | default('1-Small')
         }}
+
       - --image-id
       - "{{ create_satellite_hosts_on_aws_image_id }}"
+
       - --content-source
       - "{{ create_satellite_hosts_on_aws_resolved_content_source }}"
+
       - --content-view
       - "{{ create_satellite_hosts_on_aws_content_view }}"
+
       - --lifecycle-environment
       - "{{ create_satellite_hosts_on_aws_lifecycle_environment }}"
+
       - --root-password
       - "{{ create_satellite_hosts_on_aws_root_password }}"
+
       - --managed
       - >-
         {{
@@ -997,8 +1052,10 @@
           | bool
           | ternary('true', 'false')
         }}
+
       - --build
       - "false"
+
       - --enabled
       - >-
         {{
@@ -1006,8 +1063,10 @@
           | bool
           | ternary('true', 'false')
         }}
+
       - --provision-method
       - "image"
+
       - --interface
       - >-
         primary={{
@@ -1026,19 +1085,17 @@
           | ternary('true', 'false')
         }},
         domain_id={{ create_satellite_hosts_on_aws_domain_id }}
+
       - --compute-attributes
       - >-
-        flavor_id={{ create_satellite_hosts_on_aws_flavor }},
-        availability_zone={{ create_satellite_hosts_on_aws_availability_zone }},
-        subnet_id={{ create_satellite_hosts_on_aws_subnet_id }},
-        security_group_ids={{
-          create_satellite_hosts_on_aws_effective_security_groups
-          | join(';')
-        }},
-        managed_ip=public_ip
+        {{
+          create_satellite_hosts_on_aws_compute_attributes
+          | to_json
+        }}
+
   register: create_satellite_hosts_on_aws_create_result
   changed_when: true
-  no_log: false
+  no_log: true
   when:
     - create_satellite_hosts_on_aws_existing_hosts | length == 0
 

@@ -156,6 +156,40 @@
         else create_satellite_hosts_on_aws_satellite_fqdn
       }}
 
+- name: PHASE 1 | Resolve target short hostname
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_target_hostname: >-
+      {{
+        create_satellite_hosts_on_aws_hostname
+        | default('', true)
+        | string
+        | lower
+        | trim
+        | regex_replace('\..*$', '')
+      }}
+
+- name: PHASE 1 | Validate target short hostname
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_target_hostname | length > 0
+      - >-
+        create_satellite_hosts_on_aws_target_hostname
+        is match('^[a-z0-9][a-z0-9-]*[a-z0-9]$')
+        or create_satellite_hosts_on_aws_target_hostname
+        is match('^[a-z0-9]$')
+    fail_msg: >-
+      create_satellite_hosts_on_aws_hostname must contain a valid short
+      hostname.
+      Supplied value:
+      {{ create_satellite_hosts_on_aws_hostname | default('undefined') }}
+
+- name: PHASE 1 | Resolve target FQDN
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_fqdn: >-
+      {{
+        create_satellite_hosts_on_aws_target_hostname
+      }}.{{ create_satellite_hosts_on_aws_resolved_domain }}
+
 ###############################################################################
 # PHASE 2 | Validate required variables
 ###############################################################################

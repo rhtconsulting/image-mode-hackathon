@@ -846,34 +846,46 @@
       - hammer
       - host
       - create
+
       - --name
-      - "{{ create_satellite_hosts_on_aws_hostname }}"
+      - "{{ create_satellite_hosts_on_aws_target_hostname }}"
+
       - --organization-id
       - "{{ create_satellite_hosts_on_aws_organization_id }}"
+
       - --location-id
       - "{{ create_satellite_hosts_on_aws_location_id }}"
+
       - --domain-id
       - "{{ create_satellite_hosts_on_aws_domain_id }}"
+
       - --architecture-id
       - "{{ create_satellite_hosts_on_aws_architecture_id }}"
+
       - --operatingsystem-id
       - "{{ create_satellite_hosts_on_aws_operating_system_id }}"
+
       - --compute-resource-id
       - "{{ create_satellite_hosts_on_aws_compute_resource_id }}"
+
       - --compute-profile
       - "{{ create_satellite_hosts_on_aws_compute_profile | default('1-Small') }}"
+
       - --image-id
       - "{{ create_satellite_hosts_on_aws_image_id }}"
+
       - --content-source
       - "{{ create_satellite_hosts_on_aws_resolved_content_source }}"
+
       - --content-view
       - "{{ create_satellite_hosts_on_aws_content_view }}"
+
       - --lifecycle-environment
       - "{{ create_satellite_hosts_on_aws_lifecycle_environment }}"
-      - --activation-keys
-      - "{{ create_satellite_hosts_on_aws_activation_key }}"
+
       - --root-password
       - "{{ create_satellite_hosts_on_aws_root_password }}"
+
       - --managed
       - >-
         {{
@@ -881,6 +893,7 @@
           | bool
           | ternary('true', 'false')
         }}
+
       - --build
       - >-
         {{
@@ -888,6 +901,7 @@
           | bool
           | ternary('true', 'false')
         }}
+
       - --enabled
       - >-
         {{
@@ -895,8 +909,10 @@
           | bool
           | ternary('true', 'false')
         }}
+
       - --provision-method
       - "{{ create_satellite_hosts_on_aws_provision_method }}"
+
       - --interface
       - >-
         primary={{
@@ -915,6 +931,7 @@
           | ternary('true', 'false')
         }},
         domain_id={{ create_satellite_hosts_on_aws_domain_id }}
+
       - --compute-attributes
       - >-
         flavor_id={{ create_satellite_hosts_on_aws_flavor }},
@@ -927,7 +944,7 @@
         managed_ip=public_ip
   register: create_satellite_hosts_on_aws_create_result
   changed_when: true
-  no_log: false
+  no_log: true
   when:
     - create_satellite_hosts_on_aws_existing_hosts | length == 0
 

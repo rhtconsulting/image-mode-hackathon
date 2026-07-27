@@ -607,18 +607,19 @@
       {{ create_satellite_hosts_on_aws_image_matches[0]['Id'] }}
 
 ###############################################################################
-# PHASE 5 | Resolve security groups and existing host
+# PHASE 5 | Resolve AWS security groups
 ###############################################################################
 
-- name: PHASE 5 | Build effective security-group list
+- name: PHASE 5 | Build requested security-group list
   ansible.builtin.set_fact:
-    create_satellite_hosts_on_aws_effective_security_groups: >-
+    create_satellite_hosts_on_aws_requested_security_groups: >-
       {{
         (
           [create_satellite_hosts_on_aws_security_group]
           if (
             create_satellite_hosts_on_aws_security_group
             | default('', true)
+            | string
             | trim
             | length > 0
           )
@@ -629,11 +630,122 @@
           create_satellite_hosts_on_aws_security_groups
           | default([])
         )
+        | map('string')
+        | map('trim')
+        | reject('equalto', '')
         | unique
         | list
       }}
 
-- name: PHASE 5 | Validate security-group list
+- name: PHASE 5 | Validate requested security-group list
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_requested_security_groups | length > 0
+    fail_msg: >-
+      At least one AWS security group must be supplied through
+      create_satellite_hosts_on_aws_security_group or
+      create_satellite_hosts_on_aws_security_groups.
+
+- name: PHASE 5 | Separate security-group IDs from names
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_supplied_security_group_ids: >-
+      {{
+        create_satellite_hosts_on_aws_requested_security_groups
+        | select('match', '^sg-[0-9a-fA-F]+$')
+        | list
+      }}
+    create_satellite_hosts_on_aws_supplied_security_group_names: >-
+      {{
+        create_satellite_hosts_on_aws_requested_security_groups
+        | reject('match', '^sg-[0-9a-fA-F]+$')
+        | list
+      }}
+
+- name: PHASE 5 | Resolve named AWS security groups
+  ansible.builtin.command:
+    argv:
+      - aws
+      - ec2
+      - describe-security-groups
+      - --region
+      - "{{ create_satellite_hosts_on_aws_effective_region }}"
+      - --filters
+      - >-
+        Name=vpc-id,Values={{
+          create_satellite_hosts_on_aws_subnet_vpc_id
+        }}
+      - >-
+        Name=group-name,Values={{
+          create_satellite_hosts_on_aws_supplied_security_group_names
+          | join(',')
+        }}
+      - --query
+      - >-
+        SecurityGroups[].{
+          GroupId:GroupId,
+          GroupName:GroupName,
+          VpcId:VpcId
+        }
+      - --output
+      - json
+  register: create_satellite_hosts_on_aws_security_group_lookup
+  changed_when: false
+  when:
+    - create_satellite_hosts_on_aws_supplied_security_group_names | length > 0
+
+- name: PHASE 5 | Parse resolved named security groups
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_resolved_named_security_groups: >-
+      {{
+        (
+          create_satellite_hosts_on_aws_security_group_lookup.stdout
+          | default('[]', true)
+          | from_json
+        )
+        if (
+          create_satellite_hosts_on_aws_supplied_security_group_names
+          | length > 0
+        )
+        else []
+      }}
+
+- name: PHASE 5 | Validate named security-group resolution
+  ansible.builtin.assert:
+    that:
+      - >-
+        create_satellite_hosts_on_aws_resolved_named_security_groups
+        | length
+        ==
+        create_satellite_hosts_on_aws_supplied_security_group_names
+        | length
+    fail_msg: >-
+      Unable to resolve all requested AWS security group names in VPC
+      {{ create_satellite_hosts_on_aws_subnet_vpc_id }}.
+
+      Requested names:
+      {{ create_satellite_hosts_on_aws_supplied_security_group_names }}
+
+      Resolved security groups:
+      {{ create_satellite_hosts_on_aws_resolved_named_security_groups }}
+
+- name: PHASE 5 | Build effective security-group ID list
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_effective_security_groups: >-
+      {{
+        (
+          create_satellite_hosts_on_aws_supplied_security_group_ids
+          +
+          (
+            create_satellite_hosts_on_aws_resolved_named_security_groups
+            | map(attribute='GroupId')
+            | list
+          )
+        )
+        | unique
+        | list
+      }}
+
+- name: PHASE 5 | Validate effective security-group IDs
   ansible.builtin.assert:
     that:
       - create_satellite_hosts_on_aws_effective_security_groups | length > 0
@@ -643,42 +755,14 @@
         | list
         | length == 0
     fail_msg: >-
-      At least one valid AWS security group ID must be supplied through
-      create_satellite_hosts_on_aws_security_group or
-      create_satellite_hosts_on_aws_security_groups.
+      One or more resolved AWS security groups are not valid security group
+      IDs.
 
-- name: PHASE 5 | Find existing Satellite host
-  ansible.builtin.command:
-    argv:
-      - hammer
-      - --output
-      - json
-      - host
-      - list
-      - --search
-      - "name=\"{{ create_satellite_hosts_on_aws_fqdn }}\""
-      - --organization-id
-      - "{{ create_satellite_hosts_on_aws_organization_id }}"
-      - --per-page
-      - "1000"
-  register: create_satellite_hosts_on_aws_existing_host_lookup
-  changed_when: false
+      Requested security groups:
+      {{ create_satellite_hosts_on_aws_requested_security_groups }}
 
-- name: PHASE 5 | Parse existing Satellite host
-  ansible.builtin.set_fact:
-    create_satellite_hosts_on_aws_existing_hosts: >-
-      {{
-        create_satellite_hosts_on_aws_existing_host_lookup.stdout
-        | from_json
-      }}
-
-- name: PHASE 5 | Validate existing host uniqueness
-  ansible.builtin.assert:
-    that:
-      - create_satellite_hosts_on_aws_existing_hosts | length <= 1
-    fail_msg: >-
-      More than one Satellite host matched
-      {{ create_satellite_hosts_on_aws_fqdn }}.
+      Effective security group IDs:
+      {{ create_satellite_hosts_on_aws_effective_security_groups }}
 
 ###############################################################################
 # PHASE 6 | Generate root password for a new host

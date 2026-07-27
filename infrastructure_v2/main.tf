@@ -322,7 +322,7 @@ locals {
 
 resource "terraform_data" "preflight_cleanup" {
   input = {
-    cleanup_version  = 4
+    cleanup_version  = 5
     environment_name = var.environment_name
     secret_prefix    = var.secret_prefix
     aws_region       = var.aws_region
@@ -370,6 +370,10 @@ resource "terraform_data" "preflight_cleanup" {
       "${var.environment_name}-bootc-ami-import-caller"
     )
 
+    ec2_discovery_policy_name = (
+      "${var.environment_name}-ec2-discovery"
+    )
+
     secrets = local.all_lab_secret_names
   }
 
@@ -413,6 +417,7 @@ resource "terraform_data" "preflight_cleanup" {
 
       IMAGE_MODE_ARTIFACT_POLICY_NAME="${var.environment_name}-image-mode-artifact-bucket-rw"
       BOOTC_AMI_IMPORT_POLICY_NAME="${var.environment_name}-bootc-ami-import-caller"
+      EC2_DISCOVERY_POLICY_NAME="${var.environment_name}-ec2-discovery"
 
       echo "Preflight cleanup: duplicate-prone unmanaged lab resources"
 
@@ -453,7 +458,7 @@ resource "terraform_data" "preflight_cleanup" {
       }
 
       #########################################################################
-      # IAM inline policy cleanup
+      # IAM inline role policy cleanup
       #########################################################################
 
       cleanup_inline_role_policy() {
@@ -989,10 +994,16 @@ EOF_SECRETS
         'aws_iam_policy.bootc_ami_import_caller' \
         "$BOOTC_AMI_IMPORT_POLICY_NAME"
 
+      cleanup_managed_policy \
+        'aws_iam_policy.ec2_discovery' \
+        "$EC2_DISCOVERY_POLICY_NAME"
+
       echo "Preflight cleanup complete"
     EOT
   }
 }
+
+
 resource "random_password" "generated" {
   for_each = local.generated_secret_names
 
@@ -1234,6 +1245,68 @@ resource "aws_iam_role_policy" "aap_s3_read" {
   })
 }
 
+############################################################
+# Shared AWS EC2 Discovery Policy
+############################################################
+
+resource "aws_iam_policy" "ec2_discovery" {
+  name = "${var.environment_name}-ec2-discovery"
+  description = (
+
+    "Allow Image Mode automation identities to discover AWS EC2 networking, images, instances, and related resources."
+  )
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DiscoverEC2Resources"
+        Effect = "Allow"
+        Action = [
+
+          "ec2:DescribeAccountAttributes",
+          "ec2:DescribeAddresses",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeIamInstanceProfileAssociations",
+          "ec2:DescribeImages",
+          "ec2:DescribeInstanceAttribute",
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceStatus",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeKeyPairs",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeRegions",
+          "ec2:DescribeRouteTables",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSnapshots",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeTags",
+          "ec2:DescribeVolumes",
+          "ec2:DescribeVolumeStatus",
+          "ec2:DescribeVpcAttribute",
+          "ec2:DescribeVpcEndpoints",
+          "ec2:DescribeVpcs"
+
+        ]
+
+        Resource = "*"
+      }
+    ]
+  })
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
+  tags = {
+
+    Name        = "${var.environment_name}-ec2-discovery"
+    Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "Shared EC2 resource discovery"
+  }
+}
+
 
 ############################################################
 # Satellite EC2 Host Role
@@ -1269,6 +1342,20 @@ resource "aws_iam_role" "satellite" {
   depends_on = [
     terraform_data.preflight_cleanup
   ]
+}
+
+
+############################################################
+# Satellite Host EC2 Discovery
+#
+# Allows AWS CLI and Ansible commands running directly on the
+# Satellite EC2 instance to discover AWS networking, images,
+# instances, security groups, and related EC2 resources.
+############################################################
+
+resource "aws_iam_role_policy_attachment" "satellite_ec2_discovery" {
+  role       = aws_iam_role.satellite.name
+  policy_arn = aws_iam_policy.ec2_discovery.arn
 }
 
 
@@ -1327,6 +1414,7 @@ resource "aws_iam_role_policy" "satellite_s3_read" {
           "arn:aws:s3:::${var.satellite_manifest_s3_bucket}/${var.satellite_manifest_s3_key}"
         ])
       },
+
       {
         Sid    = "ReadSatelliteArtifactBucketMetadata"
         Effect = "Allow"
@@ -1340,6 +1428,7 @@ resource "aws_iam_role_policy" "satellite_s3_read" {
           "arn:aws:s3:::${var.satellite_manifest_s3_bucket}"
         ])
       },
+
       {
         Sid    = "ListSatelliteArtifactKeys"
         Effect = "Allow"
@@ -1384,13 +1473,17 @@ resource "aws_iam_instance_profile" "satellite" {
 
   depends_on = [
     aws_iam_role_policy.satellite_secrets_read,
-    aws_iam_role_policy.satellite_s3_read
+    aws_iam_role_policy.satellite_s3_read,
+    aws_iam_role_policy_attachment.satellite_ec2_discovery
   ]
 }
 
 
 ############################################################
 # Satellite AWS EC2 Provisioning Identity
+#
+# The access key for this IAM user is configured in the
+# Satellite AWS EC2 compute resource.
 ############################################################
 
 resource "aws_iam_user" "satellite_provisioner" {
@@ -1411,7 +1504,29 @@ resource "aws_iam_user" "satellite_provisioner" {
 
 
 ############################################################
+# Satellite Compute Resource EC2 Discovery
+#
+# Allows the AWS credentials stored in Satellite's EC2
+# compute resource to populate regions, availability zones,
+# VPCs, subnets, security groups, images, instance types,
+# and existing instances.
+############################################################
+
+resource "aws_iam_user_policy_attachment" "satellite_provisioner_ec2_discovery" {
+  user       = aws_iam_user.satellite_provisioner.name
+  policy_arn = aws_iam_policy.ec2_discovery.arn
+}
+
+
+############################################################
 # Satellite AWS EC2 Provisioning Policy
+#
+# EC2 discovery permissions are supplied by:
+#
+#   aws_iam_policy.ec2_discovery
+#
+# This inline policy contains only permissions that modify or
+# create AWS resources.
 ############################################################
 
 resource "aws_iam_user_policy" "satellite_provisioner" {
@@ -1422,40 +1537,6 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
     Version = "2012-10-17"
 
     Statement = [
-      #########################################################################
-      # Discover EC2 resources
-      #########################################################################
-
-      {
-        Sid    = "DiscoverEC2Resources"
-        Effect = "Allow"
-
-        Action = [
-          "ec2:DescribeAccountAttributes",
-          "ec2:DescribeAddresses",
-          "ec2:DescribeAvailabilityZones",
-          "ec2:DescribeIamInstanceProfileAssociations",
-          "ec2:DescribeImages",
-          "ec2:DescribeInstanceAttribute",
-          "ec2:DescribeInstances",
-          "ec2:DescribeInstanceStatus",
-          "ec2:DescribeInstanceTypes",
-          "ec2:DescribeKeyPairs",
-          "ec2:DescribeNetworkInterfaces",
-          "ec2:DescribeRegions",
-          "ec2:DescribeRouteTables",
-          "ec2:DescribeSecurityGroups",
-          "ec2:DescribeSnapshots",
-          "ec2:DescribeSubnets",
-          "ec2:DescribeTags",
-          "ec2:DescribeVolumes",
-          "ec2:DescribeVolumeStatus",
-          "ec2:DescribeVpcs"
-        ]
-
-        Resource = "*"
-      },
-
       #########################################################################
       # Manage Satellite-generated EC2 key pairs
       #
@@ -1473,7 +1554,9 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
           "ec2:ImportKeyPair"
         ]
 
-        Resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:key-pair/foreman-*"
+        Resource = (
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:key-pair/foreman-*"
+        )
       },
 
       #########################################################################
@@ -1568,11 +1651,13 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
   depends_on = [
     terraform_data.preflight_cleanup,
     aws_iam_user.satellite_provisioner,
+    aws_iam_user_policy_attachment.satellite_provisioner_ec2_discovery,
     aws_iam_instance_profile.gitlab_runtime,
     aws_iam_instance_profile.lab_ec2_default,
     aws_iam_instance_profile.image_builder
   ]
 }
+
 
 ############################################################
 # Satellite AWS EC2 Provisioning Access Key
@@ -1582,7 +1667,8 @@ resource "aws_iam_access_key" "satellite_provisioner" {
   user = aws_iam_user.satellite_provisioner.name
 
   depends_on = [
-    aws_iam_user_policy.satellite_provisioner
+    aws_iam_user_policy.satellite_provisioner,
+    aws_iam_user_policy_attachment.satellite_provisioner_ec2_discovery
   ]
 }
 
@@ -1677,6 +1763,7 @@ resource "aws_secretsmanager_secret_version" "satellite_aws_secret_access_key" {
     aws_secretsmanager_secret.satellite_aws_secret_access_key
   ]
 }
+
 
 
 ############################################################
@@ -2300,8 +2387,7 @@ resource "aws_iam_policy" "bootc_ami_import_caller" {
 
 resource "aws_iam_role" "image_builder" {
   name = "${var.environment_name}-image-builder-role"
-
-    depends_on = [
+  depends_on = [
     terraform_data.preflight_cleanup
   ]
 
@@ -2376,12 +2462,19 @@ resource "aws_iam_user_policy_attachment" "rhel_iam_ami_import" {
   policy_arn = aws_iam_policy.bootc_ami_import_caller.arn
 }
 
+resource "aws_iam_user_policy_attachment" "rhel_iam_ec2_discovery" {
+  user       = aws_iam_user.rhel_iam.name
+  policy_arn = aws_iam_policy.ec2_discovery.arn
+}
+
+
 resource "aws_iam_access_key" "rhel_iam" {
   user = aws_iam_user.rhel_iam.name
 
   depends_on = [
     aws_iam_user_policy_attachment.rhel_iam_artifacts,
-    aws_iam_user_policy_attachment.rhel_iam_ami_import
+    aws_iam_user_policy_attachment.rhel_iam_ami_import,
+    aws_iam_user_policy_attachment.rhel_iam_ec2_discovery
   ]
 }
 
@@ -2717,6 +2810,7 @@ resource "aws_instance" "server" {
     aws_iam_instance_profile.satellite,
     aws_iam_role_policy.satellite_secrets_read,
     aws_iam_role_policy.satellite_s3_read,
+    aws_iam_role_policy_attachment.satellite_ec2_discovery,
 
     aws_iam_instance_profile.gitlab_runtime,
 

@@ -175,6 +175,7 @@
       - create_satellite_hosts_on_aws_compute_resource | trim | length > 0
       - create_satellite_hosts_on_aws_compute_image | trim | length > 0
       - create_satellite_hosts_on_aws_flavor | trim | length > 0
+      - create_satellite_hosts_on_aws_aws_region | trim | length > 0
       - create_satellite_hosts_on_aws_availability_zone | trim | length > 0
       - >-
         create_satellite_hosts_on_aws_subnet_network
@@ -362,6 +363,37 @@
         | trim
       }}
 
+- name: PHASE 4 | Resolve effective AWS region
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_effective_region: >-
+      {{
+        create_satellite_hosts_on_aws_region
+        | default(
+            satellite_compute_region
+            | default(
+                aws_region
+                | default('us-east-2', true),
+                true
+              ),
+            true
+          )
+        | string
+        | trim
+      }}
+
+- name: PHASE 4 | Validate effective AWS region
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_effective_region | length > 0
+    fail_msg: >-
+      Unable to resolve the AWS region.
+
+      Define one of the following variables:
+
+      - create_satellite_hosts_on_aws_region
+      - satellite_compute_region
+      - aws_region
+
 - name: PHASE 4 | Discover matching AWS EC2 subnet
   ansible.builtin.command:
     argv:
@@ -369,7 +401,7 @@
       - ec2
       - describe-subnets
       - --region
-      - "{{ create_satellite_hosts_on_aws_aws_region }}"
+      - "{{ create_satellite_hosts_on_aws_effective_region }}"
       - --filters
       - >-
         Name=cidr-block,Values={{
@@ -416,7 +448,7 @@
       {{ create_satellite_hosts_on_aws_availability_zone }}
 
       AWS region:
-      {{ create_satellite_hosts_on_aws_aws_region }}
+      {{ create_satellite_hosts_on_aws_effective_region }}
 
       Matching AWS subnets:
       {{ create_satellite_hosts_on_aws_subnet_matches }}
@@ -436,7 +468,6 @@
         create_satellite_hosts_on_aws_subnet_matches[0].Name
         | default('', true)
       }}
-
 
 - name: PHASE 4 | Resolve architecture
   ansible.builtin.command:
@@ -670,9 +701,6 @@
 
       - --domain-id
       - "{{ create_satellite_hosts_on_aws_domain_id }}"
-
-      - --subnet-id
-      - "{{ create_satellite_hosts_on_aws_subnet_id }}"
 
       - --architecture-id
       - "{{ create_satellite_hosts_on_aws_architecture_id }}"

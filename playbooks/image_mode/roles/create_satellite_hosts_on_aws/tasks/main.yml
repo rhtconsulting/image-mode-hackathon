@@ -771,8 +771,7 @@
 - name: PHASE 6 | Generate random root password
   ansible.builtin.shell: "date +%s | sha256sum | base64 | head -c 32 ; echo"
   no_log: false
-  when:
-    - create_satellite_hosts_on_aws_existing_hosts | length == 0
+  register: create_satellite_hosts_on_aws_root_password
 
 ###############################################################################
 # PHASE 7 | Create AWS host through Satellite

@@ -757,112 +757,163 @@
     fail_msg: >-
       One or more resolved AWS security groups are not valid security group
       IDs.
-
       Requested security groups:
       {{ create_satellite_hosts_on_aws_requested_security_groups }}
-
       Effective security group IDs:
       {{ create_satellite_hosts_on_aws_effective_security_groups }}
+
+- name: PHASE 5 | Find existing Satellite host
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - host
+      - list
+      - --search
+      - "name=\"{{ create_satellite_hosts_on_aws_fqdn }}\""
+      - --organization-id
+      - "{{ create_satellite_hosts_on_aws_organization_id }}"
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_existing_host_lookup
+  changed_when: false
+
+- name: PHASE 5 | Parse existing Satellite host lookup
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_existing_hosts: >-
+      {{
+        create_satellite_hosts_on_aws_existing_host_lookup.stdout
+        | default('[]', true)
+        | from_json
+      }}
+- name: PHASE 5 | Validate existing host uniqueness
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_existing_hosts | length <= 1
+    fail_msg: >-
+      More than one Satellite host matched
+      {{ create_satellite_hosts_on_aws_fqdn }}.
+      Matching hosts:
+      {{ create_satellite_hosts_on_aws_existing_hosts }}
 
 ###############################################################################
 # PHASE 6 | Generate root password for a new host
 ###############################################################################
-
 - name: PHASE 6 | Generate random root password
-  ansible.builtin.shell: "date +%s | sha256sum | base64 | head -c 32 ; echo"
-  no_log: false
-  register: create_satellite_hosts_on_aws_root_password
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_root_password: >-
+      {{
+        lookup(
+          'ansible.builtin.password',
+          '/dev/null',
+          length=create_satellite_hosts_on_aws_root_password_length
+            | default(32),
+          chars=['ascii_letters', 'digits']
+        )
+      }}
+  no_log: true
+  when:
+    - create_satellite_hosts_on_aws_existing_hosts | length == 0
 
 ###############################################################################
 # PHASE 7 | Create AWS host through Satellite
 ###############################################################################
-
 - name: PHASE 7 | Create Satellite-managed AWS host
   ansible.builtin.command:
     argv:
       - hammer
       - host
       - create
-
       - --name
       - "{{ create_satellite_hosts_on_aws_hostname }}"
-
       - --organization-id
       - "{{ create_satellite_hosts_on_aws_organization_id }}"
-
       - --location-id
       - "{{ create_satellite_hosts_on_aws_location_id }}"
-
       - --domain-id
       - "{{ create_satellite_hosts_on_aws_domain_id }}"
-
       - --architecture-id
       - "{{ create_satellite_hosts_on_aws_architecture_id }}"
-
       - --operatingsystem-id
       - "{{ create_satellite_hosts_on_aws_operating_system_id }}"
-
       - --compute-resource-id
       - "{{ create_satellite_hosts_on_aws_compute_resource_id }}"
-
       - --compute-profile
-      - "1-Small"
-
+      - "{{ create_satellite_hosts_on_aws_compute_profile | default('1-Small') }}"
       - --image-id
       - "{{ create_satellite_hosts_on_aws_image_id }}"
-
       - --content-source
       - "{{ create_satellite_hosts_on_aws_resolved_content_source }}"
-
       - --content-view
       - "{{ create_satellite_hosts_on_aws_content_view }}"
-
       - --lifecycle-environment
       - "{{ create_satellite_hosts_on_aws_lifecycle_environment }}"
-
       - --activation-keys
       - "{{ create_satellite_hosts_on_aws_activation_key }}"
-
       - --root-password
-      - "{{ create_satellite_hosts_on_aws_root_password.stdout_lines }}"
-
+      - "{{ create_satellite_hosts_on_aws_root_password }}"
       - --managed
-      - "{{ create_satellite_hosts_on_aws_managed | bool | ternary('true', 'false') }}"
-
+      - >-
+        {{
+          create_satellite_hosts_on_aws_managed
+          | bool
+          | ternary('true', 'false')
+        }}
       - --build
-      - "{{ create_satellite_hosts_on_aws_build | bool | ternary('true', 'false') }}"
-
+      - >-
+        {{
+          create_satellite_hosts_on_aws_build
+          | bool
+          | ternary('true', 'false')
+        }}
       - --enabled
-      - "{{ create_satellite_hosts_on_aws_enabled | bool | ternary('true', 'false') }}"
-
+      - >-
+        {{
+          create_satellite_hosts_on_aws_enabled
+          | bool
+          | ternary('true', 'false')
+        }}
       - --provision-method
       - "{{ create_satellite_hosts_on_aws_provision_method }}"
-
       - --interface
       - >-
-        primary={{ create_satellite_hosts_on_aws_interface_primary | bool | ternary('true', 'false') }},
-        provision={{ create_satellite_hosts_on_aws_interface_provision | bool | ternary('true', 'false') }},
-        managed={{ create_satellite_hosts_on_aws_interface_managed | bool | ternary('true', 'false') }},
-        domain_id={{ create_satellite_hosts_on_aws_domain_id }},
-        subnet_id={{ create_satellite_hosts_on_aws_subnet_id }}
-
+        primary={{
+          create_satellite_hosts_on_aws_interface_primary
+          | bool
+          | ternary('true', 'false')
+        }},
+        provision={{
+          create_satellite_hosts_on_aws_interface_provision
+          | bool
+          | ternary('true', 'false')
+        }},
+        managed={{
+          create_satellite_hosts_on_aws_interface_managed
+          | bool
+          | ternary('true', 'false')
+        }},
+        domain_id={{ create_satellite_hosts_on_aws_domain_id }}
       - --compute-attributes
       - >-
         flavor_id={{ create_satellite_hosts_on_aws_flavor }},
         availability_zone={{ create_satellite_hosts_on_aws_availability_zone }},
-        security_group_ids={{ create_satellite_hosts_on_aws_effective_security_groups | join(';') }}
+        subnet_id={{ create_satellite_hosts_on_aws_subnet_id }},
+        security_group_ids={{
+          create_satellite_hosts_on_aws_effective_security_groups
+          | join(';')
+        }},
+        managed_ip=public_ip
   register: create_satellite_hosts_on_aws_create_result
   changed_when: true
-  no_log: false
+  no_log: true
   when:
     - create_satellite_hosts_on_aws_existing_hosts | length == 0
 
 - name: PHASE 7 | Reject an existing host when updates are disabled
   ansible.builtin.assert:
     that:
-      - >-
-        create_satellite_hosts_on_aws_existing_hosts | length == 0
-        or create_satellite_hosts_on_aws_update_existing | bool
+      - create_satellite_hosts_on_aws_update_existing | default(false) | bool
     fail_msg: >-
       Satellite host {{ create_satellite_hosts_on_aws_fqdn }} already exists.
       Set create_satellite_hosts_on_aws_update_existing=true to permit an
@@ -892,36 +943,25 @@
 - name: PHASE 8 | Display resulting Satellite host
   ansible.builtin.debug:
     msg:
-      - >-
-        Host:
-        {{ create_satellite_hosts_on_aws_fqdn }}
-      - >-
-        Builder:
-        {{ create_satellite_hosts_on_aws_selected_builder }}
-      - >-
-        Builder OS:
-        RHEL {{ create_satellite_hosts_on_aws_rhel_version }}
-      - >-
-        Content view:
-        {{ create_satellite_hosts_on_aws_content_view }}
+      - "Host: {{ create_satellite_hosts_on_aws_fqdn }}"
+      - "Builder: {{ create_satellite_hosts_on_aws_selected_builder }}"
+      - "Builder OS: RHEL {{ create_satellite_hosts_on_aws_rhel_version }}"
+      - "Content view: {{ create_satellite_hosts_on_aws_content_view }}"
       - >-
         Lifecycle environment:
         {{ create_satellite_hosts_on_aws_lifecycle_environment }}
       - >-
         Compute resource:
         {{ create_satellite_hosts_on_aws_compute_resource }}
-      - >-
-        Compute image:
-        {{ create_satellite_hosts_on_aws_compute_image }}
-      - >-
-        AWS flavor:
-        {{ create_satellite_hosts_on_aws_flavor }}
+      - "Compute image: {{ create_satellite_hosts_on_aws_compute_image }}"
+      - "AWS flavor: {{ create_satellite_hosts_on_aws_flavor }}"
       - >-
         Availability zone:
         {{ create_satellite_hosts_on_aws_availability_zone }}
       - >-
-        Subnet:
-        {{ create_satellite_hosts_on_aws_subnet_network }}
+        AWS subnet:
+        {{ create_satellite_hosts_on_aws_subnet_id }}
+        ({{ create_satellite_hosts_on_aws_subnet_network }})
       - >-
         Security groups:
         {{ create_satellite_hosts_on_aws_effective_security_groups }}

@@ -1,0 +1,452 @@
+---
+###############################################################################
+# bootc-image-builder direct AWS upload
+#
+# Creates a temporary AWS shared credentials profile named "default" for the
+# rhel-iam service account. The profile is mounted into bootc-image-builder.
+###############################################################################
+
+###############################################################################
+# Validate AWS upload configuration
+###############################################################################
+
+- name: IMAGE MODE AMI | Validate AWS upload variables
+  ansible.builtin.assert:
+    that:
+      - image_mode_aws_access_key_id | default('') | trim | length > 0
+      - image_mode_aws_secret_access_key | default('') | trim | length > 0
+      - image_mode_aws_region | default('') | trim | length > 0
+      - image_mode_resolved_ami_name | default('') | trim | length > 0
+      - image_mode_resolved_artifacts_bucket | default('') | trim | length > 0
+      - image_mode_bootc_builder_image | default('') | trim | length > 0
+      - image_mode_image_reference | default('') | trim | length > 0
+      - image_mode_config_path | default('') | trim | length > 0
+    fail_msg: >-
+      Direct AWS AMI upload requires the rhel-iam access key ID,
+      secret access key, AWS region, AMI name, artifacts bucket,
+      bootc-image-builder image, source bootc image, and
+      bootc-image-builder configuration path.
+  no_log: true
+
+###############################################################################
+# Validate bootc-image-builder configuration
+###############################################################################
+
+- name: IMAGE MODE AMI | Check bootc-image-builder configuration
+  ansible.builtin.stat:
+    path: "{{ image_mode_config_path }}"
+  register: image_mode_config_file
+
+- name: IMAGE MODE AMI | Validate bootc-image-builder configuration
+  ansible.builtin.assert:
+    that:
+      - image_mode_config_file.stat.exists
+      - image_mode_config_file.stat.isreg
+    fail_msg: >-
+      The bootc-image-builder configuration file does not exist at
+      {{ image_mode_config_path }}.
+
+###############################################################################
+# Create temporary AWS shared profile
+###############################################################################
+
+- name: IMAGE MODE AMI | Create temporary AWS profile directory
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: image-mode-aws-
+  register: image_mode_aws_profile_directory
+  no_log: true
+
+- name: IMAGE MODE AMI | Secure temporary AWS profile directory
+  ansible.builtin.file:
+    path: "{{ image_mode_aws_profile_directory.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  no_log: true
+
+- name: IMAGE MODE AMI | Write default AWS credentials profile
+  ansible.builtin.copy:
+    dest: "{{ image_mode_aws_profile_directory.path }}/credentials"
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      [default]
+      aws_access_key_id={{ image_mode_aws_access_key_id }}
+      aws_secret_access_key={{ image_mode_aws_secret_access_key }}
+      {% if image_mode_aws_session_token | default('') | trim | length > 0 %}
+      aws_session_token={{ image_mode_aws_session_token }}
+      {% endif %}
+  no_log: true
+
+- name: IMAGE MODE AMI | Write default AWS configuration profile
+  ansible.builtin.copy:
+    dest: "{{ image_mode_aws_profile_directory.path }}/config"
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      [default]
+      region={{ image_mode_aws_region }}
+      output=json
+  no_log: true
+
+###############################################################################
+# Build host-side AWS environment
+###############################################################################
+
+- name: IMAGE MODE AMI | Set temporary AWS command environment
+  ansible.builtin.set_fact:
+    image_mode_effective_aws_environment:
+      AWS_PROFILE: default
+      AWS_DEFAULT_PROFILE: default
+      AWS_CONFIG_FILE: >-
+        {{ image_mode_aws_profile_directory.path }}/config
+      AWS_SHARED_CREDENTIALS_FILE: >-
+        {{ image_mode_aws_profile_directory.path }}/credentials
+      AWS_REGION: "{{ image_mode_aws_region }}"
+      AWS_DEFAULT_REGION: "{{ image_mode_aws_region }}"
+      AWS_SDK_LOAD_CONFIG: "1"
+      AWS_EC2_METADATA_DISABLED: "true"
+  no_log: true
+
+###############################################################################
+# Verify AWS credentials
+###############################################################################
+
+- name: IMAGE MODE AMI | Verify rhel-iam AWS credentials
+  ansible.builtin.command:
+    argv:
+      - aws
+      - sts
+      - get-caller-identity
+      - --profile
+      - default
+      - --region
+      - "{{ image_mode_aws_region }}"
+      - --output
+      - json
+  environment: "{{ image_mode_effective_aws_environment }}"
+  register: image_mode_aws_caller_identity_command
+  changed_when: false
+  no_log: true
+
+- name: IMAGE MODE AMI | Parse AWS caller identity
+  ansible.builtin.set_fact:
+    image_mode_aws_caller_identity: >-
+      {{
+        image_mode_aws_caller_identity_command.stdout
+        | from_json
+      }}
+  no_log: true
+
+- name: IMAGE MODE AMI | Validate AWS caller identity
+  ansible.builtin.assert:
+    that:
+      - image_mode_aws_caller_identity.Account | default('') | length > 0
+      - image_mode_aws_caller_identity.Arn | default('') | length > 0
+      - >-
+        (
+          image_mode_expected_aws_account_id
+          | default('')
+          | string
+          | trim
+          | length == 0
+        )
+        or
+        (
+          image_mode_aws_caller_identity.Account
+          | string
+          ==
+          image_mode_expected_aws_account_id
+          | string
+        )
+      - >-
+        image_mode_expected_aws_principal_name
+        | default('rhel-iam')
+        in image_mode_aws_caller_identity.Arn
+    fail_msg: >-
+      The supplied AWS credentials do not identify the expected
+      rhel-iam service account. Resolved ARN is
+      {{ image_mode_aws_caller_identity.Arn | default('unknown') }}
+      and account is
+      {{ image_mode_aws_caller_identity.Account | default('unknown') }}.
+  no_log: true
+
+###############################################################################
+# Build and upload AMI
+###############################################################################
+
+- name: IMAGE MODE AMI | Build and upload AMI directly to AWS
+  block:
+
+    ###########################################################################
+    # Run bootc-image-builder
+    ###########################################################################
+
+    - name: IMAGE MODE AMI | Start bootc-image-builder AWS upload
+      ansible.builtin.command:
+        argv:
+          - podman
+          - run
+          - --rm
+          - --privileged
+          - --security-opt
+          - label=type:unconfined_t
+          - --pull=newer
+          - --volume
+          - /var/lib/containers/storage:/var/lib/containers/storage:Z
+          - --volume
+          - "{{ image_mode_config_path }}:/config.toml:ro,Z"
+          - --volume
+          - "{{ image_mode_aws_profile_directory.path }}:/root/.aws:ro,Z"
+          - --env
+          - AWS_PROFILE=default
+          - --env
+          - AWS_DEFAULT_PROFILE=default
+          - --env
+          - AWS_CONFIG_FILE=/root/.aws/config
+          - --env
+          - AWS_SHARED_CREDENTIALS_FILE=/root/.aws/credentials
+          - --env
+          - AWS_SDK_LOAD_CONFIG=1
+          - --env
+          - AWS_REGION={{ image_mode_aws_region }}
+          - --env
+          - AWS_DEFAULT_REGION={{ image_mode_aws_region }}
+          - --env
+          - AWS_EC2_METADATA_DISABLED=true
+          - "{{ image_mode_bootc_builder_image }}"
+          - --type
+          - ami
+          - --config
+          - /config.toml
+          - --aws-ami-name
+          - "{{ image_mode_resolved_ami_name }}"
+          - --aws-bucket
+          - "{{ image_mode_resolved_artifacts_bucket }}"
+          - --aws-region
+          - "{{ image_mode_aws_region }}"
+          - "{{ image_mode_image_reference }}"
+      async: "{{ image_mode_ami_build_timeout | default(14400) | int }}"
+      poll: 0
+      register: image_mode_ami_build_async_job
+      changed_when: true
+
+    - name: IMAGE MODE AMI | Wait for bootc-image-builder AWS upload
+      ansible.builtin.async_status:
+        jid: "{{ image_mode_ami_build_async_job.ansible_job_id }}"
+      register: image_mode_ami_build_command
+      until: image_mode_ami_build_command.finished
+      retries: >-
+        {{
+          (
+            image_mode_ami_build_timeout | default(14400) | int
+          )
+          //
+          (
+            image_mode_ami_build_poll_interval | default(30) | int
+          )
+        }}
+      delay: "{{ image_mode_ami_build_poll_interval | default(30) | int }}"
+      changed_when: true
+
+    ###########################################################################
+    # Discover newly registered AMI
+    ###########################################################################
+
+    - name: IMAGE MODE AMI | Discover newly registered AMI
+      ansible.builtin.command:
+        argv:
+          - aws
+          - ec2
+          - describe-images
+          - --owners
+          - self
+          - --filters
+          - "Name=name,Values={{ image_mode_resolved_ami_name }}"
+          - --query
+          - "reverse(sort_by(Images,&CreationDate))[0].ImageId"
+          - --output
+          - text
+          - --profile
+          - default
+          - --region
+          - "{{ image_mode_aws_region }}"
+      environment: "{{ image_mode_effective_aws_environment }}"
+      register: image_mode_new_ami_lookup
+      changed_when: false
+      until: >-
+        image_mode_new_ami_lookup.stdout | trim
+        not in ['', 'None', 'null']
+      retries: "{{ image_mode_ami_discovery_retries }}"
+      delay: "{{ image_mode_ami_discovery_delay }}"
+      no_log: true
+
+    - name: IMAGE MODE AMI | Set new AMI ID
+      ansible.builtin.set_fact:
+        image_mode_ami_id: "{{ image_mode_new_ami_lookup.stdout | trim }}"
+
+    - name: IMAGE MODE AMI | Validate discovered AMI ID
+      ansible.builtin.assert:
+        that:
+          - image_mode_ami_id is match('^ami-[0-9a-f]+$')
+        fail_msg: >-
+          AWS returned an invalid AMI ID:
+          {{ image_mode_ami_id | default('unknown') }}.
+
+    ###########################################################################
+    # Wait for AMI availability
+    ###########################################################################
+
+    - name: IMAGE MODE AMI | Wait for AMI availability
+      ansible.builtin.command:
+        argv:
+          - aws
+          - ec2
+          - wait
+          - image-available
+          - --image-ids
+          - "{{ image_mode_ami_id }}"
+          - --profile
+          - default
+          - --region
+          - "{{ image_mode_aws_region }}"
+      environment: "{{ image_mode_effective_aws_environment }}"
+      changed_when: false
+      no_log: true
+
+    ###########################################################################
+    # Read imported AMI details
+    ###########################################################################
+
+    - name: IMAGE MODE AMI | Read imported AMI details
+      ansible.builtin.command:
+        argv:
+          - aws
+          - ec2
+          - describe-images
+          - --image-ids
+          - "{{ image_mode_ami_id }}"
+          - --profile
+          - default
+          - --region
+          - "{{ image_mode_aws_region }}"
+          - --output
+          - json
+      environment: "{{ image_mode_effective_aws_environment }}"
+      register: image_mode_ami_description_command
+      changed_when: false
+      no_log: true
+
+    - name: IMAGE MODE AMI | Parse imported AMI details
+      ansible.builtin.set_fact:
+        image_mode_ami_details: >-
+          {{
+            (
+              image_mode_ami_description_command.stdout
+              | from_json
+            ).Images[0]
+          }}
+
+    ###########################################################################
+    # Validate imported AMI
+    ###########################################################################
+
+    - name: IMAGE MODE AMI | Validate imported architecture
+      ansible.builtin.assert:
+        that:
+          - image_mode_ami_details.Architecture == image_mode_ami_architecture
+        fail_msg: >-
+          Imported AMI architecture is
+          {{ image_mode_ami_details.Architecture | default('unknown') }},
+          expected {{ image_mode_ami_architecture }}.
+
+    - name: IMAGE MODE AMI | Find root snapshot ID
+      ansible.builtin.set_fact:
+        image_mode_snapshot_id: >-
+          {{
+            (
+              image_mode_ami_details.BlockDeviceMappings
+              | selectattr('Ebs', 'defined')
+              | map(attribute='Ebs.SnapshotId')
+              | select('defined')
+              | first
+            )
+            | default('')
+          }}
+
+    ###########################################################################
+    # Build AWS tag arguments
+    ###########################################################################
+
+    - name: IMAGE MODE AMI | Build AWS tag arguments
+      ansible.builtin.set_fact:
+        image_mode_aws_tag_arguments: >-
+          {{
+            image_mode_ami_tags
+            | dict2items
+            | map(attribute='key')
+            | zip(
+                image_mode_ami_tags
+                | dict2items
+                | map(attribute='value')
+              )
+            | map('join', ',Value=')
+            | map('regex_replace', '^(.*)$', 'Key=\1')
+            | list
+          }}
+
+    ###########################################################################
+    # Tag AMI and snapshot
+    ###########################################################################
+
+    - name: IMAGE MODE AMI | Tag AMI and root snapshot
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'aws',
+              'ec2',
+              'create-tags',
+              '--resources',
+              image_mode_ami_id
+            ]
+            +
+            (
+              [image_mode_snapshot_id]
+              if image_mode_snapshot_id | length > 0
+              else []
+            )
+            +
+            ['--tags']
+            +
+            image_mode_aws_tag_arguments
+            +
+            [
+              '--profile',
+              'default',
+              '--region',
+              image_mode_aws_region
+            ]
+          }}
+      environment: "{{ image_mode_effective_aws_environment }}"
+      changed_when: true
+      no_log: true
+
+  always:
+
+    ###########################################################################
+    # Remove temporary AWS credentials
+    ###########################################################################
+
+    - name: IMAGE MODE AMI | Remove temporary AWS profile directory
+      ansible.builtin.file:
+        path: "{{ image_mode_aws_profile_directory.path }}"
+        state: absent
+      when:
+        - image_mode_aws_profile_directory is defined
+        - image_mode_aws_profile_directory.path is defined
+      no_log: true

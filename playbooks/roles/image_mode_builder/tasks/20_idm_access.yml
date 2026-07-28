@@ -1,0 +1,246 @@
+---
+# IdM-backed Image Builder access
+###########################################################################
+
+- name: Create local Image Mode workspace group
+  ansible.builtin.group:
+    name: "{{ image_mode_group }}"
+    state: present
+    system: true
+
+- name: Verify this builder is enrolled as an IdM client
+  ansible.builtin.stat:
+    path: /etc/ipa/default.conf
+  register: image_mode_ipa_client_configuration
+
+- name: Assert that this builder is enrolled in IdM
+  ansible.builtin.assert:
+    that:
+      - image_mode_ipa_client_configuration.stat.exists
+    fail_msg: >-
+      {{ inventory_hostname }} is not configured as an IdM client.
+      /etc/ipa/default.conf was not found. Join this host to the IdM
+      domain before configuring automatic Image Builder access.
+
+- name: Verify SSSD is active for IdM identity resolution
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - sssd
+  register: image_mode_sssd_status
+  changed_when: false
+  failed_when: image_mode_sssd_status.rc != 0
+
+- name: Validate IdM administrator credential
+  ansible.builtin.assert:
+    that:
+      - idm_admin_password | length > 0
+    fail_msg: >-
+      IDM_ADMIN_PASSWORD must be injected securely into the AAP execution
+      environment. The credential is used locally on this enrolled builder
+      to create the POSIX IdM access group; no IdM inventory host is needed.
+  when: image_mode_manage_idm_access_group | bool
+  no_log: true
+
+- name: Obtain IdM administrator Kerberos ticket locally
+  ansible.builtin.command:
+    argv:
+      - kinit
+      - "{{ idm_admin_principal }}"
+    stdin: "{{ idm_admin_password }}"
+    stdin_add_newline: true
+  changed_when: false
+  when: image_mode_manage_idm_access_group | bool
+  no_log: true
+
+- name: Check whether the POSIX IdM Image Builder group exists
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - group-show
+      - "{{ image_builder_access_group }}"
+      - --all
+      - --raw
+  register: image_builder_idm_group_check
+  changed_when: false
+  failed_when: false
+  when: image_mode_manage_idm_access_group | bool
+
+- name: Create POSIX IdM Image Builder access group
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - group-add
+      - "{{ image_builder_access_group }}"
+      - --desc
+      - All current and future IdM users permitted to use RHEL Image Builder
+  register: image_builder_idm_group_creation
+  changed_when: image_builder_idm_group_creation.rc == 0
+  when:
+    - image_mode_manage_idm_access_group | bool
+    - image_builder_idm_group_check.rc != 0
+
+- name: Read POSIX IdM Image Builder group details
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - group-show
+      - "{{ image_builder_access_group }}"
+      - --all
+      - --raw
+  register: image_builder_idm_group_details
+  changed_when: false
+  when: image_mode_manage_idm_access_group | bool
+
+- name: Assert IdM Image Builder access group is POSIX
+  ansible.builtin.assert:
+    that:
+      - >-
+        'gidnumber:' in
+        (image_builder_idm_group_details.stdout | lower)
+    fail_msg: >-
+      The IdM group {{ image_builder_access_group }} exists but does not
+      have a numeric GID. Remove or convert that group, then rerun this
+      playbook so a POSIX group can own the Composer Unix sockets.
+  when: image_mode_manage_idm_access_group | bool
+
+- name: Read current IdM Image Builder access group membership
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - group-show
+      - "{{ image_builder_access_group }}"
+      - --all
+  register: image_builder_access_group_membership
+  changed_when: false
+
+- name: Determine whether ipausers is already nested
+  ansible.builtin.set_fact:
+    idm_all_users_group_is_nested: >-
+      {{
+        (
+          'Member groups: ' ~ idm_all_users_group
+        )
+        in
+        (
+          image_builder_access_group_membership.stdout
+          | default('')
+        )
+      }}
+
+- name: Add IdM all-users group as a nested member
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - group-add-member
+      - "{{ image_builder_access_group }}"
+      - "--groups={{ idm_all_users_group }}"
+  register: image_builder_nested_group
+  changed_when: >-
+    image_builder_nested_group.rc == 0
+    and
+    (
+      'Number of members added 1'
+      in image_builder_nested_group.stdout
+    )
+  failed_when: >-
+    image_builder_nested_group.rc != 0
+    and
+    (
+      'This entry is already a member'
+      not in
+      (image_builder_nested_group.stdout | default(''))
+    )
+  when: not idm_all_users_group_is_nested
+
+- name: Report existing nested IdM group membership
+  ansible.builtin.debug:
+    msg: >-
+      {{ idm_all_users_group }} is already nested in
+      {{ image_builder_access_group }}. No change was required.
+  when: idm_all_users_group_is_nested
+
+- name: Destroy IdM administrator Kerberos ticket
+  ansible.builtin.command:
+    argv:
+      - kdestroy
+  changed_when: false
+  failed_when: false
+  when: image_mode_manage_idm_access_group | bool
+  no_log: true
+
+- name: Clear SSSD identity cache after IdM group configuration
+  ansible.builtin.command:
+    argv:
+      - sss_cache
+      - -E
+  changed_when: false
+  failed_when: false
+
+- name: Restart SSSD after IdM group configuration
+  ansible.builtin.systemd_service:
+    name: sssd
+    state: restarted
+
+- name: Wait for POSIX IdM Image Builder group to resolve locally
+  ansible.builtin.command:
+    argv:
+      - getent
+      - group
+      - "{{ image_builder_access_group }}"
+  register: image_builder_access_group_lookup
+  changed_when: false
+  retries: 20
+  delay: 3
+  until: image_builder_access_group_lookup.rc == 0
+
+- name: Validate resolved Image Builder group has a numeric GID
+  ansible.builtin.assert:
+    that:
+      - image_builder_access_group_lookup.stdout.split(':') | length >= 4
+      - >-
+        image_builder_access_group_lookup.stdout.split(':')[2]
+        is match('^[0-9]+$')
+    fail_msg: >-
+      {{ image_builder_access_group }} was created in IdM but did not
+      resolve locally as a POSIX group through SSSD. Verify the IdM client
+      and SSSD domain configuration on {{ inventory_hostname }}.
+
+- name: Save resolved IdM Image Builder access group details
+  ansible.builtin.set_fact:
+    resolved_image_builder_access_group: >-
+      {{
+        image_builder_access_group_lookup.stdout
+        .split(':')[0]
+        | trim
+      }}
+    resolved_image_builder_access_gid: >-
+      {{
+        image_builder_access_group_lookup.stdout
+        .split(':')[2]
+        | trim
+      }}
+
+- name: Validate resolved IdM Image Builder access GID
+  ansible.builtin.assert:
+    that:
+      - resolved_image_builder_access_group | length > 0
+      - resolved_image_builder_access_gid is match('^[0-9]+$')
+      - resolved_image_builder_access_gid | int > 0
+    fail_msg: >-
+      The IdM access group did not resolve with a usable numeric GID.
+      Group lookup output:
+      {{ image_builder_access_group_lookup.stdout | default('empty') }}
+
+- name: Display automatic IdM Image Builder access configuration
+  ansible.builtin.debug:
+    msg:
+      - >-
+        POSIX socket group: {{ resolved_image_builder_access_group }}
+      - >-
+        Socket group GID:
+        {{ image_builder_access_group_lookup.stdout.split(':')[2] }}
+      - >-
+        {{ idm_all_users_group }} is nested in
+        {{ image_builder_access_group }}, so present and future IdM users

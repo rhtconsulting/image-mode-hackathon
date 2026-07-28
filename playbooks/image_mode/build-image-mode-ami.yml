@@ -1,0 +1,53 @@
+###############################################################################
+# Build a bootc container image, push it to Quay, and register an AWS AMI
+#
+# The AAP job template supplies the "Image Builders" inventory. The first
+# enabled host returned by that inventory is selected dynamically for this
+# build.
+###############################################################################
+
+- name: Select the first Image Builder host
+  hosts: all
+  gather_facts: true
+  become: false
+
+  tasks:
+
+    - name: IMAGE MODE AMI | Validate Image Builders inventory
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length > 0
+        fail_msg: >-
+          The AAP Image Builders inventory did not provide any enabled hosts.
+          Add at least one enabled Image Builder host to the inventory attached
+          to this job template.
+      run_once: true
+
+    - name: IMAGE MODE AMI | Select first inventory host
+      ansible.builtin.set_fact:
+        image_mode_selected_builder: "{{ ansible_play_hosts_all | first }}"
+      run_once: true
+
+    - name: IMAGE MODE AMI | Add selected host to temporary build group
+      ansible.builtin.add_host:
+        name: "{{ image_mode_selected_builder }}"
+        groups:
+          - image_mode_selected_builder
+      run_once: true
+      changed_when: false
+
+    - name: IMAGE MODE AMI | Display selected builder
+      ansible.builtin.debug:
+        msg: >-
+          Selected Image Builder host:
+          {{ image_mode_selected_builder }}
+      run_once: true
+
+- name: Build Image Mode AMI
+  hosts: image_mode_selected_builder
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  roles:
+    - role: image_mode_build_ami

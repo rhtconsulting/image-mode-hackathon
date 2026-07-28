@@ -1,0 +1,44 @@
+---
+- name: IMAGE MODE AMI | Remove previous workspace
+  ansible.builtin.file:
+    path: "{{ image_mode_workspace }}"
+    state: absent
+  when: image_mode_clean_workspace_before_build | bool
+
+- name: IMAGE MODE AMI | Create workspace directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ image_mode_workspace_root }}"
+    - "{{ image_mode_workspace }}"
+    - "{{ image_mode_files_directory }}"
+    - "{{ image_mode_output_directory }}"
+
+- name: IMAGE MODE AMI | Render application index page
+  ansible.builtin.template:
+    src: index.html.j2
+    dest: "{{ image_mode_index_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: IMAGE MODE AMI | Render bootc Containerfile
+  ansible.builtin.template:
+    src: Containerfile.j2
+    dest: "{{ image_mode_containerfile_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: IMAGE MODE AMI | Render bootc-image-builder configuration
+  ansible.builtin.template:
+    src: config.toml.j2
+    dest: "{{ image_mode_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true

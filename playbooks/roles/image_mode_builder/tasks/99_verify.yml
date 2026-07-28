@@ -1,0 +1,117 @@
+---
+# Verification
+###########################################################################
+
+- name: Gather installed tool versions
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+
+      printf 'podman: '
+      podman --version
+
+      printf 'buildah: '
+      buildah --version
+
+      printf 'skopeo: '
+      skopeo --version
+
+      printf 'bootc: '
+      bootc --version
+
+      printf 'git: '
+      git --version
+
+      printf 'jq: '
+      jq --version
+
+      printf 'yq: '
+      yq --version
+
+      printf 'composer-cli: '
+      composer-cli --version 2>/dev/null || rpm -q composer-cli
+
+      printf 'insights-client: '
+      insights-client --version 2>/dev/null || rpm -q insights-client
+    executable: /bin/bash
+  register: image_mode_tool_versions
+  changed_when: false
+
+- name: Verify required persistent services and sockets
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ item }}"
+  loop:
+    - cockpit.socket
+    - osbuild-composer.socket
+    - firewalld
+  register: image_mode_service_status
+  changed_when: false
+  failed_when: image_mode_service_status.rc != 0
+
+- name: Verify osbuild-composer API through socket activation
+  ansible.builtin.command:
+    argv:
+      - composer-cli
+      - status
+      - show
+  register: image_mode_composer_api_status
+  changed_when: false
+  retries: 10
+  delay: 3
+  until: image_mode_composer_api_status.rc == 0
+
+- name: Check Bootc Image Builder container
+  ansible.builtin.command:
+    argv:
+      - podman
+      - image
+      - exists
+      - "{{ bootc_image_builder_image }}"
+  register: bootc_builder_image_check
+  changed_when: false
+  when: image_mode_pull_bootc_image_builder | bool
+
+- name: Display completed Image Mode builder configuration
+  ansible.builtin.debug:
+    msg:
+      - "Image Mode builder configuration completed successfully."
+      - "Builder host: {{ inventory_hostname }}"
+      - "HTTP port: 80/tcp"
+      - "HTTPS port: 443/tcp"
+      - "Cockpit port: {{ cockpit_port }}/tcp"
+      - "Cockpit URL: https://{{ cockpit_public_tls_fqdn }}:{{ cockpit_port }}"
+      - "Firewall zone: {{ cockpit_firewall_zone }}"
+      - "Cockpit TLS FQDN: {{ cockpit_public_tls_fqdn }}"
+      - "Cockpit TLS file: {{ cockpit_ws_certificate_path }}"
+      - |-
+        Cockpit presented certificate:
+        {{ cockpit_presented_certificate.stdout }}
+      - "Workspace root: {{ image_mode_root }}"
+      - "Source repositories: {{ image_mode_source_directory }}"
+      - "Containerfiles: {{ image_mode_containerfiles_directory }}"
+      - "Build output: {{ image_mode_output_directory }}"
+      - "Completed artifacts: {{ image_mode_artifacts_directory }}"
+      - "Build helper: sudo image-mode-build --help"
+      - >-
+        Registry helper:
+        sudo image-mode-registry-copy SOURCE DESTINATION
+      - >-
+        Image Builder API socket:
+        {{ weldr_api_socket.stat.path }}
+        (primary group={{ weldr_api_socket.stat.gr_name }},
+        IdM ACL group={{ resolved_image_builder_access_group }})
+      - |-
+        osbuild-composer status:
+        {{ osbuild_composer_detailed_status.stdout }}
+      - |-
+        osbuild-composer IdM ACL status:
+        {{ osbuild_composer_acl_detailed_status.stdout }}
+      - |-
+        Installed tools:
+        {{ image_mode_tool_versions.stdout }}
+      - |-
+        Firewall configuration:
+        {{ image_mode_firewall_configuration.stdout }}

@@ -17,7 +17,8 @@
     - ../vars/projects.yml
     - ../vars/job_templates.yml
     - ../vars/workflow_job_templates.yml
-    - ../vars/surveys/satellite_content.yml
+    # - ../vars/surveys/satellite_content.yml
+    # - ../vars/surveys/image_mode_build_ami.yml
 
 
   vars:
@@ -89,6 +90,12 @@
       {{
         lab_ssh_private_key_secret_name
         | default(secret_prefix ~ '/aws/ssh_private_key', true)
+      }}
+
+    rhel_iam_credentials_secret_name_resolved: >-
+      {{
+        rhel_iam_credentials_secret_name
+        | default(secret_prefix ~ '/aws/rhel-iam', true)
       }}
 
     ###########################################################################
@@ -169,7 +176,33 @@
     image_builder_job_timeout: 3600
     image_builder_job_poll_interval: 10
 
+    ###########################################################################
+    # Image Mode deployment workflow launch configuration
+    ###########################################################################
+
+    image_mode_deployment_workflow_name: >-
+      Image Mode Deploy Sample Image to AWS
+
+    launch_image_mode_deployment_workflow: true
+    image_mode_deployment_workflow_timeout: 14400
+    image_mode_deployment_workflow_poll_interval: 15
+
+    # Optional workflow launch variables. These are passed as extra_vars when
+    # launching the workflow. Keep this as an empty mapping when the workflow
+    # surveys or job templates provide all required defaults.
+    image_mode_deployment_workflow_extra_vars: {}
+
   pre_tasks:
+
+    #Instead of specifying all surveys above, we will load the entire directory at one time 
+    - name: Load all survey definitions
+      ansible.builtin.include_vars:
+        dir: "../vars/surveys"
+        extensions:
+          - yml
+          - yaml
+
+
     ###########################################################################
     # Validate Terraform inventory
     ###########################################################################
@@ -183,6 +216,12 @@
           - aws_region | string | trim | length > 0
           - aws_profile is defined
           - aws_profile | string | trim | length > 0
+          - rhel_iam_credentials_secret_name_resolved is defined
+          - >-
+            rhel_iam_credentials_secret_name_resolved
+            | string
+            | trim
+            | length > 0
           - groups['aap'] is defined
           - groups['aap'] | length > 0
           - groups['quay'] is defined
@@ -191,8 +230,9 @@
           - groups['image_builder'] | length > 0
         fail_msg: >-
           The Terraform-generated inventory must define secret_prefix,
-          aws_region, aws_profile, and nonempty [aap], [quay], and
-          [image_builder] groups.
+          aws_region, aws_profile, the AWS IAM service-account credentials
+          secret name, and nonempty [aap], [quay], and [image_builder]
+          groups.
 
     - name: Normalize AWS configuration
       ansible.builtin.set_fact:
@@ -684,6 +724,76 @@
           not a valid PEM private key.
       no_log: true
 
+
+    ###########################################################################
+    # Derive Terraform-generated SSH public key
+    ###########################################################################
+    - name: Create temporary Terraform SSH private-key file
+      ansible.builtin.tempfile:
+        state: file
+        prefix: image-mode-terraform-ssh-
+        suffix: .pem
+      register: image_mode_ssh_private_key_tempfile
+      no_log: true
+
+    - name: Derive Terraform-generated SSH public key
+      block:
+
+        - name: Write temporary Terraform SSH private key
+          ansible.builtin.copy:
+            dest: "{{ image_mode_ssh_private_key_tempfile.path }}"
+            content: "{{ image_mode_ssh_private_key | trim }}\n"
+            mode: "0600"
+          no_log: true
+
+        - name: Generate public key from Terraform private key
+          ansible.builtin.command:
+            argv:
+              - ssh-keygen
+              - -y
+              - -f
+              - "{{ image_mode_ssh_private_key_tempfile.path }}"
+          register: image_mode_ssh_public_key_command
+          changed_when: false
+          no_log: true
+
+        - name: Set Image Mode AMI SSH public key
+          ansible.builtin.set_fact:
+            image_mode_ssh_public_key: >-
+              {{
+                image_mode_ssh_public_key_command.stdout
+                | string
+                | trim
+              }}
+          no_log: true
+
+        - name: Validate Image Mode AMI SSH public key
+          ansible.builtin.assert:
+            that:
+              - image_mode_ssh_public_key | length > 32
+              - >-
+                image_mode_ssh_public_key
+                is match(
+                  '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp[0-9]+) '
+                )
+            fail_msg: >-
+              A valid OpenSSH public key could not be derived from the
+              Terraform-generated SSH private key.
+          no_log: true
+
+      always:
+
+        - name: Remove temporary Terraform SSH private-key file
+          ansible.builtin.file:
+            path: "{{ image_mode_ssh_private_key_tempfile.path }}"
+            state: absent
+          when:
+            - image_mode_ssh_private_key_tempfile is defined
+            - image_mode_ssh_private_key_tempfile.path is defined
+          no_log: true
+
+
+
     ###########################################################################
     # Read Red Hat registry credentials
     ###########################################################################
@@ -747,6 +857,109 @@
         fail_msg: >-
           Red Hat registry credentials could not be retrieved from AWS Secrets
           Manager.
+      no_log: true
+
+
+    ###########################################################################
+    # Read AWS IAM service-account credentials
+    ###########################################################################
+
+    - name: Read AWS IAM service-account credential secret
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ rhel_iam_credentials_secret_name_resolved | trim }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: rhel_iam_credentials_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Parse AWS IAM service-account credential secret
+      ansible.builtin.set_fact:
+        rhel_iam_credentials: >-
+          {{
+            rhel_iam_credentials_secret_result.stdout
+            | string
+            | trim
+            | from_json
+          }}
+      no_log: true
+
+    - name: Validate AWS IAM service-account secret structure
+      ansible.builtin.assert:
+        that:
+          - rhel_iam_credentials is mapping
+          - >-
+            (
+              rhel_iam_credentials.access_key_id is defined
+              or
+              rhel_iam_credentials.aws_access_key_id is defined
+            )
+          - >-
+            (
+              rhel_iam_credentials.secret_access_key is defined
+              or
+              rhel_iam_credentials.aws_secret_access_key is defined
+            )
+        fail_msg: >-
+          The AWS Secrets Manager secret
+          '{{ rhel_iam_credentials_secret_name_resolved | trim }}'
+          must contain a JSON object with either access_key_id and
+          secret_access_key properties, or aws_access_key_id and
+          aws_secret_access_key properties.
+      no_log: true
+
+    - name: Resolve AWS IAM service-account credentials
+      ansible.builtin.set_fact:
+        image_mode_aws_access_key_id: >-
+          {{
+            rhel_iam_credentials.access_key_id
+            | default(
+                rhel_iam_credentials.aws_access_key_id
+                | default('', true),
+                true
+              )
+            | string
+            | trim
+          }}
+
+        image_mode_aws_secret_access_key: >-
+          {{
+            rhel_iam_credentials.secret_access_key
+            | default(
+                rhel_iam_credentials.aws_secret_access_key
+                | default('', true),
+                true
+              )
+            | string
+            | trim
+          }}
+
+        image_mode_aws_region: "{{ resolved_aws_region }}"
+      no_log: true
+
+    - name: Validate resolved AWS IAM service-account credentials
+      ansible.builtin.assert:
+        that:
+          - image_mode_aws_access_key_id | length > 0
+          - image_mode_aws_secret_access_key | length > 0
+          - image_mode_aws_region | length > 0
+          - image_mode_aws_access_key_id != "None"
+          - image_mode_aws_secret_access_key != "None"
+        fail_msg: >-
+          The AWS IAM service-account credentials could not be resolved from
+          AWS Secrets Manager secret
+          '{{ rhel_iam_credentials_secret_name_resolved | trim }}'.
       no_log: true
 
     ###########################################################################
@@ -1391,19 +1604,19 @@
         # 9. Workflow job templates
         #######################################################################
 
-        # - name: Configure AAP workflow job templates
-        #   ansible.builtin.include_role:
-        #     name: infra.aap_configuration.controller_workflow_job_templates
-        #   vars:
-        #     controller_hostname: "{{ controller_host }}"
-        #     controller_username: "{{ gateway_admin_username }}"
-        #     controller_password: "{{ gateway_admin_password }}"
-        #     controller_validate_certs: false
-        #   when:
-        #     - controller_workflows is defined
-        #     - controller_workflows | length > 0
-        #   tags:
-        #     - workflow_job_templates
+        - name: Configure AAP workflow job templates
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_workflow_job_templates
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
+          when:
+            - controller_workflows is defined
+            - controller_workflows | length > 0
+          tags:
+            - workflow_job_templates
 
       # Uncomment this environment block if the included roles or lookups need
       # AWS CLI environment variables.
@@ -1676,6 +1889,309 @@
       tags:
         - launch_image_builders
 
+
+    ###########################################################################
+    # Automatically launch the Image Mode AWS deployment workflow
+    #
+    # This workflow is launched only after the Image Builder configuration job
+    # completes successfully. This ensures the builder hosts are prepared
+    # before the AMI build and Satellite configuration workflow begins.
+    ###########################################################################
+
+    - name: Look up Image Mode deployment workflow job template
+      ansible.builtin.uri:
+        url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/workflow_job_templates/?name='
+            ~ (
+                image_mode_deployment_workflow_name
+                | urlencode
+              )
+          }}
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ controller_validate_certs }}"
+        status_code: 200
+        timeout: 30
+        return_content: true
+      register: image_mode_deployment_workflow_lookup
+      changed_when: false
+      no_log: true
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - >-
+          (
+            not launch_image_builder_configuration | bool
+          )
+          or
+          (
+            configure_image_builder_job_status is defined
+            and configure_image_builder_job_status.json is defined
+            and configure_image_builder_job_status.json.status is defined
+            and configure_image_builder_job_status.json.status == 'successful'
+          )
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Validate Image Mode deployment workflow lookup
+      ansible.builtin.assert:
+        that:
+          - image_mode_deployment_workflow_lookup.json is defined
+          - image_mode_deployment_workflow_lookup.json.count | int == 1
+          - >-
+            image_mode_deployment_workflow_lookup.json.results
+            | length
+            == 1
+          - >-
+            image_mode_deployment_workflow_lookup.json.results[0].id
+            is defined
+          - >-
+            image_mode_deployment_workflow_lookup.json.results[0].name
+            == image_mode_deployment_workflow_name
+        fail_msg: >-
+          The '{{ image_mode_deployment_workflow_name }}' workflow job
+          template was not found uniquely in Automation Controller after the
+          CaaC configuration completed.
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_lookup is not skipped
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Set Image Mode deployment workflow template facts
+      ansible.builtin.set_fact:
+        image_mode_deployment_workflow_template_id: >-
+          {{
+            image_mode_deployment_workflow_lookup.json.results[0].id
+            | int
+          }}
+
+        image_mode_deployment_workflow_template_api_url: >-
+          {{
+            image_mode_deployment_workflow_lookup.json.results[0].url
+          }}
+
+        image_mode_deployment_workflow_template_ui_url: >-
+          {{
+            controller_host
+            ~ '/execution/templates/workflow-job-template/'
+            ~ (
+                image_mode_deployment_workflow_lookup.json.results[0].id
+                | string
+              )
+            ~ '/details'
+          }}
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_lookup is not skipped
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Launch Image Mode deployment workflow job template
+      ansible.builtin.uri:
+        url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/workflow_job_templates/'
+            ~ (image_mode_deployment_workflow_template_id | string)
+            ~ '/launch/'
+          }}
+        method: POST
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ controller_validate_certs }}"
+        status_code:
+          - 201
+          - 202
+        timeout: 30
+        return_content: true
+        body_format: json
+        body:
+          extra_vars: "{{ image_mode_deployment_workflow_extra_vars }}"
+      register: image_mode_deployment_workflow_launch_result
+      changed_when: true
+      no_log: true
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_template_id is defined
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Validate Image Mode deployment workflow launch response
+      ansible.builtin.assert:
+        that:
+          - image_mode_deployment_workflow_launch_result.json is defined
+          - image_mode_deployment_workflow_launch_result.json.id is defined
+          - image_mode_deployment_workflow_launch_result.json.id | int > 0
+        fail_msg: >-
+          Automation Controller accepted the workflow launch request but did
+          not return a valid workflow job identifier for
+          '{{ image_mode_deployment_workflow_name }}'.
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_launch_result is not skipped
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Set launched Image Mode deployment workflow facts
+      ansible.builtin.set_fact:
+        image_mode_deployment_workflow_job_id: >-
+          {{
+            image_mode_deployment_workflow_launch_result.json.id
+            | int
+          }}
+
+        image_mode_deployment_workflow_job_api_url: >-
+          {{
+            controller_host
+            ~ '/api/controller/v2/workflow_jobs/'
+            ~ (
+                image_mode_deployment_workflow_launch_result.json.id
+                | string
+              )
+            ~ '/'
+          }}
+
+        image_mode_deployment_workflow_job_ui_url: >-
+          {{
+            controller_host
+            ~ '/execution/jobs/workflow/'
+            ~ (
+                image_mode_deployment_workflow_launch_result.json.id
+                | string
+              )
+            ~ '/output'
+          }}
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_launch_result is not skipped
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Display launched Image Mode deployment workflow
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Launched workflow job template:
+            {{ image_mode_deployment_workflow_name }}
+          - >-
+            Workflow job ID:
+            {{ image_mode_deployment_workflow_job_id }}
+          - >-
+            Workflow job URL:
+            {{ image_mode_deployment_workflow_job_ui_url }}
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_job_id is defined
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Wait for Image Mode deployment workflow to finish
+      ansible.builtin.uri:
+        url: "{{ image_mode_deployment_workflow_job_api_url }}"
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ controller_validate_certs }}"
+        status_code: 200
+        timeout: 30
+        return_content: true
+      register: image_mode_deployment_workflow_status
+      changed_when: false
+      failed_when: false
+      until:
+        - image_mode_deployment_workflow_status.json is defined
+        - image_mode_deployment_workflow_status.json.status is defined
+        - >-
+          image_mode_deployment_workflow_status.json.status
+          in
+          [
+            'successful',
+            'failed',
+            'error',
+            'canceled'
+          ]
+      retries: >-
+        {{
+          (
+            image_mode_deployment_workflow_timeout
+            | int
+          )
+          //
+          (
+            image_mode_deployment_workflow_poll_interval
+            | int
+          )
+        }}
+      delay: "{{ image_mode_deployment_workflow_poll_interval | int }}"
+      no_log: true
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_job_api_url is defined
+      tags:
+        - launch_image_mode_workflow
+
+    - name: Validate Image Mode deployment workflow result
+      ansible.builtin.assert:
+        that:
+          - image_mode_deployment_workflow_status.json is defined
+          - image_mode_deployment_workflow_status.json.status is defined
+          - >-
+            image_mode_deployment_workflow_status.json.status
+            == 'successful'
+        fail_msg:
+          - >-
+            The '{{ image_mode_deployment_workflow_name }}' workflow did not
+            complete successfully.
+          - >-
+            Workflow job ID:
+            {{
+              image_mode_deployment_workflow_job_id
+              | default('unknown')
+            }}
+          - >-
+            Final status:
+            {{
+              image_mode_deployment_workflow_status.json.status
+              | default('unknown')
+            }}
+          - >-
+            Explanation:
+            {{
+              image_mode_deployment_workflow_status.json.job_explanation
+              | default('No workflow job explanation was returned.')
+            }}
+          - >-
+            Review the workflow output:
+            {{
+              image_mode_deployment_workflow_job_ui_url
+              | default(controller_host)
+            }}
+        success_msg: >-
+          The '{{ image_mode_deployment_workflow_name }}' workflow completed
+          successfully.
+      when:
+        - launch_image_mode_deployment_workflow | bool
+        - not ansible_check_mode
+        - image_mode_deployment_workflow_status is defined
+        - image_mode_deployment_workflow_status is not skipped
+      tags:
+        - launch_image_mode_workflow
+
+
     ###########################################################################
     # Display completed configuration
     ###########################################################################
@@ -1687,22 +2203,29 @@
           - "Organization: {{ aap_organization_name }}"
           - "AAP API endpoint: {{ controller_host }}"
           - "AAP administrator username: {{ controller_username }}"
+
           - >-
             Infrastructure inventory:
             {{ infrastructure_inventory_name }}
+
           - "Image builder inventory: {{ image_builder_inventory_name }}"
           - "Quay registry: {{ resolved_quay_hostname }}"
+
           - >-
             Infrastructure hosts configured:
             {{ terraform_infrastructure_hosts | length }}
+
           - >-
             Image builder hosts configured:
             {{ terraform_image_builder_hosts | length }}
+
           - >-
             Managed-host connection addresses:
             private_ip from the Terraform-generated inventory
+
           - "Machine credential key source: AWS Secrets Manager"
           - "Quay credential source: AWS Secrets Manager"
+
           - >-
             Builder configuration automatically launched:
             {{
@@ -1713,12 +2236,14 @@
               )
               | ternary('yes', 'no')
             }}
+
           - >-
             Builder configuration job ID:
             {{
               configure_image_builder_job_id
               | default('not launched')
             }}
+
           - >-
             Builder configuration job status:
             {{
@@ -1727,8 +2252,72 @@
                 if (
                   configure_image_builder_job_status is defined
                   and configure_image_builder_job_status.json is defined
-                  and configure_image_builder_job_status.json.status is defined
+                  and
+                  configure_image_builder_job_status.json.status
+                  is defined
                 )
                 else 'not launched'
               )
             }}
+
+          - >-
+            Builder configuration job URL:
+            {{
+              configure_image_builder_job_ui_url
+              | default('not launched')
+            }}
+
+          - >-
+            Image Mode deployment workflow automatically launched:
+            {{
+              (
+                launch_image_mode_deployment_workflow
+                | bool
+                and not ansible_check_mode
+              )
+              | ternary('yes', 'no')
+            }}
+
+          - >-
+            Image Mode deployment workflow:
+            {{
+              image_mode_deployment_workflow_name
+              | default(
+                  'Image Mode Deploy Sample Image to AWS',
+                  true
+                )
+            }}
+
+          - >-
+            Image Mode deployment workflow job ID:
+            {{
+              image_mode_deployment_workflow_job_id
+              | default('not launched')
+            }}
+
+          - >-
+            Image Mode deployment workflow job status:
+            {{
+              (
+                image_mode_deployment_workflow_status.json.status
+                if (
+                  image_mode_deployment_workflow_status is defined
+                  and
+                  image_mode_deployment_workflow_status.json is defined
+                  and
+                  image_mode_deployment_workflow_status.json.status
+                  is defined
+                )
+                else 'not launched'
+              )
+            }}
+
+          - >-
+            Image Mode deployment workflow job URL:
+            {{
+              image_mode_deployment_workflow_job_ui_url
+              | default('not launched')
+            }}
+      tags:
+        - always
+        - summary

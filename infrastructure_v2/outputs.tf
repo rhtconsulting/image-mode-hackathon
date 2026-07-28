@@ -3,7 +3,7 @@
 ############################################################
 
 output "servers" {
-  description = "Created lab servers with hostname, role, private IP, optional persistent Elastic IP, FQDN, and optional SSH command."
+  description = "Created lab servers with hostname, role, private IP, optional persistent Elastic IP, FQDN, instance profile, and optional SSH command."
 
   value = {
     for name, instance in aws_instance.server :
@@ -16,6 +16,18 @@ output "servers" {
       public_ip = try(
         aws_eip.server[name].public_ip,
         ""
+      )
+
+      instance_profile = (
+        local.flattened_servers[name].role == "aap"
+        ? aws_iam_instance_profile.aap.name
+        : local.flattened_servers[name].role == "satellite"
+        ? aws_iam_instance_profile.satellite.name
+        : local.flattened_servers[name].role == "gitlab"
+        ? aws_iam_instance_profile.gitlab_runtime.name
+        : local.flattened_servers[name].role == "image-builder"
+        ? aws_iam_instance_profile.image_builder.name
+        : aws_iam_instance_profile.lab_ec2_default.name
       )
 
       ssh = try(
@@ -108,8 +120,16 @@ output "ansible_inventory" {
       var.satellite_compute_profile_name
     )
 
+    satellite_default_compute_profile_name = (
+      var.satellite_default_compute_profile_name
+    )
+
     satellite_gitlab_compute_profile_name = (
       var.satellite_gitlab_compute_profile_name
+    )
+
+    satellite_image_builder_compute_profile_name = (
+      var.satellite_image_builder_compute_profile_name
     )
 
     satellite_compute_region = (
@@ -133,12 +153,29 @@ output "ansible_inventory" {
       aws_security_group.gitlab.id
     ]
 
+    satellite_image_builder_security_group_ids = [
+      aws_security_group.lab.id,
+      aws_security_group.image_builder.id
+    ]
+
+    satellite_default_security_group_ids = [
+      aws_security_group.lab.id
+    ]
+
     satellite_compute_key_pair = (
       aws_key_pair.lab.key_name
     )
 
+    satellite_default_instance_profile = (
+      aws_iam_instance_profile.lab_ec2_default.name
+    )
+
     satellite_gitlab_instance_profile = (
       aws_iam_instance_profile.gitlab_runtime.name
+    )
+
+    satellite_image_builder_instance_profile = (
+      aws_iam_instance_profile.image_builder.name
     )
 
     satellite_aws_access_key_secret_name = (
@@ -151,6 +188,22 @@ output "ansible_inventory" {
 
     gitlab_registry_port = (
       var.gitlab_registry_port
+    )
+
+    image_builder_cockpit_port = (
+      var.image_builder_cockpit_port
+    )
+
+    image_mode_artifact_bucket = (
+      aws_s3_bucket.image_mode_artifacts.id
+    )
+
+    rhel_iam_credentials_secret_name = (
+      aws_secretsmanager_secret.rhel_iam_credentials.name
+    )
+
+    vmimport_role_name = (
+      aws_iam_role.vmimport.name
     )
 
     lab_users = var.lab_users
@@ -169,6 +222,7 @@ output "ansible_inventory" {
         fqdn       = local.flattened_servers[name].hostname
         role       = instance.tags.Role
         private_ip = instance.private_ip
+
         public_ip = coalesce(
           try(aws_eip.server[name].public_ip, null),
           instance.public_ip,
@@ -179,6 +233,18 @@ output "ansible_inventory" {
           try(aws_eip.server[name].public_ip, null),
           instance.public_ip,
           instance.private_ip
+        )
+
+        iam_instance_profile = (
+          local.flattened_servers[name].role == "aap"
+          ? aws_iam_instance_profile.aap.name
+          : local.flattened_servers[name].role == "satellite"
+          ? aws_iam_instance_profile.satellite.name
+          : local.flattened_servers[name].role == "gitlab"
+          ? aws_iam_instance_profile.gitlab_runtime.name
+          : local.flattened_servers[name].role == "image-builder"
+          ? aws_iam_instance_profile.image_builder.name
+          : aws_iam_instance_profile.lab_ec2_default.name
         )
 
         acm_certificate_arn = try(
@@ -310,7 +376,8 @@ output "idm_servers" {
         ""
       )
 
-      url = "https://${local.flattened_servers[name].hostname}"
+      url              = "https://${local.flattened_servers[name].hostname}"
+      instance_profile = aws_iam_instance_profile.lab_ec2_default.name
     }
     if local.flattened_servers[name].role == "idm"
   }
@@ -330,7 +397,8 @@ output "aap_servers" {
         ""
       )
 
-      url = "https://${local.flattened_servers[name].hostname}"
+      url              = "https://${local.flattened_servers[name].hostname}"
+      instance_profile = aws_iam_instance_profile.aap.name
     }
     if local.flattened_servers[name].role == "aap"
   }
@@ -350,7 +418,8 @@ output "quay_servers" {
         ""
       )
 
-      url = "https://${local.flattened_servers[name].hostname}"
+      url              = "https://${local.flattened_servers[name].hostname}"
+      instance_profile = aws_iam_instance_profile.lab_ec2_default.name
     }
     if local.flattened_servers[name].role == "quay"
   }
@@ -370,7 +439,8 @@ output "satellite_servers" {
         ""
       )
 
-      url = "https://${local.flattened_servers[name].hostname}"
+      url              = "https://${local.flattened_servers[name].hostname}"
+      instance_profile = aws_iam_instance_profile.satellite.name
     }
     if local.flattened_servers[name].role == "satellite"
   }
@@ -390,7 +460,9 @@ output "image_builder_servers" {
         ""
       )
 
-      url = "https://${local.flattened_servers[name].hostname}:9090"
+      url = "https://${local.flattened_servers[name].hostname}:${var.image_builder_cockpit_port}"
+
+      instance_profile = aws_iam_instance_profile.image_builder.name
     }
     if local.flattened_servers[name].role == "image-builder"
   }
@@ -410,8 +482,10 @@ output "gitlab_servers" {
         ""
       )
 
-      url              = "${var.gitlab_external_url_scheme}://${local.flattened_servers[name].hostname}"
-      registry_url     = "${local.flattened_servers[name].hostname}:${var.gitlab_registry_port}"
+      url = "${var.gitlab_external_url_scheme}://${local.flattened_servers[name].hostname}"
+
+      registry_url = "${local.flattened_servers[name].hostname}:${var.gitlab_registry_port}"
+
       instance_profile = aws_iam_instance_profile.gitlab_runtime.name
     }
     if local.flattened_servers[name].role == "gitlab"
@@ -477,7 +551,9 @@ output "image_builder_urls" {
 
   value = {
     for name, server in local.flattened_servers :
-    name => "https://${server.hostname}:9090"
+    name => (
+      "https://${server.hostname}:${var.image_builder_cockpit_port}"
+    )
     if server.role == "image-builder"
   }
 }
@@ -487,7 +563,9 @@ output "gitlab_urls" {
 
   value = {
     for name, server in local.flattened_servers :
-    name => "${var.gitlab_external_url_scheme}://${server.hostname}"
+    name => (
+      "${var.gitlab_external_url_scheme}://${server.hostname}"
+    )
     if server.role == "gitlab"
   }
 }
@@ -587,17 +665,71 @@ output "gitlab_secret_names" {
   description = "AWS Secrets Manager secret names used by the GitLab deployment."
 
   value = {
-    root_username               = "${var.secret_prefix}/gitlab/root_username"
-    root_password               = "${var.secret_prefix}/gitlab/root_password"
-    postgresql_password         = "${var.secret_prefix}/gitlab/postgresql_password"
-    redis_password              = "${var.secret_prefix}/gitlab/redis_password"
-    runner_registration_token   = "${var.secret_prefix}/gitlab/runner_registration_token"
-    initial_shared_runner_token = "${var.secret_prefix}/gitlab/initial_shared_runner_token"
-    rails_secret                = "${var.secret_prefix}/gitlab/rails_secret"
-    otp_key_base                = "${var.secret_prefix}/gitlab/otp_key_base"
-    db_key_base                 = "${var.secret_prefix}/gitlab/db_key_base"
-    openid_client_secret        = "${var.secret_prefix}/gitlab/openid_connect_client_secret"
-    idm_admin_password          = "${var.secret_prefix}/idm/admin_password"
+    root_username = (
+      "${var.secret_prefix}/gitlab/root_username"
+    )
+
+    root_password = (
+      "${var.secret_prefix}/gitlab/root_password"
+    )
+
+    postgresql_password = (
+      "${var.secret_prefix}/gitlab/postgresql_password"
+    )
+
+    redis_password = (
+      "${var.secret_prefix}/gitlab/redis_password"
+    )
+
+    runner_registration_token = (
+      "${var.secret_prefix}/gitlab/runner_registration_token"
+    )
+
+    initial_shared_runner_token = (
+      "${var.secret_prefix}/gitlab/initial_shared_runner_token"
+    )
+
+    rails_secret = (
+      "${var.secret_prefix}/gitlab/rails_secret"
+    )
+
+    otp_key_base = (
+      "${var.secret_prefix}/gitlab/otp_key_base"
+    )
+
+    db_key_base = (
+      "${var.secret_prefix}/gitlab/db_key_base"
+    )
+
+    openid_client_secret = (
+      "${var.secret_prefix}/gitlab/openid_connect_client_secret"
+    )
+
+    idm_admin_password = (
+      "${var.secret_prefix}/idm/admin_password"
+    )
+  }
+}
+
+output "image_mode_aws_secret_names" {
+  description = "Secrets Manager secret names used by the Image Mode AWS automation workflow."
+
+  value = {
+    rhel_iam_credentials = (
+      aws_secretsmanager_secret.rhel_iam_credentials.name
+    )
+
+    satellite_access_key = (
+      aws_secretsmanager_secret.satellite_aws_access_key_id.name
+    )
+
+    satellite_secret_key = (
+      aws_secretsmanager_secret.satellite_aws_secret_access_key.name
+    )
+
+    ssh_private_key = (
+      aws_secretsmanager_secret.ssh_private_key.name
+    )
   }
 }
 
@@ -693,28 +825,77 @@ output "satellite_installation_settings" {
 ############################################################
 
 output "satellite_compute_resource" {
-  description = "AWS details used to configure the Satellite EC2 Compute Resource."
+  description = "AWS details used to configure the Satellite EC2 Compute Resource and role-specific compute profiles."
 
   value = {
-    name                     = var.satellite_compute_resource_name
-    compute_profile          = var.satellite_compute_profile_name
-    gitlab_compute_profile   = var.satellite_gitlab_compute_profile_name
-    region                   = var.aws_region
-    availability_zone        = aws_subnet.public.availability_zone
-    vpc_id                   = aws_vpc.lab.id
-    subnet_id                = aws_subnet.public.id
-    key_pair                 = aws_key_pair.lab.key_name
-    common_security_group_id = aws_security_group.lab.id
-    gitlab_security_group_id = aws_security_group.gitlab.id
-    gitlab_instance_profile  = aws_iam_instance_profile.gitlab_runtime.name
-    access_key_secret_name   = aws_secretsmanager_secret.satellite_aws_access_key_id.name
-    secret_key_secret_name   = aws_secretsmanager_secret.satellite_aws_secret_access_key.name
+    name = (
+      var.satellite_compute_resource_name
+    )
+
+    compute_profile = (
+      var.satellite_compute_profile_name
+    )
+
+    default_compute_profile = (
+      var.satellite_default_compute_profile_name
+    )
+
+    gitlab_compute_profile = (
+      var.satellite_gitlab_compute_profile_name
+    )
+
+    image_builder_compute_profile = (
+      var.satellite_image_builder_compute_profile_name
+    )
+
+    region            = var.aws_region
+    availability_zone = aws_subnet.public.availability_zone
+    vpc_id            = aws_vpc.lab.id
+    subnet_id         = aws_subnet.public.id
+    key_pair          = aws_key_pair.lab.key_name
+
+    common_security_group_id = (
+      aws_security_group.lab.id
+    )
+
+    gitlab_security_group_id = (
+      aws_security_group.gitlab.id
+    )
+
+    image_builder_security_group_id = (
+      aws_security_group.image_builder.id
+    )
+
+    default_instance_profile = (
+      aws_iam_instance_profile.lab_ec2_default.name
+    )
+
+    gitlab_instance_profile = (
+      aws_iam_instance_profile.gitlab_runtime.name
+    )
+
+    image_builder_instance_profile = (
+      aws_iam_instance_profile.image_builder.name
+    )
+
+    access_key_secret_name = (
+      aws_secretsmanager_secret.satellite_aws_access_key_id.name
+    )
+
+    secret_key_secret_name = (
+      aws_secretsmanager_secret.satellite_aws_secret_access_key.name
+    )
   }
 }
 
 output "satellite_provisioner_iam_user_name" {
   description = "IAM user used by Satellite to provision EC2 instances."
   value       = aws_iam_user.satellite_provisioner.name
+}
+
+output "satellite_provisioner_iam_user_arn" {
+  description = "ARN of the IAM user used by Satellite to provision EC2 instances."
+  value       = aws_iam_user.satellite_provisioner.arn
 }
 
 output "satellite_provisioner_access_key_id" {
@@ -731,6 +912,30 @@ output "satellite_aws_access_key_secret_name" {
 output "satellite_aws_secret_access_key_secret_name" {
   description = "Secrets Manager secret containing the Satellite AWS secret access key."
   value       = aws_secretsmanager_secret.satellite_aws_secret_access_key.name
+}
+
+############################################################
+# AAP IAM Information
+############################################################
+
+output "aap_iam_role_name" {
+  description = "IAM role used by the AAP EC2 instance."
+  value       = aws_iam_role.aap.name
+}
+
+output "aap_iam_role_arn" {
+  description = "ARN of the IAM role used by the AAP EC2 instance."
+  value       = aws_iam_role.aap.arn
+}
+
+output "aap_iam_instance_profile_name" {
+  description = "IAM instance profile assigned to AAP EC2 instances."
+  value       = aws_iam_instance_profile.aap.name
+}
+
+output "aap_iam_instance_profile_arn" {
+  description = "ARN of the IAM instance profile assigned to AAP EC2 instances."
+  value       = aws_iam_instance_profile.aap.arn
 }
 
 ############################################################
@@ -755,4 +960,129 @@ output "gitlab_iam_instance_profile_name" {
 output "gitlab_iam_instance_profile_arn" {
   description = "ARN of the IAM instance profile assigned to GitLab EC2 instances."
   value       = aws_iam_instance_profile.gitlab_runtime.arn
+}
+
+############################################################
+# Default Lab EC2 IAM Information
+############################################################
+
+output "lab_default_iam_role_name" {
+  description = "Default IAM role assigned to generic Image Mode lab EC2 instances."
+  value       = aws_iam_role.lab_ec2_default.name
+}
+
+output "lab_default_iam_role_arn" {
+  description = "ARN of the default Image Mode lab EC2 IAM role."
+  value       = aws_iam_role.lab_ec2_default.arn
+}
+
+output "lab_default_instance_profile_name" {
+  description = "Default instance profile assigned to generic Image Mode lab EC2 instances."
+  value       = aws_iam_instance_profile.lab_ec2_default.name
+}
+
+output "lab_default_instance_profile_arn" {
+  description = "ARN of the default Image Mode lab EC2 instance profile."
+  value       = aws_iam_instance_profile.lab_ec2_default.arn
+}
+
+############################################################
+# Image Builder IAM Information
+############################################################
+
+output "image_builder_iam_role_name" {
+  description = "IAM role assigned to Image Builder EC2 instances."
+  value       = aws_iam_role.image_builder.name
+}
+
+output "image_builder_iam_role_arn" {
+  description = "ARN of the IAM role assigned to Image Builder EC2 instances."
+  value       = aws_iam_role.image_builder.arn
+}
+
+output "image_builder_instance_profile_name" {
+  description = "Instance profile assigned to Image Builder hosts."
+  value       = aws_iam_instance_profile.image_builder.name
+}
+
+output "image_builder_instance_profile_arn" {
+  description = "ARN of the instance profile assigned to Image Builder hosts."
+  value       = aws_iam_instance_profile.image_builder.arn
+}
+
+############################################################
+# Image Mode Artifact Bucket
+############################################################
+
+output "image_mode_artifact_bucket_name" {
+  description = "Shared S3 bucket for Image Mode build artifacts and VM import staging."
+  value       = aws_s3_bucket.image_mode_artifacts.id
+}
+
+output "image_mode_artifact_bucket_arn" {
+  description = "ARN of the shared Image Mode artifact bucket."
+  value       = aws_s3_bucket.image_mode_artifacts.arn
+}
+
+output "image_mode_artifact_bucket_uri" {
+  description = "S3 URI of the shared Image Mode artifact bucket."
+  value       = "s3://${aws_s3_bucket.image_mode_artifacts.id}"
+}
+
+output "image_mode_artifact_policy_name" {
+  description = "Customer-managed IAM policy granting access to the Image Mode artifact bucket."
+  value       = aws_iam_policy.image_mode_artifact_bucket_rw.name
+}
+
+output "image_mode_artifact_policy_arn" {
+  description = "ARN of the customer-managed IAM policy granting access to the Image Mode artifact bucket."
+  value       = aws_iam_policy.image_mode_artifact_bucket_rw.arn
+}
+
+############################################################
+# Bootc AMI Import IAM Information
+############################################################
+
+output "bootc_ami_import_policy_name" {
+  description = "Customer-managed IAM policy used to initiate bootc image imports."
+  value       = aws_iam_policy.bootc_ami_import_caller.name
+}
+
+output "bootc_ami_import_policy_arn" {
+  description = "ARN of the customer-managed IAM policy used to initiate bootc image imports."
+  value       = aws_iam_policy.bootc_ami_import_caller.arn
+}
+
+output "vmimport_role_name" {
+  description = "AWS VM Import/Export service role."
+  value       = aws_iam_role.vmimport.name
+}
+
+output "vmimport_role_arn" {
+  description = "ARN of the AWS VM Import/Export service role."
+  value       = aws_iam_role.vmimport.arn
+}
+
+############################################################
+# rhel-iam Automation User
+############################################################
+
+output "rhel_iam_user_name" {
+  description = "Image Mode automation IAM username."
+  value       = aws_iam_user.rhel_iam.name
+}
+
+output "rhel_iam_user_arn" {
+  description = "ARN of the Image Mode automation IAM user."
+  value       = aws_iam_user.rhel_iam.arn
+}
+
+output "rhel_iam_credentials_secret_name" {
+  description = "Secrets Manager secret containing rhel-iam access credentials."
+  value       = aws_secretsmanager_secret.rhel_iam_credentials.name
+}
+
+output "rhel_iam_credentials_secret_arn" {
+  description = "ARN of the Secrets Manager secret containing rhel-iam access credentials."
+  value       = aws_secretsmanager_secret.rhel_iam_credentials.arn
 }

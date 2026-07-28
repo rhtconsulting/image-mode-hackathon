@@ -1,0 +1,157 @@
+---
+- name: IMAGE MODE AMI | Read AWS caller identity
+  ansible.builtin.command:
+    argv:
+      - aws
+      - sts
+      - get-caller-identity
+      - --region
+      - "{{ image_mode_aws_region }}"
+      - --output
+      - json
+  environment: "{{ image_mode_aws_environment }}"
+  register: image_mode_aws_caller_identity_command
+  changed_when: false
+  no_log: true
+
+- name: IMAGE MODE AMI | Set AWS account ID
+  ansible.builtin.set_fact:
+    image_mode_aws_account_id: >-
+      {{
+        (
+          image_mode_aws_caller_identity_command.stdout
+          | from_json
+        ).Account
+      }}
+
+- name: IMAGE MODE AMI | Resolve artifacts bucket
+  ansible.builtin.set_fact:
+    image_mode_resolved_artifacts_bucket: >-
+      {{
+        (
+          image_mode_artifacts_bucket_override
+          if image_mode_artifacts_bucket_override | trim | length > 0
+          else
+          image_mode_environment_name
+          ~ '-image-mode-artifacts-'
+          ~ image_mode_aws_account_id
+          ~ '-'
+          ~ image_mode_aws_region
+        )
+        | lower
+      }}
+
+- name: IMAGE MODE AMI | Verify vmimport service role
+  ansible.builtin.command:
+    argv:
+      - aws
+      - iam
+      - get-role
+      - --role-name
+      - "{{ image_mode_vmimport_role_name }}"
+      - --query
+      - Role.Arn
+      - --output
+      - text
+  environment: "{{ image_mode_aws_environment }}"
+  changed_when: false
+  no_log: true
+
+- name: IMAGE MODE AMI | Check artifacts bucket
+  ansible.builtin.command:
+    argv:
+      - aws
+      - s3api
+      - head-bucket
+      - --bucket
+      - "{{ image_mode_resolved_artifacts_bucket }}"
+      - --region
+      - "{{ image_mode_aws_region }}"
+  environment: "{{ image_mode_aws_environment }}"
+  register: image_mode_bucket_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: IMAGE MODE AMI | Create artifacts bucket outside us-east-1
+  ansible.builtin.command:
+    argv:
+      - aws
+      - s3api
+      - create-bucket
+      - --bucket
+      - "{{ image_mode_resolved_artifacts_bucket }}"
+      - --region
+      - "{{ image_mode_aws_region }}"
+      - --create-bucket-configuration
+      - "LocationConstraint={{ image_mode_aws_region }}"
+  environment: "{{ image_mode_aws_environment }}"
+  changed_when: true
+  no_log: true
+  when:
+    - image_mode_bucket_check.rc != 0
+    - image_mode_create_artifacts_bucket | bool
+    - image_mode_aws_region != "us-east-1"
+
+- name: IMAGE MODE AMI | Create artifacts bucket in us-east-1
+  ansible.builtin.command:
+    argv:
+      - aws
+      - s3api
+      - create-bucket
+      - --bucket
+      - "{{ image_mode_resolved_artifacts_bucket }}"
+      - --region
+      - us-east-1
+  environment: "{{ image_mode_aws_environment }}"
+  changed_when: true
+  no_log: true
+  when:
+    - image_mode_bucket_check.rc != 0
+    - image_mode_create_artifacts_bucket | bool
+    - image_mode_aws_region == "us-east-1"
+
+- name: IMAGE MODE AMI | Fail when bucket is unavailable
+  ansible.builtin.assert:
+    that:
+      - image_mode_bucket_check.rc == 0
+        or image_mode_create_artifacts_bucket | bool
+    fail_msg: >-
+      S3 bucket {{ image_mode_resolved_artifacts_bucket }} is unavailable and
+      image_mode_create_artifacts_bucket is false.
+
+- name: IMAGE MODE AMI | Configure S3 public-access block
+  ansible.builtin.command:
+    argv:
+      - aws
+      - s3api
+      - put-public-access-block
+      - --bucket
+      - "{{ image_mode_resolved_artifacts_bucket }}"
+      - --public-access-block-configuration
+      - >-
+        BlockPublicAcls=true,IgnorePublicAcls=true,
+        BlockPublicPolicy=true,RestrictPublicBuckets=true
+      - --region
+      - "{{ image_mode_aws_region }}"
+  environment: "{{ image_mode_aws_environment }}"
+  changed_when: true
+  no_log: true
+
+- name: IMAGE MODE AMI | Configure S3 encryption
+  ansible.builtin.command:
+    argv:
+      - aws
+      - s3api
+      - put-bucket-encryption
+      - --bucket
+      - "{{ image_mode_resolved_artifacts_bucket }}"
+      - --server-side-encryption-configuration
+      - >-
+        {"Rules":[{"ApplyServerSideEncryptionByDefault":
+        {"SSEAlgorithm":"AES256"},"BucketKeyEnabled":true}]}
+      - --region
+      - "{{ image_mode_aws_region }}"
+  environment: "{{ image_mode_aws_environment }}"
+  changed_when: true
+  no_log: false

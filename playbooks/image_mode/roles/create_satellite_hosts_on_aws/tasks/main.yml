@@ -1,0 +1,1156 @@
+---
+###############################################################################
+# PHASE 0 | Discover builder and derive target RHEL release
+###############################################################################
+
+- name: PHASE 0 | Resolve matching Image Builder hosts
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_builder_hosts: >-
+      {{
+        query(
+          'inventory_hostnames',
+          create_satellite_hosts_on_aws_builder_pattern
+        )
+      }}
+
+- name: PHASE 0 | Validate Image Builder host discovery
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_builder_hosts | length > 0
+    fail_msg: >-
+      No Image Builder hosts matched inventory pattern
+      {{ create_satellite_hosts_on_aws_builder_pattern }}.
+
+- name: PHASE 0 | Select first Image Builder host
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_selected_builder: >-
+      {{ create_satellite_hosts_on_aws_builder_hosts | first }}
+
+- name: PHASE 0 | Gather operating-system facts from Image Builder
+  ansible.builtin.setup:
+    gather_subset:
+      - min
+    filter:
+      - ansible_distribution
+      - ansible_distribution_major_version
+      - ansible_distribution_version
+  delegate_to: "{{ create_satellite_hosts_on_aws_selected_builder }}"
+  delegate_facts: true
+
+- name: PHASE 0 | Resolve builder RHEL version
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_rhel_major: >-
+      {{
+        hostvars[
+          create_satellite_hosts_on_aws_selected_builder
+        ].ansible_distribution_major_version
+        | string
+        | trim
+      }}
+    create_satellite_hosts_on_aws_rhel_version: >-
+      {{
+        hostvars[
+          create_satellite_hosts_on_aws_selected_builder
+        ].ansible_distribution_version
+        | string
+        | trim
+      }}
+
+- name: PHASE 0 | Validate supported builder operating system
+  ansible.builtin.assert:
+    that:
+      - >-
+        hostvars[
+          create_satellite_hosts_on_aws_selected_builder
+        ].ansible_distribution == 'RedHat'
+      - create_satellite_hosts_on_aws_rhel_major in ['9', '10']
+    fail_msg: >-
+      Image Builder {{ create_satellite_hosts_on_aws_selected_builder }}
+      must run RHEL 9 or RHEL 10.
+
+      Detected distribution:
+      {{
+        hostvars[
+          create_satellite_hosts_on_aws_selected_builder
+        ].ansible_distribution
+        | default('unknown')
+      }}
+
+      Detected version:
+      {{ create_satellite_hosts_on_aws_rhel_version }}
+
+- name: PHASE 0 | Select release-dependent Satellite content
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_content_view: >-
+      {{
+        create_satellite_hosts_on_aws_rhel9_content_view
+        if create_satellite_hosts_on_aws_rhel_major == '9'
+        else create_satellite_hosts_on_aws_rhel10_content_view
+      }}
+    create_satellite_hosts_on_aws_activation_key: >-
+      {{
+        create_satellite_hosts_on_aws_rhel9_activation_key
+        if create_satellite_hosts_on_aws_rhel_major == '9'
+        else create_satellite_hosts_on_aws_rhel10_activation_key
+      }}
+    create_satellite_hosts_on_aws_operating_system: >-
+      {{
+        create_satellite_hosts_on_aws_operating_system_prefix
+      }} {{ create_satellite_hosts_on_aws_rhel_version }}
+
+###############################################################################
+# PHASE 1 | Resolve host domain and FQDN
+###############################################################################
+
+- name: PHASE 1 | Resolve Satellite server FQDN
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_satellite_fqdn: >-
+      {{
+        ansible_fqdn
+        | default(inventory_hostname, true)
+        | lower
+        | trim
+      }}
+
+- name: PHASE 1 | Derive domain from Satellite server FQDN
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_resolved_domain: >-
+      {{
+        create_satellite_hosts_on_aws_domain
+        | default('', true)
+        | trim
+        if (
+          create_satellite_hosts_on_aws_domain
+          | default('', true)
+          | trim
+          | length
+        ) > 0
+        else (
+          create_satellite_hosts_on_aws_satellite_fqdn
+          | regex_replace('^[^.]+\.', '')
+        )
+      }}
+
+- name: PHASE 1 | Resolve requested host FQDN
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_fqdn: >-
+      {{
+        create_satellite_hosts_on_aws_hostname
+        | lower
+        | trim
+      }}.{{ create_satellite_hosts_on_aws_resolved_domain }}
+
+- name: PHASE 1 | Resolve content source
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_resolved_content_source: >-
+      {{
+        create_satellite_hosts_on_aws_content_source
+        | default('', true)
+        | trim
+        if (
+          create_satellite_hosts_on_aws_content_source
+          | default('', true)
+          | trim
+          | length
+        ) > 0
+        else create_satellite_hosts_on_aws_satellite_fqdn
+      }}
+
+- name: PHASE 1 | Resolve target short hostname
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_target_hostname: >-
+      {{
+        create_satellite_hosts_on_aws_hostname
+        | default('', true)
+        | string
+        | lower
+        | trim
+        | regex_replace('\..*$', '')
+      }}
+
+- name: PHASE 1 | Validate target short hostname
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_target_hostname | length > 0
+      - >-
+        create_satellite_hosts_on_aws_target_hostname
+        is match('^[a-z0-9][a-z0-9-]*[a-z0-9]$')
+        or create_satellite_hosts_on_aws_target_hostname
+        is match('^[a-z0-9]$')
+    fail_msg: >-
+      create_satellite_hosts_on_aws_hostname must contain a valid short
+      hostname.
+      Supplied value:
+      {{ create_satellite_hosts_on_aws_hostname | default('undefined') }}
+
+- name: PHASE 1 | Resolve target FQDN
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_fqdn: >-
+      {{
+        create_satellite_hosts_on_aws_target_hostname
+      }}.{{ create_satellite_hosts_on_aws_resolved_domain }}
+
+###############################################################################
+# PHASE 2 | Validate required variables
+###############################################################################
+
+- name: PHASE 2 | Validate role inputs
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_hostname | trim | length > 0
+      - create_satellite_hosts_on_aws_resolved_domain | trim | length > 0
+      - create_satellite_hosts_on_aws_organization | trim | length > 0
+      - create_satellite_hosts_on_aws_location | trim | length > 0
+      - create_satellite_hosts_on_aws_content_view | trim | length > 0
+      - >-
+        create_satellite_hosts_on_aws_lifecycle_environment
+        | trim
+        | length > 0
+      - create_satellite_hosts_on_aws_compute_resource | trim | length > 0
+      - create_satellite_hosts_on_aws_compute_image | trim | length > 0
+      - create_satellite_hosts_on_aws_flavor | trim | length > 0
+      - >-
+        (
+          create_satellite_hosts_on_aws_region
+          | default(
+              satellite_compute_region
+              | default(
+                  aws_region
+                  | default('', true),
+                  true
+                ),
+              true
+            )
+          | string
+          | trim
+          | length
+        ) > 0
+      - create_satellite_hosts_on_aws_availability_zone | trim | length > 0
+      - >-
+        create_satellite_hosts_on_aws_subnet_network
+        | trim
+        | length > 0
+      - create_satellite_hosts_on_aws_architecture | trim | length > 0
+    fail_msg: >-
+      One or more required create_satellite_hosts_on_aws role variables
+      are missing.
+
+      The AWS region must be supplied through one of:
+
+      - create_satellite_hosts_on_aws_region
+      - satellite_compute_region
+      - aws_region
+###############################################################################
+# PHASE 3 | Resolve Satellite resources
+###############################################################################
+
+- name: PHASE 3 | List organizations
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - organization
+      - list
+      - --search
+      - "name=\"{{ create_satellite_hosts_on_aws_organization }}\""
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_organization_lookup
+  changed_when: false
+
+- name: PHASE 3 | Parse organization lookup
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_organization_matches: >-
+      {{
+        create_satellite_hosts_on_aws_organization_lookup.stdout
+        | from_json
+      }}
+
+- name: PHASE 3 | Validate organization lookup
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_organization_matches | length == 1
+    fail_msg: >-
+      Unable to uniquely resolve Satellite organization
+      {{ create_satellite_hosts_on_aws_organization }}.
+
+- name: PHASE 3 | Set organization ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_organization_id: >-
+      {{
+        create_satellite_hosts_on_aws_organization_matches[0]['Id']
+      }}
+
+- name: PHASE 3 | List locations
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - location
+      - list
+      - --search
+      - "name=\"{{ create_satellite_hosts_on_aws_location }}\""
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_location_lookup
+  changed_when: false
+
+- name: PHASE 3 | Parse location lookup
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_location_matches: >-
+      {{
+        create_satellite_hosts_on_aws_location_lookup.stdout
+        | from_json
+      }}
+
+- name: PHASE 3 | Validate location lookup
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_location_matches | length == 1
+    fail_msg: >-
+      Unable to uniquely resolve Satellite location
+      {{ create_satellite_hosts_on_aws_location }}.
+
+- name: PHASE 3 | Set location ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_location_id: >-
+      {{
+        create_satellite_hosts_on_aws_location_matches[0]['Id']
+      }}
+
+- name: PHASE 3 | List compute resources
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - compute-resource
+      - list
+      - --search
+      - "name=\"{{ create_satellite_hosts_on_aws_compute_resource }}\""
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_compute_resource_lookup
+  changed_when: false
+
+- name: PHASE 3 | Parse compute-resource lookup
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_compute_resource_matches: >-
+      {{
+        create_satellite_hosts_on_aws_compute_resource_lookup.stdout
+        | from_json
+      }}
+
+- name: PHASE 3 | Validate compute-resource lookup
+  ansible.builtin.assert:
+    that:
+      - >-
+        create_satellite_hosts_on_aws_compute_resource_matches
+        | length == 1
+    fail_msg: >-
+      Unable to uniquely resolve Satellite compute resource
+      {{ create_satellite_hosts_on_aws_compute_resource }}.
+
+- name: PHASE 3 | Set compute-resource ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_compute_resource_id: >-
+      {{
+        create_satellite_hosts_on_aws_compute_resource_matches[0]['Id']
+      }}
+
+###############################################################################
+# PHASE 4 | Resolve domain, subnet, architecture, OS and image
+###############################################################################
+
+- name: PHASE 4 | List matching Satellite domains
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - domain
+      - list
+      - --search
+      - "name=\"{{ create_satellite_hosts_on_aws_resolved_domain }}\""
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_domain_lookup
+  changed_when: false
+
+- name: PHASE 4 | Parse domain lookup
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_domain_matches: >-
+      {{
+        create_satellite_hosts_on_aws_domain_lookup.stdout
+        | from_json
+      }}
+
+- name: PHASE 4 | Validate domain lookup
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_domain_matches | length == 1
+    fail_msg: >-
+      Unable to uniquely resolve Satellite domain
+      {{ create_satellite_hosts_on_aws_resolved_domain }}.
+
+- name: PHASE 4 | Set domain ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_domain_id: >-
+      {{ create_satellite_hosts_on_aws_domain_matches[0]['Id'] }}
+
+###############################################################################
+# PHASE 4 | Resolve AWS EC2 subnet
+#
+# Satellite's `hammer subnet list` searches Satellite-managed subnet records.
+# The target subnet is Terraform-managed in AWS and is therefore resolved
+# directly through the AWS EC2 API.
+###############################################################################
+
+- name: PHASE 4 | Resolve requested AWS subnet CIDR
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_subnet_cidr: >-
+      {{
+        create_satellite_hosts_on_aws_subnet_network
+        | string
+        | trim
+      }}
+
+- name: PHASE 4 | Resolve effective AWS region
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_effective_region: >-
+      {{
+        create_satellite_hosts_on_aws_region
+        | default(
+            satellite_compute_region
+            | default(
+                aws_region
+                | default('us-east-2', true),
+                true
+              ),
+            true
+          )
+        | string
+        | trim
+      }}
+
+- name: PHASE 4 | Validate effective AWS region
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_effective_region | length > 0
+    fail_msg: >-
+      Unable to resolve the AWS region.
+
+      Define one of the following variables:
+
+      - create_satellite_hosts_on_aws_region
+      - satellite_compute_region
+      - aws_region
+
+- name: PHASE 4 | Discover matching AWS EC2 subnet
+  ansible.builtin.command:
+    argv:
+      - aws
+      - ec2
+      - describe-subnets
+      - --region
+      - "{{ create_satellite_hosts_on_aws_effective_region }}"
+      - --filters
+      - >-
+        Name=cidr-block,Values={{
+          create_satellite_hosts_on_aws_subnet_cidr
+        }}
+      - >-
+        Name=availability-zone,Values={{
+          create_satellite_hosts_on_aws_availability_zone
+        }}
+      - Name=state,Values=available
+      - --query
+      - >-
+        Subnets[].{
+          SubnetId:SubnetId,
+          CidrBlock:CidrBlock,
+          AvailabilityZone:AvailabilityZone,
+          VpcId:VpcId,
+          Name:Tags[?Key==`Name`]|[0].Value
+        }
+      - --output
+      - json
+  register: create_satellite_hosts_on_aws_subnet_lookup
+  changed_when: false
+
+- name: PHASE 4 | Parse matching AWS EC2 subnets
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_subnet_matches: >-
+      {{
+        create_satellite_hosts_on_aws_subnet_lookup.stdout
+        | from_json
+      }}
+
+- name: PHASE 4 | Validate AWS EC2 subnet lookup
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_subnet_matches | length == 1
+    fail_msg: >-
+      Unable to uniquely resolve an available AWS subnet.
+
+      Requested CIDR:
+      {{ create_satellite_hosts_on_aws_subnet_cidr }}
+
+      Requested availability zone:
+      {{ create_satellite_hosts_on_aws_availability_zone }}
+
+      AWS region:
+      {{ create_satellite_hosts_on_aws_effective_region }}
+
+      Matching AWS subnets:
+      {{ create_satellite_hosts_on_aws_subnet_matches }}
+
+- name: PHASE 4 | Set resolved AWS subnet details
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_subnet_id: >-
+      {{
+        create_satellite_hosts_on_aws_subnet_matches[0].SubnetId
+      }}
+    create_satellite_hosts_on_aws_subnet_vpc_id: >-
+      {{
+        create_satellite_hosts_on_aws_subnet_matches[0].VpcId
+      }}
+    create_satellite_hosts_on_aws_subnet_name: >-
+      {{
+        create_satellite_hosts_on_aws_subnet_matches[0].Name
+        | default('', true)
+      }}
+
+- name: PHASE 4 | Resolve architecture
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - architecture
+      - list
+      - --search
+      - "name=\"{{ create_satellite_hosts_on_aws_architecture }}\""
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_architecture_lookup
+  changed_when: false
+
+- name: PHASE 4 | Parse architecture lookup
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_architecture_matches: >-
+      {{
+        create_satellite_hosts_on_aws_architecture_lookup.stdout
+        | from_json
+      }}
+
+- name: PHASE 4 | Validate architecture lookup
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_architecture_matches | length == 1
+    fail_msg: >-
+      Unable to uniquely resolve Satellite architecture
+      {{ create_satellite_hosts_on_aws_architecture }}.
+
+- name: PHASE 4 | Set architecture ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_architecture_id: >-
+      {{ create_satellite_hosts_on_aws_architecture_matches[0]['Id'] }}
+
+- name: PHASE 4 | Resolve operating system
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - os
+      - list
+      - --search
+      - "title=\"{{ create_satellite_hosts_on_aws_operating_system }}\""
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_os_lookup
+  changed_when: false
+
+- name: PHASE 4 | Parse operating-system lookup
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_os_matches: >-
+      {{
+        create_satellite_hosts_on_aws_os_lookup.stdout
+        | from_json
+      }}
+
+- name: PHASE 4 | Validate operating-system lookup
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_os_matches | length == 1
+    fail_msg: >-
+      Unable to uniquely resolve Satellite operating system
+      {{ create_satellite_hosts_on_aws_operating_system }}.
+
+- name: PHASE 4 | Set operating-system ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_operating_system_id: >-
+      {{ create_satellite_hosts_on_aws_os_matches[0]['Id'] }}
+###############################################################################
+# PHASE 4 | Resolve partition table
+#
+# Hammer requires a partition table when the host is created without a host
+# group, including image-based provisioning. The table must be associated with
+# the selected operating system.
+###############################################################################
+
+- name: PHASE 4 | List partition tables for selected operating system
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - partition-table
+      - list
+      - --operatingsystem-id
+      - "{{ create_satellite_hosts_on_aws_operating_system_id }}"
+      - --organization-id
+      - "{{ create_satellite_hosts_on_aws_organization_id }}"
+      - --location-id
+      - "{{ create_satellite_hosts_on_aws_location_id }}"
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_partition_table_lookup
+  changed_when: false
+
+- name: PHASE 4 | Parse partition-table lookup
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_available_partition_tables: >-
+      {{
+        create_satellite_hosts_on_aws_partition_table_lookup.stdout
+        | default('[]', true)
+        | from_json
+      }}
+
+- name: PHASE 4 | Select requested partition table
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_partition_table_matches: >-
+      {{
+        create_satellite_hosts_on_aws_available_partition_tables
+        | selectattr('Name', 'defined')
+        | selectattr(
+            'Name',
+            'equalto',
+            create_satellite_hosts_on_aws_partition_table
+          )
+        | list
+      }}
+
+- name: PHASE 4 | Validate partition-table lookup
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_partition_table_matches | length == 1
+    fail_msg: >-
+      Unable to uniquely resolve partition table
+      {{ create_satellite_hosts_on_aws_partition_table }}
+      for operating system
+      {{ create_satellite_hosts_on_aws_operating_system }}.
+
+      Operating-system ID:
+      {{ create_satellite_hosts_on_aws_operating_system_id }}
+
+      Available partition tables:
+      {{
+        create_satellite_hosts_on_aws_available_partition_tables
+        | map(attribute='Name')
+        | list
+      }}
+
+- name: PHASE 4 | Set partition-table ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_partition_table_id: >-
+      {{
+        create_satellite_hosts_on_aws_partition_table_matches[0]['Id']
+      }}
+
+
+- name: PHASE 4 | List compute-resource images
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - compute-resource
+      - image
+      - list
+      - --compute-resource-id
+      - "{{ create_satellite_hosts_on_aws_compute_resource_id }}"
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_image_lookup
+  changed_when: false
+
+- name: PHASE 4 | Select compute-resource image
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_image_matches: >-
+      {{
+        create_satellite_hosts_on_aws_image_lookup.stdout
+        | from_json
+        | selectattr(
+            'Name',
+            'equalto',
+            create_satellite_hosts_on_aws_compute_image
+          )
+        | list
+      }}
+
+- name: PHASE 4 | Validate compute-resource image
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_image_matches | length == 1
+    fail_msg: >-
+      Unable to uniquely resolve image
+      {{ create_satellite_hosts_on_aws_compute_image }}
+      under compute resource
+      {{ create_satellite_hosts_on_aws_compute_resource }}.
+
+- name: PHASE 4 | Set compute-resource image ID
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_image_id: >-
+      {{ create_satellite_hosts_on_aws_image_matches[0]['Id'] }}
+
+###############################################################################
+# PHASE 5 | Resolve AWS security groups
+###############################################################################
+
+- name: PHASE 5 | Build requested security-group list
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_requested_security_groups: >-
+      {{
+        (
+          [create_satellite_hosts_on_aws_security_group]
+          if (
+            create_satellite_hosts_on_aws_security_group
+            | default('', true)
+            | string
+            | trim
+            | length > 0
+          )
+          else []
+        )
+        +
+        (
+          create_satellite_hosts_on_aws_security_groups
+          | default([])
+        )
+        | map('string')
+        | map('trim')
+        | reject('equalto', '')
+        | unique
+        | list
+      }}
+
+- name: PHASE 5 | Validate requested security-group list
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_requested_security_groups | length > 0
+    fail_msg: >-
+      At least one AWS security group must be supplied through
+      create_satellite_hosts_on_aws_security_group or
+      create_satellite_hosts_on_aws_security_groups.
+
+- name: PHASE 5 | Separate security-group IDs from names
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_supplied_security_group_ids: >-
+      {{
+        create_satellite_hosts_on_aws_requested_security_groups
+        | select('match', '^sg-[0-9a-fA-F]+$')
+        | list
+      }}
+    create_satellite_hosts_on_aws_supplied_security_group_names: >-
+      {{
+        create_satellite_hosts_on_aws_requested_security_groups
+        | reject('match', '^sg-[0-9a-fA-F]+$')
+        | list
+      }}
+
+- name: PHASE 5 | Resolve named AWS security groups
+  ansible.builtin.command:
+    argv:
+      - aws
+      - ec2
+      - describe-security-groups
+      - --region
+      - "{{ create_satellite_hosts_on_aws_effective_region }}"
+      - --filters
+      - >-
+        Name=vpc-id,Values={{
+          create_satellite_hosts_on_aws_subnet_vpc_id
+        }}
+      - >-
+        Name=group-name,Values={{
+          create_satellite_hosts_on_aws_supplied_security_group_names
+          | join(',')
+        }}
+      - --query
+      - >-
+        SecurityGroups[].{
+          GroupId:GroupId,
+          GroupName:GroupName,
+          VpcId:VpcId
+        }
+      - --output
+      - json
+  register: create_satellite_hosts_on_aws_security_group_lookup
+  changed_when: false
+  when:
+    - create_satellite_hosts_on_aws_supplied_security_group_names | length > 0
+
+- name: PHASE 5 | Parse resolved named security groups
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_resolved_named_security_groups: >-
+      {{
+        (
+          create_satellite_hosts_on_aws_security_group_lookup.stdout
+          | default('[]', true)
+          | from_json
+        )
+        if (
+          create_satellite_hosts_on_aws_supplied_security_group_names
+          | length > 0
+        )
+        else []
+      }}
+
+- name: PHASE 5 | Validate named security-group resolution
+  ansible.builtin.assert:
+    that:
+      - >-
+        create_satellite_hosts_on_aws_resolved_named_security_groups
+        | length
+        ==
+        create_satellite_hosts_on_aws_supplied_security_group_names
+        | length
+    fail_msg: >-
+      Unable to resolve all requested AWS security group names in VPC
+      {{ create_satellite_hosts_on_aws_subnet_vpc_id }}.
+
+      Requested names:
+      {{ create_satellite_hosts_on_aws_supplied_security_group_names }}
+
+      Resolved security groups:
+      {{ create_satellite_hosts_on_aws_resolved_named_security_groups }}
+
+- name: PHASE 5 | Build effective security-group ID list
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_effective_security_groups: >-
+      {{
+        (
+          create_satellite_hosts_on_aws_supplied_security_group_ids
+          +
+          (
+            create_satellite_hosts_on_aws_resolved_named_security_groups
+            | map(attribute='GroupId')
+            | list
+          )
+        )
+        | unique
+        | list
+      }}
+
+- name: PHASE 5 | Validate effective security-group IDs
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_effective_security_groups | length > 0
+      - >-
+        create_satellite_hosts_on_aws_effective_security_groups
+        | reject('match', '^sg-[0-9a-fA-F]+$')
+        | list
+        | length == 0
+    fail_msg: >-
+      One or more resolved AWS security groups are not valid security group
+      IDs.
+      Requested security groups:
+      {{ create_satellite_hosts_on_aws_requested_security_groups }}
+      Effective security group IDs:
+      {{ create_satellite_hosts_on_aws_effective_security_groups }}
+
+- name: PHASE 5 | List possible matching Satellite hosts
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - host
+      - list
+      - --organization-id
+      - "{{ create_satellite_hosts_on_aws_organization_id }}"
+      - --per-page
+      - "1000"
+  register: create_satellite_hosts_on_aws_existing_host_lookup
+  changed_when: false
+
+- name: PHASE 5 | Parse Satellite host list
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_all_hosts: >-
+      {{
+        create_satellite_hosts_on_aws_existing_host_lookup.stdout
+        | default('[]', true)
+        | from_json
+      }}
+
+- name: PHASE 5 | Select exact existing Satellite host
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_existing_hosts: >-
+      {{
+        create_satellite_hosts_on_aws_all_hosts
+        | selectattr('Name', 'defined')
+        | selectattr(
+            'Name',
+            'equalto',
+            create_satellite_hosts_on_aws_fqdn
+          )
+        | list
+      }}
+
+- name: PHASE 5 | Display existing-host lookup result
+  ansible.builtin.debug:
+    msg:
+      requested_host: "{{ create_satellite_hosts_on_aws_fqdn }}"
+      exact_matches: "{{ create_satellite_hosts_on_aws_existing_hosts }}"
+      exact_match_count: >-
+        {{ create_satellite_hosts_on_aws_existing_hosts | length }}
+
+- name: PHASE 5 | Validate existing host uniqueness
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_existing_hosts | length <= 1
+    fail_msg: >-
+      More than one exact Satellite host matched
+      {{ create_satellite_hosts_on_aws_fqdn }}.
+      Matching hosts:
+      {{ create_satellite_hosts_on_aws_existing_hosts }}
+
+###############################################################################
+# PHASE 6 | Generate root password for a new host
+###############################################################################
+- name: PHASE 6 | Generate random root password
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_root_password: >-
+      {{
+        lookup(
+          'ansible.builtin.password',
+          '/dev/null',
+          length=create_satellite_hosts_on_aws_root_password_length
+            | default(32),
+          chars=['ascii_letters', 'digits']
+        )
+      }}
+  no_log: true
+  when:
+    - create_satellite_hosts_on_aws_existing_hosts | length == 0
+
+###############################################################################
+# PHASE 7 | Build EC2 compute attributes
+###############################################################################
+
+- name: PHASE 7 | Build AWS EC2 compute attributes
+  ansible.builtin.set_fact:
+    create_satellite_hosts_on_aws_compute_attributes:
+      flavor_id: "{{ create_satellite_hosts_on_aws_flavor }}"
+      availability_zone: >-
+        {{ create_satellite_hosts_on_aws_availability_zone }}
+      subnet_id: "{{ create_satellite_hosts_on_aws_subnet_id }}"
+      security_group_ids: >-
+        {{ create_satellite_hosts_on_aws_effective_security_groups }}
+      managed_ip: public_ip
+
+- name: PHASE 7 | Validate AWS EC2 compute attributes
+  ansible.builtin.assert:
+    that:
+      - >-
+        create_satellite_hosts_on_aws_compute_attributes
+        is mapping
+      - >-
+        create_satellite_hosts_on_aws_compute_attributes.security_group_ids
+        is sequence
+      - >-
+        create_satellite_hosts_on_aws_compute_attributes.security_group_ids
+        is not string
+      - >-
+        create_satellite_hosts_on_aws_compute_attributes.security_group_ids
+        | length > 0
+    fail_msg: >-
+      EC2 compute attribute security_group_ids must be an array of AWS
+      security-group IDs, not a semicolon-delimited string.
+
+      Effective value:
+      {{
+        create_satellite_hosts_on_aws_compute_attributes.security_group_ids
+        | default('undefined')
+      }}
+
+###############################################################################
+# PHASE 7 | Create AWS host through Satellite
+###############################################################################
+
+- name: PHASE 7 | Create Satellite-managed AWS host
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - host
+      - create
+
+      - --name
+      - "{{ create_satellite_hosts_on_aws_target_hostname }}"
+
+      - --organization-id
+      - "{{ create_satellite_hosts_on_aws_organization_id }}"
+
+      - --location-id
+      - "{{ create_satellite_hosts_on_aws_location_id }}"
+
+      - --domain-id
+      - "{{ create_satellite_hosts_on_aws_domain_id }}"
+
+      - --architecture-id
+      - "{{ create_satellite_hosts_on_aws_architecture_id }}"
+
+      - --operatingsystem-id
+      - "{{ create_satellite_hosts_on_aws_operating_system_id }}"
+
+      - --partition-table-id
+      - "{{ create_satellite_hosts_on_aws_partition_table_id }}"
+
+      - --compute-resource-id
+      - "{{ create_satellite_hosts_on_aws_compute_resource_id }}"
+
+      - --compute-profile
+      - >-
+        {{
+          create_satellite_hosts_on_aws_compute_profile
+          | default('1-Small')
+        }}
+
+      - --image-id
+      - "{{ create_satellite_hosts_on_aws_image_id }}"
+
+      - --content-source
+      - "{{ create_satellite_hosts_on_aws_resolved_content_source }}"
+
+      - --content-view
+      - "{{ create_satellite_hosts_on_aws_content_view }}"
+
+      - --lifecycle-environment
+      - "{{ create_satellite_hosts_on_aws_lifecycle_environment }}"
+
+      - --root-password
+      - "{{ create_satellite_hosts_on_aws_root_password }}"
+
+      - --managed
+      - >-
+        {{
+          create_satellite_hosts_on_aws_managed
+          | bool
+          | ternary('true', 'false')
+        }}
+
+      - --build
+      - "false"
+
+      - --enabled
+      - >-
+        {{
+          create_satellite_hosts_on_aws_enabled
+          | bool
+          | ternary('true', 'false')
+        }}
+
+      - --provision-method
+      - "image"
+
+      - --interface
+      - >-
+        primary={{
+          create_satellite_hosts_on_aws_interface_primary
+          | bool
+          | ternary('true', 'false')
+        }},
+        provision={{
+          create_satellite_hosts_on_aws_interface_provision
+          | bool
+          | ternary('true', 'false')
+        }},
+        managed={{
+          create_satellite_hosts_on_aws_interface_managed
+          | bool
+          | ternary('true', 'false')
+        }},
+        domain_id={{ create_satellite_hosts_on_aws_domain_id }}
+
+      - --compute-attributes
+      - >-
+        {{
+          create_satellite_hosts_on_aws_compute_attributes
+          | to_json
+        }}
+
+  register: create_satellite_hosts_on_aws_create_result
+  changed_when: true
+  no_log: true
+  when:
+    - create_satellite_hosts_on_aws_existing_hosts | length == 0
+
+- name: PHASE 7 | Reject an existing host when updates are disabled
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_update_existing | default(false) | bool
+    fail_msg: >-
+      Satellite host {{ create_satellite_hosts_on_aws_fqdn }} already exists.
+      Set create_satellite_hosts_on_aws_update_existing=true to permit an
+      update workflow.
+  when:
+    - create_satellite_hosts_on_aws_existing_hosts | length == 1
+
+###############################################################################
+# PHASE 8 | Verify resulting host
+###############################################################################
+
+- name: PHASE 8 | Read resulting Satellite host
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - --output
+      - json
+      - host
+      - info
+      - --name
+      - "{{ create_satellite_hosts_on_aws_fqdn }}"
+      - --organization-id
+      - "{{ create_satellite_hosts_on_aws_organization_id }}"
+  register: create_satellite_hosts_on_aws_final_host
+  changed_when: false
+
+- name: PHASE 8 | Display resulting Satellite host
+  ansible.builtin.debug:
+    msg:
+      - "Host: {{ create_satellite_hosts_on_aws_fqdn }}"
+      - "Builder: {{ create_satellite_hosts_on_aws_selected_builder }}"
+      - "Builder OS: RHEL {{ create_satellite_hosts_on_aws_rhel_version }}"
+      - "Content view: {{ create_satellite_hosts_on_aws_content_view }}"
+      - >-
+        Lifecycle environment:
+        {{ create_satellite_hosts_on_aws_lifecycle_environment }}
+      - >-
+        Compute resource:
+        {{ create_satellite_hosts_on_aws_compute_resource }}
+      - "Compute image: {{ create_satellite_hosts_on_aws_compute_image }}"
+      - "AWS flavor: {{ create_satellite_hosts_on_aws_flavor }}"
+      - >-
+        Availability zone:
+        {{ create_satellite_hosts_on_aws_availability_zone }}
+      - >-
+        AWS subnet:
+        {{ create_satellite_hosts_on_aws_subnet_id }}
+        ({{ create_satellite_hosts_on_aws_subnet_network }})
+      - >-
+        Security groups:
+        {{ create_satellite_hosts_on_aws_effective_security_groups }}

@@ -200,7 +200,9 @@ variable "idm_users" {
     "claudiol",
     "pduncan",
     "cpranava",
-    "stripura"
+    "stripura",
+    "ablock",
+    "itewksbu"
   ]
 }
 
@@ -588,5 +590,50 @@ variable "public_server_names" {
     )
 
     error_message = "public_server_names cannot contain more than five servers because the current regional Elastic IP quota is five."
+  }
+}
+
+###############################################################################
+# Image Builder
+###############################################################################
+
+variable "image_builder_cockpit_port" {
+  description = "TCP port used by the Image Builder Cockpit web interface."
+  type        = number
+  default     = 9090
+
+  validation {
+    condition = (
+      var.image_builder_cockpit_port >= 1 &&
+      var.image_builder_cockpit_port <= 65535
+    )
+
+    error_message = "image_builder_cockpit_port must be between 1 and 65535."
+  }
+}
+
+###############################################################################
+# Satellite AWS Compute Profiles
+###############################################################################
+
+variable "satellite_default_compute_profile_name" {
+  description = "Satellite compute profile used for generic Image Mode EC2 hosts."
+  type        = string
+  default     = "Image Mode Default"
+
+  validation {
+    condition     = length(trimspace(var.satellite_default_compute_profile_name)) > 0
+    error_message = "satellite_default_compute_profile_name must not be empty."
+  }
+}
+
+variable "satellite_image_builder_compute_profile_name" {
+  description = "Satellite compute profile used for Image Builder EC2 hosts."
+  type        = string
+  default     = "Image Builder"
+
+  validation {
+    condition     = length(trimspace(var.satellite_image_builder_compute_profile_name)) > 0
+    error_message = "satellite_image_builder_compute_profile_name must not be empty."
   }
 }

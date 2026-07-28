@@ -1,0 +1,85 @@
+---
+###############################################################################
+# Configure Satellite for a newly built AWS AMI
+###############################################################################
+
+###############################################################################
+# Satellite organization
+###############################################################################
+
+configure_satellite_ami_organization_name: "Image Mode Lab"
+configure_satellite_ami_organization_label: "Image_Mode_Lab"
+
+###############################################################################
+# Satellite AWS compute resource
+#
+# This must match the existing EC2 compute resource under:
+#
+# Infrastructure > Compute Resources
+###############################################################################
+
+configure_satellite_ami_compute_resource_name: ""
+
+###############################################################################
+# Satellite image
+###############################################################################
+
+configure_satellite_ami_image_name: "AWS-RHEL-Dev"
+configure_satellite_ami_username: "cloud-user"
+configure_satellite_ami_architecture: "x86_64"
+configure_satellite_ami_user_data: true
+
+###############################################################################
+# AMI produced by the Build AMI playbook
+#
+# Expected format:
+#
+#   ami-0123456789abcdef0
+###############################################################################
+
+configure_satellite_ami_id: "{{ satellite_new_ami_id | default('') }}"
+
+###############################################################################
+# Builder host selection
+#
+# The role determines the target RHEL operating system from the first enabled
+# host in this inventory group unless explicit version values are supplied.
+###############################################################################
+
+configure_satellite_ami_builder_group: "image_builder"
+
+configure_satellite_ami_rhel_major: >-
+  {{
+    satellite_new_ami_rhel_major
+    | default('')
+  }}
+
+configure_satellite_ami_rhel_minor: >-
+  {{
+    satellite_new_ami_rhel_minor
+    | default('')
+  }}
+
+###############################################################################
+# Operating system selection
+#
+# When empty, the role discovers the closest matching Red Hat operating system
+# already available in Satellite.
+#
+# Example explicit value:
+#
+#   RedHat 9.6
+###############################################################################
+
+configure_satellite_ami_operating_system: ""
+
+###############################################################################
+# Existing-image behavior
+#
+# When true, an existing Satellite image with the same name is updated so that
+# its UUID points to the newly generated AMI.
+###############################################################################
+
+configure_satellite_ami_update_existing: true
+
+configure_satellite_ami_builder_pattern: "image-builder*"

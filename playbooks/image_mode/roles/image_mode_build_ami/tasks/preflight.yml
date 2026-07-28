@@ -1,0 +1,117 @@
+---
+- name: IMAGE MODE AMI | Validate target operating system
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == "RedHat"
+      - ansible_facts.distribution_major_version | int >= 9
+    fail_msg: >-
+      This role requires a RHEL 9 or later Image Builder host.
+
+- name: IMAGE MODE AMI | Validate image variables
+  ansible.builtin.assert:
+    that:
+      - image_mode_environment_name | trim | length > 0
+      - image_mode_image_name | trim | length > 0
+      - image_mode_image_tag | trim | length > 0
+      - image_mode_quay_host | trim | length > 0
+      - image_mode_quay_organization | trim | length > 0
+      - image_mode_ssh_public_key | trim | length > 0
+      - >-
+        image_mode_ssh_public_key is match(
+          '^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp[0-9]+) '
+        )
+      - image_mode_root_disk_size is match('^[1-9][0-9]* GiB$')
+    fail_msg: >-
+      Supply valid image identity values, image_mode_ssh_public_key, and a
+      root disk size such as "40 GiB".
+
+- name: IMAGE MODE AMI | Validate AWS authentication configuration
+  ansible.builtin.assert:
+    that:
+      - image_mode_aws_region | trim | length > 0
+      - >-
+        (
+          image_mode_aws_access_key_id | trim | length > 0
+          and
+          image_mode_aws_secret_access_key | trim | length > 0
+        )
+        or
+        image_mode_aws_profile | trim | length > 0
+    fail_msg: >-
+      Attach the AAP AWS credential so AWS_ACCESS_KEY_ID,
+      AWS_SECRET_ACCESS_KEY and AWS_REGION are injected, or set
+      image_mode_aws_profile for a non-AAP CLI run.
+  no_log: true
+
+- name: IMAGE MODE AMI | Add optional AWS session token
+  ansible.builtin.set_fact:
+    image_mode_aws_environment: >-
+      {{
+        image_mode_aws_environment
+        | combine({'AWS_SESSION_TOKEN': image_mode_aws_session_token})
+      }}
+  when: image_mode_aws_session_token | trim | length > 0
+  no_log: true
+
+- name: IMAGE MODE AMI | Add optional AWS profile
+  ansible.builtin.set_fact:
+    image_mode_aws_environment: >-
+      {{
+        image_mode_aws_environment
+        | combine(
+            {
+              'AWS_PROFILE': image_mode_aws_profile,
+              'AWS_DEFAULT_PROFILE': image_mode_aws_profile,
+              'AWS_SDK_LOAD_CONFIG': '1'
+            }
+          )
+      }}
+  when: image_mode_aws_profile | trim | length > 0
+  no_log: true
+
+- name: IMAGE MODE AMI | Locate required commands
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -lc
+      - "command -v {{ item }}"
+  loop:
+    - podman
+    - aws
+    - python3
+  register: image_mode_required_command_checks
+  changed_when: false
+  failed_when: false
+
+- name: IMAGE MODE AMI | Assert required commands are installed
+  ansible.builtin.assert:
+    that:
+      - >-
+        image_mode_required_command_checks.results
+        | selectattr('rc', 'ne', 0)
+        | list
+        | length == 0
+    fail_msg: >-
+      The Image Builder host must have podman, aws and python3 installed.
+
+- name: IMAGE MODE AMI | Verify Red Hat registry authentication
+  ansible.builtin.command:
+    argv:
+      - podman
+      - login
+      - --get-login
+      - registry.redhat.io
+  changed_when: false
+  when: image_mode_validate_registry_logins | bool
+
+- name: IMAGE MODE AMI | Verify Quay authentication
+  ansible.builtin.command:
+    argv:
+      - podman
+      - login
+      - --get-login
+      - "{{ image_mode_quay_host }}"
+  changed_when: false
+  when:
+    - image_mode_validate_registry_logins | bool
+    - image_mode_push_container | bool

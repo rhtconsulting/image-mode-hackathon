@@ -179,5 +179,15 @@
       when: satellite_manage_public_tls | bool
 
   roles:
-    - role: deploy_satellite
-    - role: satellite_content_bootstrap
+  - role: deploy_satellite
+    tags:
+      - deploy_satellite
+
+  - role: satellite_ec2_keypair_ui_patch
+    when: satellite_apply_ec2_keypair_ui_patch | bool
+    tags:
+      - satellite_ec2_keypair_ui_patch
+
+  - role: satellite_content_bootstrap
+    tags:
+      - satellite_content_bootstrap

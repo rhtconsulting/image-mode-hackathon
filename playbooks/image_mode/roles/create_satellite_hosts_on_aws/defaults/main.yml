@@ -1,0 +1,146 @@
+---
+###############################################################################
+# Role defaults
+###############################################################################
+
+###############################################################################
+# Host identity
+###############################################################################
+
+# Short hostname only. The Satellite domain is appended automatically.
+create_satellite_hosts_on_aws_hostname: "aws-rhel-dev-01"
+
+# Optional explicit domain override.
+#
+# When empty, the role derives the domain from the Satellite host:
+#
+# satellite-1.lab.example.com -> lab.example.com
+create_satellite_hosts_on_aws_domain: ""
+
+###############################################################################
+# Satellite organization and location
+###############################################################################
+
+create_satellite_hosts_on_aws_organization: "Image Mode Lab"
+create_satellite_hosts_on_aws_organization_label: "Image_Mode_Lab"
+
+# Set this to the Satellite location configured for the AWS environment.
+create_satellite_hosts_on_aws_location: ""
+
+###############################################################################
+# Satellite content
+###############################################################################
+
+# The content source defaults to the Satellite host running this role.
+#
+# This may be overridden with the exact Capsule name shown by:
+#
+# hammer capsule list
+create_satellite_hosts_on_aws_content_source: ""
+
+create_satellite_hosts_on_aws_lifecycle_environment: "Development"
+
+# Content views and activation keys are selected from the builder OS major.
+create_satellite_hosts_on_aws_rhel9_content_view: "RHEL9"
+create_satellite_hosts_on_aws_rhel10_content_view: "RHEL10"
+
+create_satellite_hosts_on_aws_rhel9_activation_key: "rhel9"
+create_satellite_hosts_on_aws_rhel10_activation_key: "rhel10"
+
+###############################################################################
+# Builder discovery
+###############################################################################
+
+# The first matching builder determines whether RHEL9 or RHEL10 content is used.
+create_satellite_hosts_on_aws_builder_pattern: "image-builder*"
+
+###############################################################################
+# AWS compute resource and image
+###############################################################################
+
+create_satellite_hosts_on_aws_compute_resource: "AWS Image Mode"
+
+# This must match the Satellite image name created by the previous role.
+create_satellite_hosts_on_aws_compute_image: "AWS-RHEL-Dev"
+
+###############################################################################
+# AWS virtual machine settings
+###############################################################################
+
+create_satellite_hosts_on_aws_flavor: "m6i.large"
+create_satellite_hosts_on_aws_availability_zone: "us-east-2a"
+
+# Satellite subnet lookup is performed using this network.
+create_satellite_hosts_on_aws_subnet_network: "10.20.1.0/24"
+
+###############################################################################
+# AWS security groups
+###############################################################################
+
+# Optional primary security group ID.
+create_satellite_hosts_on_aws_security_group: ""
+
+# Additional AWS security group IDs.
+#
+# Use AWS security group IDs rather than names.
+#
+# Example:
+#
+# create_satellite_hosts_on_aws_security_groups:
+#   - sg-0123456789abcdef0
+#   - sg-0fedcba9876543210
+create_satellite_hosts_on_aws_security_groups: []
+
+###############################################################################
+# Operating system and architecture
+###############################################################################
+
+create_satellite_hosts_on_aws_architecture: "x86_64"
+
+# The exact Satellite operating-system title is resolved dynamically.
+#
+# Expected examples:
+#
+# RHEL 9.6
+# RHEL 10.1
+create_satellite_hosts_on_aws_operating_system_prefix: "RHEL"
+
+###############################################################################
+# Provisioning behavior
+###############################################################################
+
+create_satellite_hosts_on_aws_managed: true
+create_satellite_hosts_on_aws_build: false
+create_satellite_hosts_on_aws_enabled: true
+reate_satellite_hosts_on_aws_provision_method: "image"
+
+# Image-based provisioning normally uses cloud-init/user data.
+create_satellite_hosts_on_aws_provision_method: "image"
+
+# Do not rebuild an existing Satellite host by default.
+create_satellite_hosts_on_aws_update_existing: false
+
+###############################################################################
+# Root password
+###############################################################################
+
+# A random password of this length is generated when a new host is created.
+create_satellite_hosts_on_aws_root_password_length: 32
+
+###############################################################################
+# Network interface
+###############################################################################
+
+create_satellite_hosts_on_aws_interface_managed: true
+create_satellite_hosts_on_aws_interface_primary: true
+create_satellite_hosts_on_aws_interface_provision: true
+
+###############################################################################
+# Optional host parameters
+###############################################################################
+
+create_satellite_hosts_on_aws_parameters: {}
+
+
+# Partition table associated with the target RHEL operating system.
+create_satellite_hosts_on_aws_partition_table: "Kickstart default"

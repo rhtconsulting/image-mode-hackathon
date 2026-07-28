@@ -3,47 +3,148 @@
 # Role defaults for satellite_content_bootstrap
 ###############################################################################
 
+###############################################################################
+# Satellite organization
+###############################################################################
+
 satellite_organization_name: "Image Mode Lab"
 satellite_organization_label: "Image_Mode_Lab"
+
+###############################################################################
+# Red Hat Enterprise Linux content
+###############################################################################
 
 satellite_rhel9_releasever: "9.8"
 satellite_rhel10_releasever: "10.1"
 satellite_basearch: "x86_64"
 
+###############################################################################
+# Lifecycle environments
+###############################################################################
+
 satellite_lifecycle_environment: "Development"
 satellite_library_environment: "Library"
+
+###############################################################################
+# Content views
+###############################################################################
 
 satellite_rhel9_content_view: "RHEL9"
 satellite_rhel10_content_view: "RHEL10"
 
+###############################################################################
+# Activation keys
+###############################################################################
+
 satellite_rhel9_activation_key: "rhel9"
 satellite_rhel10_activation_key: "rhel10"
+
+###############################################################################
+# Bootstrap feature controls
+###############################################################################
 
 satellite_force_publish_content_views: false
 satellite_repository_sync_timeout: 14400
 satellite_repository_sync_poll: 30
+
 satellite_enable_subscription_connection: true
 satellite_sync_repositories: true
 satellite_manage_lifecycle_environment: true
 satellite_manage_activation_keys: true
+satellite_manage_compute_resources: true
+
+###############################################################################
+# AWS EC2 compute resource
+#
+# The compute-resource name should normally be supplied by Terraform inventory,
+# an AAP job template, or another environment-specific variable source.
+###############################################################################
+
+satellite_compute_resource_name: ""
+
+satellite_compute_resource_description: >-
+  Amazon EC2 compute resource managed by Image Mode automation
+
+satellite_compute_resource_provider: "EC2"
+
+###############################################################################
+# AWS Region
+#
+# This value is normally overridden by the Terraform-generated inventory.
+###############################################################################
+
+satellite_compute_resource_region: "us-east-2"
+
+###############################################################################
+# Satellite AWS provisioning credential secrets
+#
+# Terraform creates these two Secrets Manager secrets automatically:
+#
+#   <secret_prefix>/satellite/aws_access_key_id
+#   <secret_prefix>/satellite/aws_secret_access_key
+#
+# The generated inventory normally overrides these defaults.
+###############################################################################
+
+satellite_aws_access_key_secret_name: >-
+  {{
+    secret_prefix | default("image-mode-lab")
+  }}/satellite/aws_access_key_id
+
+satellite_aws_secret_key_secret_name: >-
+  {{
+    secret_prefix | default("image-mode-lab")
+  }}/satellite/aws_secret_access_key
+
+###############################################################################
+# Direct credential overrides
+#
+# Leave empty to retrieve credentials from AWS Secrets Manager.
+# Never commit AWS credentials to source control.
+###############################################################################
+
+satellite_compute_resource_access_key: ""
+satellite_compute_resource_secret_key: ""
+
+###############################################################################
+# Existing compute-resource behavior
+###############################################################################
+
+satellite_compute_resource_update_existing: true
+satellite_compute_resource_validate_connection: true
+
+###############################################################################
+# RHEL repository definitions
+###############################################################################
 
 satellite_rhel_repository_definitions:
+
   - major: "9"
     releasever: "{{ satellite_rhel9_releasever }}"
     content_view: "{{ satellite_rhel9_content_view }}"
     activation_key: "{{ satellite_rhel9_activation_key }}"
+
     repositories:
-      - repository_set_name: "Red Hat Enterprise Linux 9 for x86_64 - BaseOS (RPMs)"
+
+      - repository_set_name: >-
+          Red Hat Enterprise Linux 9 for x86_64 - BaseOS (RPMs)
         content_label: "rhel-9-for-x86_64-baseos-rpms"
-      - repository_set_name: "Red Hat Enterprise Linux 9 for x86_64 - AppStream (RPMs)"
+
+      - repository_set_name: >-
+          Red Hat Enterprise Linux 9 for x86_64 - AppStream (RPMs)
         content_label: "rhel-9-for-x86_64-appstream-rpms"
 
   - major: "10"
     releasever: "{{ satellite_rhel10_releasever }}"
     content_view: "{{ satellite_rhel10_content_view }}"
     activation_key: "{{ satellite_rhel10_activation_key }}"
+
     repositories:
-      - repository_set_name: "Red Hat Enterprise Linux 10 for x86_64 - BaseOS (RPMs)"
+
+      - repository_set_name: >-
+          Red Hat Enterprise Linux 10 for x86_64 - BaseOS (RPMs)
         content_label: "rhel-10-for-x86_64-baseos-rpms"
-      - repository_set_name: "Red Hat Enterprise Linux 10 for x86_64 - AppStream (RPMs)"
+
+      - repository_set_name: >-
+          Red Hat Enterprise Linux 10 for x86_64 - AppStream (RPMs)
         content_label: "rhel-10-for-x86_64-appstream-rpms"

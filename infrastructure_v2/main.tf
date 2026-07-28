@@ -307,17 +307,22 @@ locals {
       "${var.secret_prefix}/${secret_name}"
     ],
     [
-      local.lab_ssh_private_key_secret_name
+      local.lab_ssh_private_key_secret_name,
+      "${var.secret_prefix}/satellite/aws_access_key_id",
+      "${var.secret_prefix}/satellite/aws_secret_access_key",
+      "${var.secret_prefix}/aws/rhel-iam"
     ]
   )
 }
 
 ############################################################
+############################################################
 # Preflight Cleanup For Lab Rebuilds
 ############################################################
+
 resource "terraform_data" "preflight_cleanup" {
   input = {
-    cleanup_version  = 3
+    cleanup_version  = 5
     environment_name = var.environment_name
     secret_prefix    = var.secret_prefix
     aws_region       = var.aws_region
@@ -333,8 +338,43 @@ resource "terraform_data" "preflight_cleanup" {
     gitlab_role_name    = "${var.environment_name}-gitlab-runtime-role"
     gitlab_profile_name = "${var.environment_name}-gitlab-instance-profile"
 
-    satellite_provisioner_user_name = "${var.environment_name}-satellite-provisioner"
-    secrets                         = local.all_lab_secret_names
+    satellite_provisioner_user_name = (
+      "${var.environment_name}-satellite-provisioner"
+    )
+
+    rhel_iam_user_name = "rhel-iam"
+
+    lab_default_role_name = (
+      "${var.environment_name}-ec2-default-role"
+    )
+
+    lab_default_profile_name = (
+      "${var.environment_name}-ec2-default-instance-profile"
+    )
+
+    image_builder_role_name = (
+      "${var.environment_name}-image-builder-role"
+    )
+
+    image_builder_profile_name = (
+      "${var.environment_name}-image-builder-instance-profile"
+    )
+
+    vmimport_role_name = "vmimport"
+
+    image_mode_artifact_policy_name = (
+      "${var.environment_name}-image-mode-artifact-bucket-rw"
+    )
+
+    bootc_ami_import_policy_name = (
+      "${var.environment_name}-bootc-ami-import-caller"
+    )
+
+    ec2_discovery_policy_name = (
+      "${var.environment_name}-ec2-discovery"
+    )
+
+    secrets = local.all_lab_secret_names
   }
 
   provisioner "local-exec" {
@@ -361,14 +401,37 @@ resource "terraform_data" "preflight_cleanup" {
       GITLAB_ROLE_NAME="${var.environment_name}-gitlab-runtime-role"
       GITLAB_PROFILE_NAME="${var.environment_name}-gitlab-instance-profile"
 
+      LAB_DEFAULT_ROLE_NAME="${var.environment_name}-ec2-default-role"
+      LAB_DEFAULT_PROFILE_NAME="${var.environment_name}-ec2-default-instance-profile"
+
+      IMAGE_BUILDER_ROLE_NAME="${var.environment_name}-image-builder-role"
+      IMAGE_BUILDER_PROFILE_NAME="${var.environment_name}-image-builder-instance-profile"
+
+      VMIMPORT_ROLE_NAME="vmimport"
+      VMIMPORT_POLICY_NAME="${var.environment_name}-vmimport"
+
       SATELLITE_PROVISIONER_USER_NAME="${var.environment_name}-satellite-provisioner"
       SATELLITE_PROVISIONER_POLICY_NAME="${var.environment_name}-satellite-ec2-provisioning"
 
+      RHEL_IAM_USER_NAME="rhel-iam"
+
+      IMAGE_MODE_ARTIFACT_POLICY_NAME="${var.environment_name}-image-mode-artifact-bucket-rw"
+      BOOTC_AMI_IMPORT_POLICY_NAME="${var.environment_name}-bootc-ami-import-caller"
+      EC2_DISCOVERY_POLICY_NAME="${var.environment_name}-ec2-discovery"
+
       echo "Preflight cleanup: duplicate-prone unmanaged lab resources"
+
+      #########################################################################
+      # Terraform state helpers
+      #########################################################################
 
       state_has() {
         terraform state list 2>/dev/null | grep -Fqx "$1"
       }
+
+      #########################################################################
+      # IAM instance profile cleanup
+      #########################################################################
 
       cleanup_instance_profile() {
         local state_address="$1"
@@ -380,15 +443,23 @@ resource "terraform_data" "preflight_cleanup" {
           return
         fi
 
+        echo "Removing unmanaged role $role_name from instance profile $profile_name"
+
         aws iam remove-role-from-instance-profile \
           --instance-profile-name "$profile_name" \
           --role-name "$role_name" \
           >/dev/null 2>&1 || true
 
+        echo "Deleting unmanaged instance profile: $profile_name"
+
         aws iam delete-instance-profile \
           --instance-profile-name "$profile_name" \
           >/dev/null 2>&1 || true
       }
+
+      #########################################################################
+      # IAM inline role policy cleanup
+      #########################################################################
 
       cleanup_inline_role_policy() {
         local state_address="$1"
@@ -400,11 +471,63 @@ resource "terraform_data" "preflight_cleanup" {
           return
         fi
 
+        echo "Deleting unmanaged inline role policy: $policy_name"
+
         aws iam delete-role-policy \
           --role-name "$role_name" \
           --policy-name "$policy_name" \
           >/dev/null 2>&1 || true
       }
+
+      #########################################################################
+      # IAM managed policy attachment cleanup
+      #########################################################################
+
+      cleanup_all_role_policy_attachments() {
+        local role_name="$1"
+
+        POLICY_ARNS=$(aws iam list-attached-role-policies \
+          --role-name "$role_name" \
+          --query 'AttachedPolicies[].PolicyArn' \
+          --output text 2>/dev/null || true)
+
+        for POLICY_ARN in $POLICY_ARNS; do
+          [ -n "$POLICY_ARN" ] || continue
+          [ "$POLICY_ARN" != "None" ] || continue
+
+          echo "Detaching policy $POLICY_ARN from role $role_name"
+
+          aws iam detach-role-policy \
+            --role-name "$role_name" \
+            --policy-arn "$POLICY_ARN" \
+            >/dev/null 2>&1 || true
+        done
+      }
+
+      cleanup_all_user_policy_attachments() {
+        local user_name="$1"
+
+        POLICY_ARNS=$(aws iam list-attached-user-policies \
+          --user-name "$user_name" \
+          --query 'AttachedPolicies[].PolicyArn' \
+          --output text 2>/dev/null || true)
+
+        for POLICY_ARN in $POLICY_ARNS; do
+          [ -n "$POLICY_ARN" ] || continue
+          [ "$POLICY_ARN" != "None" ] || continue
+
+          echo "Detaching policy $POLICY_ARN from user $user_name"
+
+          aws iam detach-user-policy \
+            --user-name "$user_name" \
+            --policy-arn "$POLICY_ARN" \
+            >/dev/null 2>&1 || true
+        done
+      }
+
+      #########################################################################
+      # IAM role cleanup
+      #########################################################################
 
       cleanup_role() {
         local state_address="$1"
@@ -415,10 +538,124 @@ resource "terraform_data" "preflight_cleanup" {
           return
         fi
 
+        cleanup_all_role_policy_attachments "$role_name"
+
+        INLINE_POLICY_NAMES=$(aws iam list-role-policies \
+          --role-name "$role_name" \
+          --query 'PolicyNames[]' \
+          --output text 2>/dev/null || true)
+
+        for POLICY_NAME in $INLINE_POLICY_NAMES; do
+          [ -n "$POLICY_NAME" ] || continue
+          [ "$POLICY_NAME" != "None" ] || continue
+
+          echo "Deleting inline policy $POLICY_NAME from role $role_name"
+
+          aws iam delete-role-policy \
+            --role-name "$role_name" \
+            --policy-name "$POLICY_NAME" \
+            >/dev/null 2>&1 || true
+        done
+
+        echo "Deleting unmanaged IAM role: $role_name"
+
         aws iam delete-role \
           --role-name "$role_name" \
           >/dev/null 2>&1 || true
       }
+
+      #########################################################################
+      # Customer-managed IAM policy cleanup
+      #########################################################################
+
+      cleanup_managed_policy() {
+        local state_address="$1"
+        local policy_name="$2"
+
+        if state_has "$state_address"; then
+          echo "Skipping $policy_name because it is managed by Terraform state."
+          return
+        fi
+
+        POLICY_ARN=$(aws iam list-policies \
+          --scope Local \
+          --query "Policies[?PolicyName=='$policy_name'].Arn | [0]" \
+          --output text 2>/dev/null || true)
+
+        if [ -z "$POLICY_ARN" ] || [ "$POLICY_ARN" = "None" ]; then
+          return
+        fi
+
+        echo "Cleaning unmanaged customer-managed policy: $policy_name"
+
+        ROLE_NAMES=$(aws iam list-entities-for-policy \
+          --policy-arn "$POLICY_ARN" \
+          --query 'PolicyRoles[].RoleName' \
+          --output text 2>/dev/null || true)
+
+        for ROLE_NAME in $ROLE_NAMES; do
+          [ -n "$ROLE_NAME" ] || continue
+          [ "$ROLE_NAME" != "None" ] || continue
+
+          aws iam detach-role-policy \
+            --role-name "$ROLE_NAME" \
+            --policy-arn "$POLICY_ARN" \
+            >/dev/null 2>&1 || true
+        done
+
+        USER_NAMES=$(aws iam list-entities-for-policy \
+          --policy-arn "$POLICY_ARN" \
+          --query 'PolicyUsers[].UserName' \
+          --output text 2>/dev/null || true)
+
+        for USER_NAME in $USER_NAMES; do
+          [ -n "$USER_NAME" ] || continue
+          [ "$USER_NAME" != "None" ] || continue
+
+          aws iam detach-user-policy \
+            --user-name "$USER_NAME" \
+            --policy-arn "$POLICY_ARN" \
+            >/dev/null 2>&1 || true
+        done
+
+        GROUP_NAMES=$(aws iam list-entities-for-policy \
+          --policy-arn "$POLICY_ARN" \
+          --query 'PolicyGroups[].GroupName' \
+          --output text 2>/dev/null || true)
+
+        for GROUP_NAME in $GROUP_NAMES; do
+          [ -n "$GROUP_NAME" ] || continue
+          [ "$GROUP_NAME" != "None" ] || continue
+
+          aws iam detach-group-policy \
+            --group-name "$GROUP_NAME" \
+            --policy-arn "$POLICY_ARN" \
+            >/dev/null 2>&1 || true
+        done
+
+        POLICY_VERSIONS=$(aws iam list-policy-versions \
+          --policy-arn "$POLICY_ARN" \
+          --query 'Versions[?IsDefaultVersion==`false`].VersionId' \
+          --output text 2>/dev/null || true)
+
+        for VERSION_ID in $POLICY_VERSIONS; do
+          [ -n "$VERSION_ID" ] || continue
+          [ "$VERSION_ID" != "None" ] || continue
+
+          aws iam delete-policy-version \
+            --policy-arn "$POLICY_ARN" \
+            --version-id "$VERSION_ID" \
+            >/dev/null 2>&1 || true
+        done
+
+        aws iam delete-policy \
+          --policy-arn "$POLICY_ARN" \
+          >/dev/null 2>&1 || true
+      }
+
+      #########################################################################
+      # EC2 key pair cleanup
+      #########################################################################
 
       echo "Checking EC2 key pair: $KEY_PAIR_NAME"
 
@@ -429,6 +666,10 @@ resource "terraform_data" "preflight_cleanup" {
           --key-name "$KEY_PAIR_NAME" \
           >/dev/null 2>&1 || true
       fi
+
+      #########################################################################
+      # Secrets Manager cleanup
+      #########################################################################
 
       echo "Checking Secrets Manager secrets"
 
@@ -445,23 +686,34 @@ EOF_SECRETS
           "${var.secret_prefix}/satellite/aws_access_key_id")
             SECRET_STATE_ADDRESS='aws_secretsmanager_secret.satellite_aws_access_key_id'
             ;;
+
           "${var.secret_prefix}/satellite/aws_secret_access_key")
             SECRET_STATE_ADDRESS='aws_secretsmanager_secret.satellite_aws_secret_access_key'
             ;;
+
+          "${var.secret_prefix}/aws/rhel-iam")
+            SECRET_STATE_ADDRESS='aws_secretsmanager_secret.rhel_iam_credentials'
+            ;;
+
           "${local.lab_ssh_private_key_secret_name}")
             SECRET_STATE_ADDRESS='aws_secretsmanager_secret.ssh_private_key'
             ;;
+
           *)
-            # Generated/static/redhat secrets use for_each addresses. If any of
-            # those collections are already in state, Terraform owns them.
-            if terraform state list 2>/dev/null | grep -Eq '^aws_secretsmanager_secret\.(generated|static|redhat)\['; then
+            # Generated, static, and Red Hat secrets are managed through
+            # for_each resources. If any collection is in state, Terraform
+            # owns those secrets and preflight must not remove them.
+            if terraform state list 2>/dev/null |
+              grep -Eq '^aws_secretsmanager_secret\.(generated|static|redhat)\['; then
               continue
             fi
+
             SECRET_STATE_ADDRESS=''
             ;;
         esac
 
-        if [ -n "$SECRET_STATE_ADDRESS" ] && state_has "$SECRET_STATE_ADDRESS"; then
+        if [ -n "$SECRET_STATE_ADDRESS" ] &&
+          state_has "$SECRET_STATE_ADDRESS"; then
           echo "Skipping managed secret: $SECRET_NAME"
           continue
         fi
@@ -486,7 +738,12 @@ EOF_SECRETS
 
       rm -f /tmp/image-mode-lab-secret-names.txt
 
+      #########################################################################
+      # AAP IAM resources
+      #########################################################################
+
       echo "Checking AAP IAM resources"
+
       cleanup_instance_profile \
         'aws_iam_instance_profile.aap' \
         "$AAP_PROFILE_NAME" \
@@ -502,11 +759,21 @@ EOF_SECRETS
         "$AAP_ROLE_NAME" \
         "${var.environment_name}-aap-s3-read"
 
+      if ! state_has 'aws_iam_role.aap'; then
+        cleanup_all_role_policy_attachments \
+          "$AAP_ROLE_NAME"
+      fi
+
       cleanup_role \
         'aws_iam_role.aap' \
         "$AAP_ROLE_NAME"
 
+      #########################################################################
+      # Satellite host IAM resources
+      #########################################################################
+
       echo "Checking Satellite host IAM resources"
+
       cleanup_instance_profile \
         'aws_iam_instance_profile.satellite' \
         "$SATELLITE_PROFILE_NAME" \
@@ -522,11 +789,21 @@ EOF_SECRETS
         "$SATELLITE_ROLE_NAME" \
         "${var.environment_name}-satellite-s3-read"
 
+      if ! state_has 'aws_iam_role.satellite'; then
+        cleanup_all_role_policy_attachments \
+          "$SATELLITE_ROLE_NAME"
+      fi
+
       cleanup_role \
         'aws_iam_role.satellite' \
         "$SATELLITE_ROLE_NAME"
 
+      #########################################################################
+      # GitLab IAM resources
+      #########################################################################
+
       echo "Checking GitLab runtime IAM resources"
+
       cleanup_instance_profile \
         'aws_iam_instance_profile.gitlab_runtime' \
         "$GITLAB_PROFILE_NAME" \
@@ -537,9 +814,73 @@ EOF_SECRETS
         "$GITLAB_ROLE_NAME" \
         "${var.environment_name}-gitlab-runtime"
 
+      if ! state_has 'aws_iam_role.gitlab_runtime'; then
+        cleanup_all_role_policy_attachments \
+          "$GITLAB_ROLE_NAME"
+      fi
+
       cleanup_role \
         'aws_iam_role.gitlab_runtime' \
         "$GITLAB_ROLE_NAME"
+
+      #########################################################################
+      # Default lab EC2 IAM resources
+      #########################################################################
+
+      echo "Checking default lab EC2 IAM resources"
+
+      cleanup_instance_profile \
+        'aws_iam_instance_profile.lab_ec2_default' \
+        "$LAB_DEFAULT_PROFILE_NAME" \
+        "$LAB_DEFAULT_ROLE_NAME"
+
+      if ! state_has 'aws_iam_role.lab_ec2_default'; then
+        cleanup_all_role_policy_attachments \
+          "$LAB_DEFAULT_ROLE_NAME"
+      fi
+
+      cleanup_role \
+        'aws_iam_role.lab_ec2_default' \
+        "$LAB_DEFAULT_ROLE_NAME"
+
+      #########################################################################
+      # Image Builder IAM resources
+      #########################################################################
+
+      echo "Checking Image Builder IAM resources"
+
+      cleanup_instance_profile \
+        'aws_iam_instance_profile.image_builder' \
+        "$IMAGE_BUILDER_PROFILE_NAME" \
+        "$IMAGE_BUILDER_ROLE_NAME"
+
+      if ! state_has 'aws_iam_role.image_builder'; then
+        cleanup_all_role_policy_attachments \
+          "$IMAGE_BUILDER_ROLE_NAME"
+      fi
+
+      cleanup_role \
+        'aws_iam_role.image_builder' \
+        "$IMAGE_BUILDER_ROLE_NAME"
+
+      #########################################################################
+      # VM Import/Export IAM resources
+      #########################################################################
+
+      echo "Checking VM Import/Export IAM resources"
+
+      cleanup_inline_role_policy \
+        'aws_iam_role_policy.vmimport' \
+        "$VMIMPORT_ROLE_NAME" \
+        "$VMIMPORT_POLICY_NAME"
+
+      cleanup_role \
+        'aws_iam_role.vmimport' \
+        "$VMIMPORT_ROLE_NAME"
+
+      #########################################################################
+      # Satellite provisioning IAM user
+      #########################################################################
 
       echo "Checking Satellite provisioning IAM user"
 
@@ -552,21 +893,110 @@ EOF_SECRETS
           --output text 2>/dev/null || true)
 
         for ACCESS_KEY_ID in $ACCESS_KEY_IDS; do
+          [ -n "$ACCESS_KEY_ID" ] || continue
+          [ "$ACCESS_KEY_ID" != "None" ] || continue
+
           aws iam delete-access-key \
             --user-name "$SATELLITE_PROVISIONER_USER_NAME" \
             --access-key-id "$ACCESS_KEY_ID" \
             >/dev/null 2>&1 || true
         done
 
-        aws iam delete-user-policy \
+        cleanup_all_user_policy_attachments \
+          "$SATELLITE_PROVISIONER_USER_NAME"
+
+        INLINE_POLICY_NAMES=$(aws iam list-user-policies \
           --user-name "$SATELLITE_PROVISIONER_USER_NAME" \
-          --policy-name "$SATELLITE_PROVISIONER_POLICY_NAME" \
+          --query 'PolicyNames[]' \
+          --output text 2>/dev/null || true)
+
+        for POLICY_NAME in $INLINE_POLICY_NAMES; do
+          [ -n "$POLICY_NAME" ] || continue
+          [ "$POLICY_NAME" != "None" ] || continue
+
+          aws iam delete-user-policy \
+            --user-name "$SATELLITE_PROVISIONER_USER_NAME" \
+            --policy-name "$POLICY_NAME" \
+            >/dev/null 2>&1 || true
+        done
+
+        aws iam delete-login-profile \
+          --user-name "$SATELLITE_PROVISIONER_USER_NAME" \
           >/dev/null 2>&1 || true
 
         aws iam delete-user \
           --user-name "$SATELLITE_PROVISIONER_USER_NAME" \
           >/dev/null 2>&1 || true
       fi
+
+      #########################################################################
+      # rhel-iam automation user
+      #########################################################################
+
+      echo "Checking rhel-iam automation user"
+
+      if state_has 'aws_iam_user.rhel_iam'; then
+        echo "Skipping rhel-iam because it is managed by Terraform state."
+      else
+        RHEL_IAM_ACCESS_KEY_IDS=$(aws iam list-access-keys \
+          --user-name "$RHEL_IAM_USER_NAME" \
+          --query 'AccessKeyMetadata[].AccessKeyId' \
+          --output text 2>/dev/null || true)
+
+        for ACCESS_KEY_ID in $RHEL_IAM_ACCESS_KEY_IDS; do
+          [ -n "$ACCESS_KEY_ID" ] || continue
+          [ "$ACCESS_KEY_ID" != "None" ] || continue
+
+          aws iam delete-access-key \
+            --user-name "$RHEL_IAM_USER_NAME" \
+            --access-key-id "$ACCESS_KEY_ID" \
+            >/dev/null 2>&1 || true
+        done
+
+        cleanup_all_user_policy_attachments \
+          "$RHEL_IAM_USER_NAME"
+
+        INLINE_POLICY_NAMES=$(aws iam list-user-policies \
+          --user-name "$RHEL_IAM_USER_NAME" \
+          --query 'PolicyNames[]' \
+          --output text 2>/dev/null || true)
+
+        for POLICY_NAME in $INLINE_POLICY_NAMES; do
+          [ -n "$POLICY_NAME" ] || continue
+          [ "$POLICY_NAME" != "None" ] || continue
+
+          aws iam delete-user-policy \
+            --user-name "$RHEL_IAM_USER_NAME" \
+            --policy-name "$POLICY_NAME" \
+            >/dev/null 2>&1 || true
+        done
+
+        aws iam delete-login-profile \
+          --user-name "$RHEL_IAM_USER_NAME" \
+          >/dev/null 2>&1 || true
+
+        aws iam delete-user \
+          --user-name "$RHEL_IAM_USER_NAME" \
+          >/dev/null 2>&1 || true
+      fi
+
+      #########################################################################
+      # Shared customer-managed IAM policies
+      #########################################################################
+
+      echo "Checking shared Image Mode managed policies"
+
+      cleanup_managed_policy \
+        'aws_iam_policy.image_mode_artifact_bucket_rw' \
+        "$IMAGE_MODE_ARTIFACT_POLICY_NAME"
+
+      cleanup_managed_policy \
+        'aws_iam_policy.bootc_ami_import_caller' \
+        "$BOOTC_AMI_IMPORT_POLICY_NAME"
+
+      cleanup_managed_policy \
+        'aws_iam_policy.ec2_discovery' \
+        "$EC2_DISCOVERY_POLICY_NAME"
 
       echo "Preflight cleanup complete"
     EOT
@@ -815,6 +1245,70 @@ resource "aws_iam_role_policy" "aap_s3_read" {
   })
 }
 
+############################################################
+# Shared AWS EC2 Discovery Policy
+############################################################
+
+resource "aws_iam_policy" "ec2_discovery" {
+  name = "${var.environment_name}-ec2-discovery"
+  description = (
+
+    "Allow Image Mode automation identities to discover AWS EC2 networking, images, instances, and related resources."
+  )
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DiscoverEC2Resources"
+        Effect = "Allow"
+        Action = [
+
+          "ec2:DescribeAccountAttributes",
+          "ec2:DescribeAddresses",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeIamInstanceProfileAssociations",
+          "ec2:DescribeImages",
+          "ec2:DescribeInstanceAttribute",
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceStatus",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeKeyPairs",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeRegions",
+          "ec2:DescribeRouteTables",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSnapshots",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeTags",
+          "ec2:DescribeVolumes",
+          "ec2:DescribeVolumeStatus",
+          "ec2:DescribeVpcAttribute",
+          "ec2:DescribeVpcEndpoints",
+          "ec2:DescribeVpcs"
+
+        ]
+
+        Resource = "*"
+      }
+    ]
+  })
+
+  depends_on = [
+    terraform_data.preflight_cleanup,
+     aws_iam_role.aap
+
+  ]
+
+  tags = {
+
+    Name        = "${var.environment_name}-ec2-discovery"
+    Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "Shared EC2 resource discovery"
+  }
+}
+
 
 ############################################################
 # Satellite EC2 Host Role
@@ -850,6 +1344,20 @@ resource "aws_iam_role" "satellite" {
   depends_on = [
     terraform_data.preflight_cleanup
   ]
+}
+
+
+############################################################
+# Satellite Host EC2 Discovery
+#
+# Allows AWS CLI and Ansible commands running directly on the
+# Satellite EC2 instance to discover AWS networking, images,
+# instances, security groups, and related EC2 resources.
+############################################################
+
+resource "aws_iam_role_policy_attachment" "satellite_ec2_discovery" {
+  role       = aws_iam_role.satellite.name
+  policy_arn = aws_iam_policy.ec2_discovery.arn
 }
 
 
@@ -908,6 +1416,7 @@ resource "aws_iam_role_policy" "satellite_s3_read" {
           "arn:aws:s3:::${var.satellite_manifest_s3_bucket}/${var.satellite_manifest_s3_key}"
         ])
       },
+
       {
         Sid    = "ReadSatelliteArtifactBucketMetadata"
         Effect = "Allow"
@@ -921,6 +1430,7 @@ resource "aws_iam_role_policy" "satellite_s3_read" {
           "arn:aws:s3:::${var.satellite_manifest_s3_bucket}"
         ])
       },
+
       {
         Sid    = "ListSatelliteArtifactKeys"
         Effect = "Allow"
@@ -965,13 +1475,17 @@ resource "aws_iam_instance_profile" "satellite" {
 
   depends_on = [
     aws_iam_role_policy.satellite_secrets_read,
-    aws_iam_role_policy.satellite_s3_read
+    aws_iam_role_policy.satellite_s3_read,
+    aws_iam_role_policy_attachment.satellite_ec2_discovery
   ]
 }
 
 
 ############################################################
 # Satellite AWS EC2 Provisioning Identity
+#
+# The access key for this IAM user is configured in the
+# Satellite AWS EC2 compute resource.
 ############################################################
 
 resource "aws_iam_user" "satellite_provisioner" {
@@ -992,7 +1506,29 @@ resource "aws_iam_user" "satellite_provisioner" {
 
 
 ############################################################
+# Satellite Compute Resource EC2 Discovery
+#
+# Allows the AWS credentials stored in Satellite's EC2
+# compute resource to populate regions, availability zones,
+# VPCs, subnets, security groups, images, instance types,
+# and existing instances.
+############################################################
+
+resource "aws_iam_user_policy_attachment" "satellite_provisioner_ec2_discovery" {
+  user       = aws_iam_user.satellite_provisioner.name
+  policy_arn = aws_iam_policy.ec2_discovery.arn
+}
+
+
+############################################################
 # Satellite AWS EC2 Provisioning Policy
+#
+# EC2 discovery permissions are supplied by:
+#
+#   aws_iam_policy.ec2_discovery
+#
+# This inline policy contains only permissions that modify or
+# create AWS resources.
 ############################################################
 
 resource "aws_iam_user_policy" "satellite_provisioner" {
@@ -1003,35 +1539,32 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
     Version = "2012-10-17"
 
     Statement = [
+      #########################################################################
+      # Manage Satellite-generated EC2 key pairs
+      #
+      # Satellite creates an EC2 key pair when the compute resource is created.
+      # Satellite-generated key-pair names normally begin with "foreman-".
+      #########################################################################
+
       {
-        Sid    = "DiscoverEC2Resources"
+        Sid    = "ManageSatelliteEC2KeyPairs"
         Effect = "Allow"
 
         Action = [
-          "ec2:DescribeAccountAttributes",
-          "ec2:DescribeAddresses",
-          "ec2:DescribeAvailabilityZones",
-          "ec2:DescribeIamInstanceProfileAssociations",
-          "ec2:DescribeImages",
-          "ec2:DescribeInstanceAttribute",
-          "ec2:DescribeInstances",
-          "ec2:DescribeInstanceStatus",
-          "ec2:DescribeInstanceTypes",
-          "ec2:DescribeKeyPairs",
-          "ec2:DescribeNetworkInterfaces",
-          "ec2:DescribeRegions",
-          "ec2:DescribeRouteTables",
-          "ec2:DescribeSecurityGroups",
-          "ec2:DescribeSnapshots",
-          "ec2:DescribeSubnets",
-          "ec2:DescribeTags",
-          "ec2:DescribeVolumes",
-          "ec2:DescribeVolumeStatus",
-          "ec2:DescribeVpcs"
+          "ec2:CreateKeyPair",
+          "ec2:DeleteKeyPair",
+          "ec2:ImportKeyPair"
         ]
 
-        Resource = "*"
+        Resource = (
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:key-pair/foreman-*"
+        )
       },
+
+      #########################################################################
+      # Manage instances provisioned by Satellite
+      #########################################################################
+
       {
         Sid    = "ManageSatelliteProvisionedInstances"
         Effect = "Allow"
@@ -1053,6 +1586,11 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
 
         Resource = "*"
       },
+
+      #########################################################################
+      # Manage IAM instance-profile associations
+      #########################################################################
+
       {
         Sid    = "ManageIAMInstanceProfileAssociations"
         Effect = "Allow"
@@ -1065,6 +1603,11 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
 
         Resource = "*"
       },
+
+      #########################################################################
+      # Discover IAM instance profiles and roles
+      #########################################################################
+
       {
         Sid    = "DiscoverIAMInstanceProfiles"
         Effect = "Allow"
@@ -1079,8 +1622,13 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
 
         Resource = "*"
       },
+
+      #########################################################################
+      # Pass approved runtime roles to EC2
+      #########################################################################
+
       {
-        Sid    = "PassApprovedGitLabRuntimeRole"
+        Sid    = "PassApprovedLabRuntimeRoles"
         Effect = "Allow"
 
         Action = [
@@ -1088,7 +1636,9 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
         ]
 
         Resource = [
-          aws_iam_role.gitlab_runtime.arn
+          aws_iam_role.gitlab_runtime.arn,
+          aws_iam_role.lab_ec2_default.arn,
+          aws_iam_role.image_builder.arn
         ]
 
         Condition = {
@@ -1103,7 +1653,10 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
   depends_on = [
     terraform_data.preflight_cleanup,
     aws_iam_user.satellite_provisioner,
-    aws_iam_instance_profile.gitlab_runtime
+    aws_iam_user_policy_attachment.satellite_provisioner_ec2_discovery,
+    aws_iam_instance_profile.gitlab_runtime,
+    aws_iam_instance_profile.lab_ec2_default,
+    aws_iam_instance_profile.image_builder
   ]
 }
 
@@ -1116,7 +1669,8 @@ resource "aws_iam_access_key" "satellite_provisioner" {
   user = aws_iam_user.satellite_provisioner.name
 
   depends_on = [
-    aws_iam_user_policy.satellite_provisioner
+    aws_iam_user_policy.satellite_provisioner,
+    aws_iam_user_policy_attachment.satellite_provisioner_ec2_discovery
   ]
 }
 
@@ -1211,6 +1765,7 @@ resource "aws_secretsmanager_secret_version" "satellite_aws_secret_access_key" {
     aws_secretsmanager_secret.satellite_aws_secret_access_key
   ]
 }
+
 
 
 ############################################################
@@ -1443,6 +1998,543 @@ resource "aws_iam_instance_profile" "gitlab_runtime" {
 
 
 ############################################################
+# Shared Image Mode Artifact Bucket
+############################################################
+
+resource "aws_s3_bucket" "image_mode_artifacts" {
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
+  bucket = "${var.environment_name}-image-mode-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+
+  force_destroy = true
+
+  tags = {
+    Name = "${var.environment_name}-image-mode-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+
+    Environment = var.environment_name
+    Purpose     = "Image Mode AMI build artifacts"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "image_mode_artifacts" {
+  bucket = aws_s3_bucket.image_mode_artifacts.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "image_mode_artifacts" {
+  bucket = aws_s3_bucket.image_mode_artifacts.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "image_mode_artifacts" {
+  bucket = aws_s3_bucket.image_mode_artifacts.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+
+############################################################
+# Shared Image Mode Artifact Bucket Access Policy
+############################################################
+
+resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
+
+  depends_on = [
+
+    terraform_data.preflight_cleanup
+
+  ]
+
+  name = "${var.environment_name}-image-mode-artifact-bucket-rw"
+
+  description = (
+    "Push and pull Image Mode build artifacts from the shared S3 bucket."
+  )
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      #########################################################################
+      # Account-level S3 discovery
+      #########################################################################
+
+      {
+        Sid    = "DiscoverAWSBuckets"
+        Effect = "Allow"
+
+        Action = [
+          "s3:ListAllMyBuckets"
+        ]
+
+        Resource = "*"
+      },
+
+      #########################################################################
+      # Inspect and configure the Image Mode artifact bucket
+      #########################################################################
+
+      {
+        Sid    = "InspectAndConfigureImageModeArtifactBucket"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetBucketAcl",
+          "s3:GetBucketLocation",
+          "s3:GetBucketVersioning",
+          "s3:GetBucketPublicAccessBlock",
+          "s3:GetEncryptionConfiguration",
+          "s3:ListBucket",
+          "s3:ListBucketMultipartUploads",
+          "s3:PutBucketPublicAccessBlock",
+          "s3:PutEncryptionConfiguration"
+        ]
+
+        Resource = aws_s3_bucket.image_mode_artifacts.arn
+      },
+
+      #########################################################################
+      # Read and write Image Mode artifacts
+      #########################################################################
+
+      {
+        Sid    = "PushAndPullImageModeArtifacts"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetObject",
+          "s3:GetObjectVersion",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:AbortMultipartUpload",
+          "s3:ListMultipartUploadParts"
+        ]
+
+        Resource = "${aws_s3_bucket.image_mode_artifacts.arn}/*"
+      }
+    ]
+  })
+}
+
+
+
+############################################################
+# Shared S3 Access For Existing EC2 Roles
+############################################################
+
+resource "aws_iam_role_policy_attachment" "aap_image_mode_artifacts" {
+  role       = aws_iam_role.aap.name
+  policy_arn = aws_iam_policy.image_mode_artifact_bucket_rw.arn
+}
+
+resource "aws_iam_role_policy_attachment" "satellite_image_mode_artifacts" {
+  role       = aws_iam_role.satellite.name
+  policy_arn = aws_iam_policy.image_mode_artifact_bucket_rw.arn
+}
+
+resource "aws_iam_role_policy_attachment" "gitlab_image_mode_artifacts" {
+  role       = aws_iam_role.gitlab_runtime.name
+  policy_arn = aws_iam_policy.image_mode_artifact_bucket_rw.arn
+}
+
+
+############################################################
+# Default Image Mode Lab EC2 Role
+############################################################
+
+resource "aws_iam_role" "lab_ec2_default" {
+  name = "${var.environment_name}-ec2-default-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Sid    = "AllowEC2AssumeRole"
+        Effect = "Allow"
+
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.environment_name}-ec2-default-role"
+    Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "Default Image Mode lab EC2 access"
+  }
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+}
+
+resource "aws_iam_role_policy_attachment" "lab_ec2_default_image_mode_artifacts" {
+  role       = aws_iam_role.lab_ec2_default.name
+  policy_arn = aws_iam_policy.image_mode_artifact_bucket_rw.arn
+}
+
+resource "aws_iam_instance_profile" "lab_ec2_default" {
+  name = "${var.environment_name}-ec2-default-instance-profile"
+  role = aws_iam_role.lab_ec2_default.name
+
+  tags = {
+    Name        = "${var.environment_name}-ec2-default-instance-profile"
+    Environment = var.environment_name
+    ManagedBy   = "Terraform"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.lab_ec2_default_image_mode_artifacts
+  ]
+}
+
+
+############################################################
+# AWS VM Import/Export Service Role
+############################################################
+
+resource "aws_iam_role" "vmimport" {
+  name = "vmimport"
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Sid    = "AllowVMImportExportAssumeRole"
+        Effect = "Allow"
+
+        Principal = {
+          Service = "vmie.amazonaws.com"
+        }
+
+        Action = "sts:AssumeRole"
+
+        Condition = {
+          StringEquals = {
+            "sts:ExternalId" = "vmimport"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "vmimport"
+    Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "Convert Image Mode raw disks into EC2 AMIs"
+  }
+}
+
+resource "aws_iam_role_policy" "vmimport" {
+  name = "${var.environment_name}-vmimport"
+  role = aws_iam_role.vmimport.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Sid    = "ReadImageModeArtifactBucket"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetBucketLocation",
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+
+        Resource = [
+          aws_s3_bucket.image_mode_artifacts.arn,
+          "${aws_s3_bucket.image_mode_artifacts.arn}/*"
+        ]
+      },
+      {
+        Sid    = "CreateImportedAMI"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:ModifySnapshotAttribute",
+          "ec2:CopySnapshot",
+          "ec2:RegisterImage",
+          "ec2:Describe*"
+        ]
+
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+
+############################################################
+# Bootc AMI Import Caller Policy
+############################################################
+
+resource "aws_iam_policy" "bootc_ami_import_caller" {
+  name = "${var.environment_name}-bootc-ami-import-caller"
+
+  description = (
+    "Allow Image Mode automation identities to import AMIs and use the VM Import/Export service role."
+  )
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      #########################################################################
+      # Discover AWS regions and EC2 resources
+      #
+      # bootc-image-builder calls DescribeRegions before starting the import.
+      # EC2 Describe actions require Resource = "*".
+      #########################################################################
+
+      {
+        Sid    = "DiscoverBootcAMIImportResources"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:DescribeRegions",
+          "ec2:DescribeImages",
+          "ec2:DescribeSnapshots",
+          "ec2:DescribeImportImageTasks",
+          "ec2:DescribeImportSnapshotTasks",
+          "ec2:DescribeTags"
+        ]
+
+        Resource = "*"
+      },
+
+      #########################################################################
+      # Create and manage bootc AMI imports
+      #########################################################################
+
+      {
+        Sid    = "ManageBootcAMIImports"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:ImportImage",
+          "ec2:ImportSnapshot",
+          "ec2:CancelImportTask",
+          "ec2:RegisterImage",
+          "ec2:CreateTags",
+          "ec2:ModifyImageAttribute",
+          "ec2:ModifySnapshotAttribute"
+        ]
+
+        Resource = "*"
+      },
+
+      #########################################################################
+      # Inspect the VM Import/Export service role
+      #########################################################################
+
+      {
+        Sid    = "ReadVMImportRole"
+        Effect = "Allow"
+
+        Action = [
+          "iam:GetRole"
+        ]
+
+        Resource = aws_iam_role.vmimport.arn
+      },
+
+      #########################################################################
+      # Allow VM Import/Export to use the service role
+      #########################################################################
+
+      {
+        Sid    = "PassVMImportRole"
+        Effect = "Allow"
+
+        Action = [
+          "iam:PassRole"
+        ]
+
+        Resource = aws_iam_role.vmimport.arn
+
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = "vmie.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+}
+
+############################################################
+# Image Builder EC2 Role
+############################################################
+
+resource "aws_iam_role" "image_builder" {
+  name = "${var.environment_name}-image-builder-role"
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Sid    = "AllowEC2AssumeRole"
+        Effect = "Allow"
+
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = {
+    Name        = "${var.environment_name}-image-builder-role"
+    Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "Build and import Image Mode AMIs"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "image_builder_artifacts" {
+  role       = aws_iam_role.image_builder.name
+  policy_arn = aws_iam_policy.image_mode_artifact_bucket_rw.arn
+}
+
+resource "aws_iam_role_policy_attachment" "image_builder_ami_import" {
+  role       = aws_iam_role.image_builder.name
+  policy_arn = aws_iam_policy.bootc_ami_import_caller.arn
+}
+
+resource "aws_iam_instance_profile" "image_builder" {
+  name = "${var.environment_name}-image-builder-instance-profile"
+  role = aws_iam_role.image_builder.name
+}
+
+
+############################################################
+# Image Mode Automation IAM User
+############################################################
+
+resource "aws_iam_user" "rhel_iam" {
+  name = "rhel-iam"
+  path = "/service-accounts/"
+
+  tags = {
+    Name        = "rhel-iam"
+    Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "Image Mode lab automation service account"
+  }
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+}
+
+resource "aws_iam_user_policy_attachment" "rhel_iam_artifacts" {
+  user       = aws_iam_user.rhel_iam.name
+  policy_arn = aws_iam_policy.image_mode_artifact_bucket_rw.arn
+}
+
+resource "aws_iam_user_policy_attachment" "rhel_iam_ami_import" {
+  user       = aws_iam_user.rhel_iam.name
+  policy_arn = aws_iam_policy.bootc_ami_import_caller.arn
+}
+
+resource "aws_iam_user_policy_attachment" "rhel_iam_ec2_discovery" {
+  user       = aws_iam_user.rhel_iam.name
+  policy_arn = aws_iam_policy.ec2_discovery.arn
+}
+
+
+resource "aws_iam_access_key" "rhel_iam" {
+  user = aws_iam_user.rhel_iam.name
+
+  depends_on = [
+    aws_iam_user_policy_attachment.rhel_iam_artifacts,
+    aws_iam_user_policy_attachment.rhel_iam_ami_import,
+    aws_iam_user_policy_attachment.rhel_iam_ec2_discovery
+  ]
+}
+
+
+############################################################
+# rhel-iam Credentials Secret
+############################################################
+
+resource "aws_secretsmanager_secret" "rhel_iam_credentials" {
+  name = "${var.secret_prefix}/aws/rhel-iam"
+
+  description = (
+    "Programmatic AWS credentials for the Image Mode automation user."
+  )
+
+  recovery_window_in_days = 0
+
+  tags = {
+    Name        = "${var.secret_prefix}/aws/rhel-iam"
+    Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "Image Mode automation credentials"
+  }
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+}
+
+resource "aws_secretsmanager_secret_version" "rhel_iam_credentials" {
+  secret_id = aws_secretsmanager_secret.rhel_iam_credentials.id
+
+  secret_string = jsonencode({
+    username              = aws_iam_user.rhel_iam.name
+    aws_access_key_id     = aws_iam_access_key.rhel_iam.id
+    aws_secret_access_key = aws_iam_access_key.rhel_iam.secret
+    aws_region            = var.aws_region
+    s3_bucket             = aws_s3_bucket.image_mode_artifacts.id
+    vmimport_role_name    = aws_iam_role.vmimport.name
+  })
+
+  depends_on = [
+    aws_iam_access_key.rhel_iam,
+    aws_secretsmanager_secret.rhel_iam_credentials
+  ]
+}
+
+############################################################
 # Networking
 ############################################################
 
@@ -1470,7 +2562,7 @@ resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.lab.id
   cidr_block              = var.public_subnet_cidr
   availability_zone       = data.aws_availability_zones.available.names[0]
-  map_public_ip_on_launch = false
+  map_public_ip_on_launch = true
 
   tags = {
     Name        = "${var.environment_name}-public-subnet-a"
@@ -1674,7 +2766,9 @@ resource "aws_instance" "server" {
     ? aws_iam_instance_profile.satellite.name
     : each.value.role == "gitlab"
     ? aws_iam_instance_profile.gitlab_runtime.name
-    : null
+    : each.value.role == "image-builder"
+    ? aws_iam_instance_profile.image_builder.name
+    : aws_iam_instance_profile.lab_ec2_default.name
   )
 
   root_block_device {
@@ -1723,10 +2817,12 @@ resource "aws_instance" "server" {
     aws_iam_instance_profile.aap,
     aws_iam_role_policy.aap_secrets_read,
     aws_iam_role_policy.aap_s3_read,
+    aws_iam_instance_profile.lab_ec2_default,
 
     aws_iam_instance_profile.satellite,
     aws_iam_role_policy.satellite_secrets_read,
     aws_iam_role_policy.satellite_s3_read,
+    aws_iam_role_policy_attachment.satellite_ec2_discovery,
 
     aws_iam_instance_profile.gitlab_runtime,
 
@@ -2042,6 +3138,26 @@ resource "local_file" "ansible_inventory" {
       local.lab_ssh_private_key_secret_name
     )
 
+    ###########################################################################
+    # Image Mode AWS workflow
+    ###########################################################################
+
+    image_mode_artifact_bucket = (
+      aws_s3_bucket.image_mode_artifacts.bucket
+    )
+
+    rhel_iam_credentials_secret_name = (
+      aws_secretsmanager_secret.rhel_iam_credentials.name
+    )
+
+    vmimport_role_name = (
+      aws_iam_role.vmimport.name
+    )
+
+    ###########################################################################
+    # Satellite installation artifacts
+    ###########################################################################
+
     satellite_iso_s3_bucket = (
       var.satellite_iso_s3_bucket
     )
@@ -2078,13 +3194,28 @@ resource "local_file" "ansible_inventory" {
       var.satellite_location_name
     )
 
+    ###########################################################################
+    # Satellite AWS Compute Resource
+    ###########################################################################
 
     satellite_compute_resource_name = (
-      "${var.environment_name}-aws"
+      var.satellite_compute_resource_name
     )
 
     satellite_compute_profile_name = (
-      "AWS POC"
+      var.satellite_compute_profile_name
+    )
+
+    satellite_default_compute_profile_name = (
+      var.satellite_default_compute_profile_name
+    )
+
+    satellite_gitlab_compute_profile_name = (
+      var.satellite_gitlab_compute_profile_name
+    )
+
+    satellite_image_builder_compute_profile_name = (
+      var.satellite_image_builder_compute_profile_name
     )
 
     satellite_compute_region = (
@@ -2103,19 +3234,47 @@ resource "local_file" "ansible_inventory" {
       aws_vpc.lab.id
     )
 
-    satellite_compute_security_group_ids = [
-      aws_security_group.lab.id,
-      aws_security_group.gitlab.id
-
-    ]
-
     satellite_compute_key_pair = (
       aws_key_pair.lab.key_name
+    )
+
+    ###########################################################################
+    # Satellite EC2 instance profiles
+    ###########################################################################
+
+    satellite_default_instance_profile = (
+      aws_iam_instance_profile.lab_ec2_default.name
     )
 
     satellite_gitlab_instance_profile = (
       aws_iam_instance_profile.gitlab_runtime.name
     )
+
+    satellite_image_builder_instance_profile = (
+      aws_iam_instance_profile.image_builder.name
+    )
+
+    ###########################################################################
+    # Satellite EC2 security groups
+    ###########################################################################
+
+    satellite_compute_security_group_ids = [
+      aws_security_group.lab.id,
+      aws_security_group.gitlab.id
+    ]
+
+    satellite_default_security_group_ids = [
+      aws_security_group.lab.id
+    ]
+
+    satellite_image_builder_security_group_ids = [
+      aws_security_group.lab.id,
+      aws_security_group.image_builder.id
+    ]
+
+    ###########################################################################
+    # Satellite AWS credentials
+    ###########################################################################
 
     satellite_aws_access_key_secret_name = (
       aws_secretsmanager_secret.satellite_aws_access_key_id.name
@@ -2125,15 +3284,34 @@ resource "local_file" "ansible_inventory" {
       aws_secretsmanager_secret.satellite_aws_secret_access_key.name
     )
 
+    ###########################################################################
+    # Service ports
+    ###########################################################################
 
-    lab_users = var.lab_users
-    idm_users = var.idm_users
+    gitlab_registry_port = (
+      var.gitlab_registry_port
+    )
+
+    image_builder_cockpit_port = (
+      var.image_builder_cockpit_port
+    )
+
+    ###########################################################################
+    # Lab identities and IdM
+    ###########################################################################
+
+    lab_users          = var.lab_users
+    idm_users          = var.idm_users
     parent_domain_name = local.parent_domain_name
     idm_domain_name    = local.idm_domain_name
     idm_realm_name     = local.idm_realm_name
     idm_server_fqdn    = local.primary_idm_hostname
     idm_server_ip      = local.primary_idm_private_ip
-    
+
+    ###########################################################################
+    # Terraform-managed servers
+    ###########################################################################
+
     servers = {
       for name, instance in aws_instance.server :
       name => {
@@ -2154,27 +3332,25 @@ resource "local_file" "ansible_inventory" {
           instance.private_ip
         )
 
+        iam_instance_profile = (
+          local.flattened_servers[name].role == "aap"
+          ? aws_iam_instance_profile.aap.name
+          : local.flattened_servers[name].role == "satellite"
+          ? aws_iam_instance_profile.satellite.name
+          : local.flattened_servers[name].role == "gitlab"
+          ? aws_iam_instance_profile.gitlab_runtime.name
+          : local.flattened_servers[name].role == "image-builder"
+          ? aws_iam_instance_profile.image_builder.name
+          : aws_iam_instance_profile.lab_ec2_default.name
+        )
+
         acm_certificate_arn = try(
           aws_acm_certificate.server[name].arn,
-      ""
+          ""
         )
       }
     }
   })
-
-  depends_on = [
-    aws_eip_association.server,
-    aws_route53_record.public_dns,
-    aws_acm_certificate_validation.server,
-    aws_route53_resolver_rule_association.idm_forward,
-    terraform_data.validate_dns_discovery,
-    terraform_data.validate_idm_server,
-    local_sensitive_file.lab_ssh_private_key,
-    aws_secretsmanager_secret_version.ssh_private_key,
-    aws_secretsmanager_secret_version.generated,
-    aws_secretsmanager_secret_version.static,
-    aws_secretsmanager_secret_version.redhat
-  ]
 }
 
 ############################################################

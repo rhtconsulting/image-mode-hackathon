@@ -1,0 +1,99 @@
+---
+# Red Hat Insights
+###########################################################################
+
+- name: Check Subscription Manager registration
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - identity
+  register: subscription_identity
+  changed_when: false
+  failed_when: false
+  when: image_mode_register_with_insights | bool
+
+- name: Check Red Hat connection status
+  ansible.builtin.command:
+    argv:
+      - rhc
+      - status
+  register: rhc_status_before
+  changed_when: false
+  failed_when: false
+  when: image_mode_register_with_insights | bool
+
+- name: Register host using Red Hat activation key
+  ansible.builtin.command:
+    argv:
+      - rhc
+      - connect
+      - --activation-key
+      - "{{ redhat_insights_activation_key }}"
+      - --organization
+      - "{{ redhat_insights_organization_id }}"
+  register: rhc_connect
+  changed_when: rhc_connect.rc == 0
+  when:
+    - image_mode_register_with_insights | bool
+    - subscription_identity.rc | default(1) != 0
+    - image_mode_have_insights_activation_credentials | bool
+  no_log: true
+
+- name: Recheck Subscription Manager registration
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - identity
+  register: subscription_identity_after
+  changed_when: false
+  failed_when: false
+  when: image_mode_register_with_insights | bool
+
+- name: Check current Insights registration
+  ansible.builtin.command:
+    argv:
+      - insights-client
+      - --status
+  register: insights_status_before
+  changed_when: false
+  failed_when: false
+  when: image_mode_register_with_insights | bool
+
+- name: Register host with Red Hat Insights
+  ansible.builtin.command:
+    argv:
+      - insights-client
+      - --register
+  register: insights_registration
+  changed_when: insights_registration.rc == 0
+  when:
+    - image_mode_register_with_insights | bool
+    - subscription_identity_after.rc | default(1) == 0
+    - >-
+      'registered: true' not in
+      (insights_status_before.stdout | default('') | lower)
+  no_log: true
+
+- name: Upload current system data to Red Hat Insights
+  ansible.builtin.command:
+    argv:
+      - insights-client
+  register: insights_upload
+  changed_when: false
+  when:
+    - image_mode_register_with_insights | bool
+    - subscription_identity_after.rc | default(1) == 0
+  no_log: true
+
+- name: Warn when Insights registration credentials are unavailable
+  ansible.builtin.debug:
+    msg: >-
+      Red Hat Insights packages were installed, but
+      {{ inventory_hostname }} is not registered with Subscription
+      Manager and no activation key and organization ID were supplied.
+      Inject REDHAT_INSIGHTS_ACTIVATION_KEY and
+      REDHAT_INSIGHTS_ORGANIZATION_ID through an AAP credential to
+      register this system automatically.
+  when:
+    - image_mode_register_with_insights | bool
+    - subscription_identity_after.rc | default(1) != 0

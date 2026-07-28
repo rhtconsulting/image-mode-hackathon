@@ -1,0 +1,20 @@
+---
+###############################################################################
+# Satellite EC2 key-pair UI patch handlers
+###############################################################################
+
+- name: Clear Foreman cache after EC2 key-pair patch
+  ansible.builtin.command:
+    argv:
+      - foreman-rake
+      - tmp:cache:clear
+  changed_when: true
+
+- name: Restart Satellite after EC2 key-pair patch
+  ansible.builtin.command:
+    argv:
+      - satellite-maintain
+      - service
+      - restart
+  changed_when: true
+  when: satellite_ec2_keypair_ui_patch_restart_services | bool

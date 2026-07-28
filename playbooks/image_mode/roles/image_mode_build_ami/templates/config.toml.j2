@@ -1,0 +1,8 @@
+[[customizations.user]]
+name = "{{ image_mode_os_user }}"
+key = "{{ image_mode_ssh_public_key | trim }}"
+groups = [{% for group in image_mode_os_user_groups %}"{{ group }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+
+[[customizations.filesystem]]
+mountpoint = "/"
+minsize = "{{ image_mode_root_disk_size }}"

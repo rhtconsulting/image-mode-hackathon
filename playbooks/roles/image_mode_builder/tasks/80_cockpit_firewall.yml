@@ -1,0 +1,121 @@
+---
+# Firewall and Cockpit
+###########################################################################
+
+- name: Enable and start firewalld
+  ansible.builtin.systemd_service:
+    name: firewalld
+    enabled: true
+    state: started
+
+- name: Open required Image Mode ports permanently and immediately
+  ansible.posix.firewalld:
+    zone: "{{ cockpit_firewall_zone }}"
+    port: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ image_mode_firewall_ports }}"
+
+- name: Enable HTTP firewall service permanently and immediately
+  ansible.posix.firewalld:
+    zone: "{{ cockpit_firewall_zone }}"
+    service: http
+    permanent: true
+    immediate: true
+    state: enabled
+
+- name: Enable HTTPS firewall service permanently and immediately
+  ansible.posix.firewalld:
+    zone: "{{ cockpit_firewall_zone }}"
+    service: https
+    permanent: true
+    immediate: true
+    state: enabled
+
+- name: Enable Cockpit firewall service permanently and immediately
+  ansible.posix.firewalld:
+    zone: "{{ cockpit_firewall_zone }}"
+    service: cockpit
+    permanent: true
+    immediate: true
+    state: enabled
+
+- name: Enable and start Cockpit socket
+  ansible.builtin.systemd_service:
+    name: cockpit.socket
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Restart Cockpit socket after TLS certificate update
+  ansible.builtin.systemd_service:
+    name: cockpit.socket
+    state: restarted
+  when:
+    - cockpit_combined_certificate_install is defined
+    - cockpit_combined_certificate_install.changed
+
+- name: Wait for Cockpit port
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ cockpit_port }}"
+    state: started
+    timeout: 60
+
+- name: Read certificate presented by Cockpit
+  ansible.builtin.shell: |
+    set -euo pipefail
+    openssl s_client \
+      -connect "127.0.0.1:{{ cockpit_port }}" \
+      -servername "{{ cockpit_public_tls_fqdn }}" \
+      </dev/null 2>/dev/null |
+      openssl x509 \
+        -noout -subject -issuer -serial -dates -fingerprint -sha256
+  args:
+    executable: /bin/bash
+  register: cockpit_presented_certificate
+  changed_when: false
+
+- name: Verify Cockpit presents a certificate for its public hostname
+  ansible.builtin.shell: |
+    set -euo pipefail
+    openssl s_client \
+      -connect "127.0.0.1:{{ cockpit_port }}" \
+      -servername "{{ cockpit_public_tls_fqdn }}" \
+      </dev/null 2>/dev/null |
+      openssl x509 -noout -checkhost "{{ cockpit_public_tls_fqdn }}"
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Verify permanent firewall ports
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --permanent
+      - "--zone={{ cockpit_firewall_zone }}"
+      - "--query-port={{ item }}"
+  loop: "{{ image_mode_firewall_ports }}"
+  register: image_mode_permanent_firewall_checks
+  changed_when: false
+  failed_when: image_mode_permanent_firewall_checks.rc != 0
+
+- name: Verify runtime firewall ports
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - "--zone={{ cockpit_firewall_zone }}"
+      - "--query-port={{ item }}"
+  loop: "{{ image_mode_firewall_ports }}"
+  register: image_mode_runtime_firewall_checks
+  changed_when: false
+  failed_when: image_mode_runtime_firewall_checks.rc != 0
+
+- name: Display active firewall configuration
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - "--zone={{ cockpit_firewall_zone }}"
+      - --list-all
+  register: image_mode_firewall_configuration

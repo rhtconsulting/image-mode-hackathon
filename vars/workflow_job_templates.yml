@@ -1,39 +1,61 @@
 ---
+###############################################################################
+# Image Mode workflow job templates
+###############################################################################
+
 controller_workflows:
-  - name: "Image Mode CI/CD Pipeline"
+
+  - name: "Image Mode Deploy Sample Image to AWS"
+    description: >-
+      Build the sample RHEL Image Mode container image, create and register an
+      AWS AMI, publish the AMI metadata as workflow artifacts, configure the
+      Satellite AWS compute-resource image to use the newly created AMI, and
+      then use Satellite to create and provision the resulting EC2 host.
     organization: "Image Mode Lab"
     destroy_current_nodes: true
 
     workflow_nodes:
-      - identifier: "deploy_quay"
-        unified_job_template: "Deploy Quay"
+
+      #########################################################################
+      # Build Image Mode AMI
+      #########################################################################
+
+      - identifier: "build_image_mode_ami"
+
+        unified_job_template:
+          name: "Build Image Mode AMI"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+
         related:
           success_nodes:
-            - identifier: "build"
+            - identifier: "configure_satellite_for_new_ami"
 
-      - identifier: "build"
-        unified_job_template: "Build Image"
+      #########################################################################
+      # Configure Satellite for New AMI
+      #########################################################################
+
+      - identifier: "configure_satellite_for_new_ami"
+
+        unified_job_template:
+          name: "Configure Satellite for New AMI"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+
         related:
           success_nodes:
-            - identifier: "publish"
+            - identifier: "use_satellite_to_deploy_ec2_instances"
 
-      - identifier: "publish"
-        unified_job_template: "Publish Image"
-        related:
-          success_nodes:
-            - identifier: "deploy_dev"
+      #########################################################################
+      # Use Satellite to Deploy EC2 Instance
+      #########################################################################
 
-      - identifier: "deploy_dev"
-        unified_job_template: "Deploy Development"
-        related:
-          success_nodes:
-            - identifier: "validate"
+      - identifier: "use_satellite_to_deploy_ec2_instances"
 
-      - identifier: "validate"
-        unified_job_template: "Validate Image"
-        related:
-          failure_nodes:
-            - identifier: "rollback"
-
-      - identifier: "rollback"
-        unified_job_template: "Rollback"
+        unified_job_template:
+          name: "Use Satellite To Deploy EC2 Instances"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"

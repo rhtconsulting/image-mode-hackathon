@@ -13,6 +13,135 @@ controller_templates:
       - "Image Mode Quay Registry Credential"
       - "Image Mode IdM Administrator Credential"
 
+
+  - name: "Build Image Mode AMI"
+    description: >-
+      Build a RHEL bootc container image on an Image Builder host, push the
+      image to Quay, create and register an AWS AMI through
+      bootc-image-builder, tag the resulting AMI and root EBS snapshot,
+      and publish the AMI information as AAP workflow artifacts.
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Builders"
+    playbook: "playbooks/image_mode/build-image-mode-ami.yml"
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Image Mode Machine Credential"
+      - "AWS IAM Service Account Credential"
+      - "Image Mode Red Hat Registry Credential"
+      - "Image Mode Quay Registry Credential"
+      - "Image Mode AMI SSH Public Key Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 1
+    timeout: 21600
+    allow_simultaneous: false
+
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+
+    survey_enabled: true
+    survey_spec: "{{ image_mode_build_ami_survey }}"
+
+
+  - name: "Configure Satellite for New AMI"
+    description: >-
+      Configure the Satellite AWS compute resource to use the AMI produced by
+      the Build Image Mode AMI job. Resolve the corresponding Satellite
+      operating system, assign the x86_64 architecture and cloud-user account,
+      and create or update the AWS-RHEL-Dev compute-resource image.
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Mode Lab Infrastructure"
+    playbook: "playbooks/image_mode/configure-satellite-for-new-ami.yml"
+    execution_environment: "Image Mode EE"
+    credentials:
+      - "Image Mode Machine Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 1
+    timeout: 1800
+    allow_simultaneous: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+    survey_enabled: false
+    extra_vars:
+
+      configure_satellite_ami_compute_resource_name: "AWS Image Mode"
+      configure_satellite_ami_image_name: "AWS-RHEL-Dev"
+      configure_satellite_ami_username: "cloud-user"
+      configure_satellite_ami_architecture: "x86_64"
+      configure_satellite_ami_update_existing: true
+
+
+  - name: "Use Satellite To Deploy EC2 Instances"
+    description: >-
+      Create and provision an AWS EC2 instance through the Satellite AWS
+      compute resource. Determine the appropriate RHEL9 or RHEL10 content view
+      from the current operating system of the selected Image Builder host,
+      assign the Development lifecycle environment, generate a random root
+      password, and deploy the instance from the AWS-RHEL-Dev image.
+
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Mode Lab Infrastructure"
+    playbook: "playbooks/image_mode/create-satellite-host-on-aws.yml"
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Image Mode Machine Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 1
+    timeout: 3600
+    allow_simultaneous: false
+
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+
+    survey_enabled: true
+    survey_spec: "{{ create_satellite_hosts_on_aws_survey }}"
+
+    extra_vars:
+      create_satellite_hosts_on_aws_compute_resource: "AWS Image Mode"
+      create_satellite_hosts_on_aws_compute_image: "AWS-RHEL-Dev"
+
+      create_satellite_hosts_on_aws_organization: "Image Mode Lab"
+      create_satellite_hosts_on_aws_organization_label: "Image_Mode_Lab"
+      create_satellite_hosts_on_aws_location: "AWS Region - us-east-2"
+
+      create_satellite_hosts_on_aws_lifecycle_environment: "Development"
+
+      create_satellite_hosts_on_aws_rhel9_content_view: "RHEL9"
+      create_satellite_hosts_on_aws_rhel10_content_view: "RHEL10"
+
+      create_satellite_hosts_on_aws_rhel9_activation_key: "rhel9"
+      create_satellite_hosts_on_aws_rhel10_activation_key: "rhel10"
+
+      create_satellite_hosts_on_aws_builder_pattern: "image-builder*"
+
+      create_satellite_hosts_on_aws_flavor: "m6i.large"
+      create_satellite_hosts_on_aws_availability_zone: "us-east-2a"
+      create_satellite_hosts_on_aws_subnet_network: "10.20.1.0/24"
+
+      create_satellite_hosts_on_aws_security_groups:
+        - "image-mode-lab-gitlab-sg"
+        - "image-mode-lab-sg"
+        - "image-mode-lab-image-builder-sg"
+
+      create_satellite_hosts_on_aws_architecture: "x86_64"
+      create_satellite_hosts_on_aws_operating_system_prefix: "RHEL"
+
+      create_satellite_hosts_on_aws_build: true
+      create_satellite_hosts_on_aws_update_existing: false
+      create_satellite_hosts_on_aws_root_password_length: 32
+
+
+
   # - name: "Bootstrap Satellite Content"
   #   description: >-
   #     Bootstrap connected RHEL content, content views, lifecycle environments,

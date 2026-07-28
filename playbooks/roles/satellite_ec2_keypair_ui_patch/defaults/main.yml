@@ -1,0 +1,25 @@
+---
+###############################################################################
+# Satellite EC2 key-pair UI workaround defaults
+###############################################################################
+
+# Enable or disable the workaround.
+satellite_apply_ec2_keypair_ui_patch: true
+
+# Foreman view affected by the Satellite 6.19 EC2 SSH key-pair UI defect.
+satellite_ec2_keypair_ui_patch_view_path: >-
+  /usr/share/foreman/app/views/key_pairs/index.html.erb
+
+# Directory used to preserve the original packaged template.
+satellite_ec2_keypair_ui_patch_backup_dir: >-
+  /var/backups/foreman-key-pair-ui-patch
+
+# Text markers used for idempotency validation.
+satellite_ec2_keypair_ui_patch_blank_guard: >-
+  next if key_pair.name.blank?
+
+satellite_ec2_keypair_ui_patch_download_guard: >-
+  key_pair.key_pair_id.present? ?
+
+# Restart Satellite services after changing the view.
+satellite_ec2_keypair_ui_patch_restart_services: true

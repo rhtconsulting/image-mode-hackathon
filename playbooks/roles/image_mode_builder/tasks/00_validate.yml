@@ -1,0 +1,62 @@
+---
+# Validation
+###########################################################################
+
+- name: Validate Image Mode builder operating system
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == 'RedHat'
+      - ansible_distribution_major_version | int >= 9
+    fail_msg: >-
+      Image Mode builders must run Red Hat Enterprise Linux 9 or newer.
+      Detected {{ ansible_distribution }}
+      {{ ansible_distribution_version }} on {{ inventory_hostname }}.
+
+- name: Select Bootc Image Builder image for installed RHEL version
+  ansible.builtin.set_fact:
+    bootc_image_builder_image: >-
+      {{
+        bootc_image_builder_rhel10_image
+        if ansible_distribution_major_version | int >= 10
+        else bootc_image_builder_rhel9_image
+      }}
+
+- name: Validate Red Hat registry credentials when required
+  ansible.builtin.assert:
+    that:
+      - redhat_registry_username | length > 0
+      - redhat_registry_password | length > 0
+    fail_msg: >-
+      Red Hat registry authentication is required, but credentials were
+      not supplied. Inject REDHAT_REGISTRY_USERNAME and
+      REDHAT_REGISTRY_PASSWORD through an AAP credential.
+  when: image_mode_require_redhat_registry_login | bool
+  no_log: true
+
+- name: Validate staged Cockpit TLS configuration
+  ansible.builtin.assert:
+    that:
+      - cockpit_public_tls_fqdn | string | trim | length > 0
+      - cockpit_tls_directory | string | trim | length > 0
+      - cockpit_tls_leaf_certificate_path | string | trim | length > 0
+      - cockpit_tls_chain_path | string | trim | length > 0
+      - cockpit_tls_private_key_path | string | trim | length > 0
+      - cockpit_ws_certificate_path | string | trim | length > 0
+    fail_msg: >-
+      The staged Cockpit TLS path configuration is incomplete for
+      {{ inventory_hostname }}.
+
+- name: Display Image Mode builder configuration
+  ansible.builtin.debug:
+    msg:
+      - "Builder host: {{ inventory_hostname }}"
+      - >-
+        Operating system:
+        {{ ansible_distribution }}
+        {{ ansible_distribution_version }}
+      - "Bootc Image Builder: {{ bootc_image_builder_image }}"
+      - "Cockpit URL: https://{{ cockpit_public_tls_fqdn }}:{{ cockpit_port }}"
+      - "Workspace: {{ image_mode_root }}"
+      - >-
+        Firewall ports:
+        {{ image_mode_firewall_ports | join(', ') }}

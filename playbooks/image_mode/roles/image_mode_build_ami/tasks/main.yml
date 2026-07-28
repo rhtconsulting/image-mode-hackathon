@@ -1,0 +1,28 @@
+---
+###############################################################################
+# Build and publish a bootc-based AWS AMI
+###############################################################################
+
+- name: IMAGE MODE AMI | Run preflight validation
+  ansible.builtin.import_tasks: preflight.yml
+
+- name: IMAGE MODE AMI | Resolve AWS account and bucket
+  ansible.builtin.import_tasks: aws_prepare.yml
+
+- name: IMAGE MODE AMI | Locate an existing AMI
+  ansible.builtin.import_tasks: existing_ami.yml
+
+- name: IMAGE MODE AMI | Prepare build workspace
+  ansible.builtin.import_tasks: workspace.yml
+  when: image_mode_build_required | bool
+
+- name: IMAGE MODE AMI | Build and push bootc container
+  ansible.builtin.import_tasks: container.yml
+  when: image_mode_build_required | bool
+
+- name: IMAGE MODE AMI | Build and register AWS AMI
+  ansible.builtin.import_tasks: ami.yml
+  when: image_mode_build_required | bool
+
+- name: IMAGE MODE AMI | Publish final result
+  ansible.builtin.import_tasks: result.yml

@@ -1477,13 +1477,36 @@
         #######################################################################
 
         - name: Configure AAP credential types
-          ansible.builtin.include_role:
-            name: infra.aap_configuration.controller_credential_types
-          vars:
-            controller_hostname: "{{ controller_host }}"
+          ansible.controller.credential_type:
+            name: "{{ credential_type_item.name }}"
+            new_name: "{{ credential_type_item.new_name | default(omit, true) }}"
+            description: "{{ credential_type_item.description | default(omit) }}"
+            kind: "{{ credential_type_item.kind | default('cloud') }}"
+            inputs: "{{ credential_type_item.inputs | default(omit) }}"
+            injectors: >-
+              {{
+                credential_type_item.injectors
+                | regex_replace('{  {', '{_~~remove~~_{')
+                | regex_replace('{  %', '{_~~remove~~_%')
+                | regex_replace('_~~remove~~_', '')
+              }}
+            state: "{{ credential_type_item.state | default('present') }}"
+            controller_host: "{{ controller_host }}"
             controller_username: "{{ gateway_admin_username }}"
             controller_password: "{{ gateway_admin_password }}"
-            controller_validate_certs: false
+            validate_certs: false
+          loop: "{{ controller_credential_types }}"
+          loop_control:
+            loop_var: credential_type_item
+            label: >-
+              {{ credential_type_item.state | default('present') }}
+              credential type {{ credential_type_item.name }}
+          no_log: >-
+            {{
+              controller_configuration_credential_types_secure_logging
+              | default(false)
+              | bool
+            }}
           tags:
             - credential_types
 

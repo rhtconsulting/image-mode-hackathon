@@ -1,0 +1,59 @@
+---
+###########################################################################
+# PHASE 6 | Report successful project provisioning
+###########################################################################
+
+- name: PHASE 6 | Display GitLab project provisioning result
+  ansible.builtin.debug:
+    msg:
+      - >-
+        GitLab project:
+        {{ gitlab_project_external_url }}/{{ gitlab_project_full_path }}
+      - >-
+        Git repository:
+        {{ gitlab_project_repository_url }}
+      - >-
+        GitLab group:
+        {{ gitlab_project_group_path }}
+      - >-
+        Default branch:
+        {{ gitlab_project_default_branch }}
+      - >-
+        Project state:
+        {{
+          'created'
+          if
+          (
+            gitlab_project_result.project_created
+            | default(false)
+            | bool
+          )
+          else
+          (
+            'updated'
+            if
+            (
+              gitlab_project_result.project_updated
+              | default(false)
+              | bool
+            )
+            else
+            'already existed'
+          )
+        }}
+      - >-
+        Repository content:
+        {{
+          'committed and pushed'
+          if
+          (
+            gitlab_project_staged_changes is defined
+            and
+            gitlab_project_staged_changes.rc == 1
+          )
+          else
+          'already current'
+        }}
+      - >-
+        Authentication:
+        local GitLab Rails administration with a temporary access token

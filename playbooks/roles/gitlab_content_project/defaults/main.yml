@@ -1,0 +1,78 @@
+---
+###########################################################################
+# GitLab project identity
+###########################################################################
+
+gitlab_project_group_path: "image-mode"
+gitlab_project_name: "sample-rhel9-web"
+gitlab_project_path: "sample-rhel9-web"
+
+gitlab_project_full_path: >-
+  {{ gitlab_project_group_path }}/{{ gitlab_project_path }}
+
+gitlab_project_description: >-
+  Sample RHEL 9 Image Mode web application and bootc image source.
+
+gitlab_project_visibility: "internal"
+gitlab_project_default_branch: "main"
+
+###########################################################################
+# Project source content
+###########################################################################
+
+gitlab_project_source_directory: >-
+  /var/lib/image-mode/projects/sample-rhel9-web
+
+gitlab_project_commit_author_name: "Image Mode Automation"
+
+gitlab_project_commit_author_email: >-
+  image-mode-automation@localhost
+
+gitlab_project_commit_message: >-
+  Initialize sample-rhel9-web project content
+
+gitlab_project_sync_delete: true
+
+gitlab_project_sync_excludes:
+  - ".git"
+  - ".terraform"
+  - "*.tfstate"
+  - "*.tfstate.*"
+  - "*.retry"
+  - "*.log"
+  - ".DS_Store"
+
+###########################################################################
+# GitLab connection
+###########################################################################
+
+gitlab_project_fqdn: >-
+  {{
+    gitlab_hostname
+    | default(public_tls_fqdn, true)
+    | default(inventory_hostname, true)
+  }}
+
+gitlab_project_external_url: >-
+  https://{{ gitlab_project_fqdn }}
+
+gitlab_project_repository_url: >-
+  {{ gitlab_project_external_url }}/{{ gitlab_project_full_path }}.git
+
+###########################################################################
+# Temporary project token
+###########################################################################
+
+gitlab_project_token_name: >-
+  ansible-bootstrap-{{ gitlab_project_path }}
+
+gitlab_project_token_expiration_days: 1
+
+###########################################################################
+# Temporary workspace
+###########################################################################
+
+gitlab_project_workspace_root: "/var/tmp"
+
+gitlab_project_workspace_prefix: >-
+  gitlab-project-bootstrap-

@@ -1,0 +1,48 @@
+---
+###########################################################################
+# PHASE 1 | Install operating-system prerequisites
+###########################################################################
+
+- name: PHASE 1 | Install required packages
+  ansible.builtin.dnf:
+    name:
+      - awscli2
+      - ca-certificates
+      - curl
+      - firewalld
+      - jq
+      - openldap-clients
+      - openssh-server
+      - openssl
+      - policycoreutils-python-utils
+      - postfix
+      - tar
+    state: present
+
+- name: PHASE 1 | Enable required services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - sshd
+    - firewalld
+    - postfix
+
+- name: PHASE 1 | Open GitLab firewall services
+  ansible.posix.firewalld:
+    service: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ gitlab_firewall_services }}"
+
+- name: PHASE 1 | Open GitLab registry port
+  ansible.posix.firewalld:
+    port: "{{ gitlab_registry_effective_port }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  when: gitlab_registry_enabled | bool
+
+###########################################################################

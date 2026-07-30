@@ -1,0 +1,401 @@
+---
+# PHASE 9 | Configure GitLab, registry, TLS, and IdM LDAP
+###########################################################################
+
+###########################################################################
+# PHASE 9 | Normalize IdM CA and GitLab trust paths
+###########################################################################
+
+- name: PHASE 9 | Normalize GitLab IdM CA paths
+  ansible.builtin.set_fact:
+    gitlab_idm_ca_source_path_normalized: >-
+      {{ gitlab_idm_ca_source_path | trim }}
+    gitlab_trusted_certificates_directory_normalized: >-
+      {{ gitlab_trusted_certificates_directory | trim }}
+    gitlab_idm_ca_gitlab_path_normalized: >-
+      {{ gitlab_idm_ca_gitlab_path | trim }}
+
+- name: PHASE 9 | Validate normalized GitLab IdM CA paths
+  ansible.builtin.assert:
+    that:
+      - gitlab_idm_ca_source_path_normalized | length > 0
+      - gitlab_trusted_certificates_directory_normalized | length > 0
+      - gitlab_idm_ca_gitlab_path_normalized | length > 0
+      - gitlab_idm_ca_source_path_normalized.startswith('/')
+      - gitlab_trusted_certificates_directory_normalized.startswith('/')
+      - gitlab_idm_ca_gitlab_path_normalized.startswith('/')
+      - >-
+        gitlab_idm_ca_gitlab_path_normalized
+        ==
+        (
+          gitlab_trusted_certificates_directory_normalized
+          ~ '/red-hat-idm-ca.crt'
+        )
+    fail_msg: >-
+      The GitLab IdM CA paths are invalid. Expected an absolute source
+      path, an absolute trusted-certificates directory, and an installed
+      CA path ending in /red-hat-idm-ca.crt.
+
+###########################################################################
+# PHASE 9 | Install Red Hat IdM CA into GitLab embedded trust
+###########################################################################
+
+- name: PHASE 9 | Inspect IdM CA source certificate
+  ansible.builtin.stat:
+    path: "{{ gitlab_idm_ca_source_path_normalized }}"
+  register: gitlab_idm_ca_source
+
+- name: PHASE 9 | Require IdM CA source certificate
+  ansible.builtin.assert:
+    that:
+      - gitlab_idm_ca_source.stat.exists
+      - gitlab_idm_ca_source.stat.isreg
+      - gitlab_idm_ca_source.stat.size | int > 0
+    fail_msg: >-
+      The Red Hat IdM CA certificate was not found at
+      {{ gitlab_idm_ca_source_path_normalized }}. The GitLab host must be
+      enrolled in IdM before LDAP over LDAPS can be configured.
+
+- name: PHASE 9 | Validate IdM CA source certificate
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ gitlab_idm_ca_source_path_normalized }}"
+      - -noout
+      - -subject
+      - -issuer
+  register: gitlab_idm_ca_source_validation
+  changed_when: false
+
+- name: PHASE 9 | Create GitLab configuration directory
+  ansible.builtin.file:
+    path: /etc/gitlab
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: PHASE 9 | Create GitLab trusted certificates directory
+  ansible.builtin.file:
+    path: "{{ gitlab_trusted_certificates_directory_normalized }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  register: gitlab_trusted_certificates_directory_creation
+
+- name: PHASE 9 | Inspect GitLab trusted certificates directory
+  ansible.builtin.stat:
+    path: "{{ gitlab_trusted_certificates_directory_normalized }}"
+  register: gitlab_trusted_certificates_directory_status
+
+- name: PHASE 9 | Assert GitLab trusted certificates directory exists
+  ansible.builtin.assert:
+    that:
+      - gitlab_trusted_certificates_directory_status.stat.exists
+      - gitlab_trusted_certificates_directory_status.stat.isdir
+      - gitlab_trusted_certificates_directory_status.stat.pw_name == "root"
+      - gitlab_trusted_certificates_directory_status.stat.gr_name == "root"
+      - gitlab_trusted_certificates_directory_status.stat.mode == "0755"
+    fail_msg: >-
+      GitLab trusted certificate directory
+      {{ gitlab_trusted_certificates_directory_normalized }} was not
+      created successfully with root:root ownership and mode 0755.
+
+- name: PHASE 9 | Install IdM CA into GitLab trusted certificates
+  ansible.builtin.copy:
+    src: "{{ gitlab_idm_ca_source_path_normalized }}"
+    dest: "{{ gitlab_idm_ca_gitlab_path_normalized }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  register: gitlab_idm_ca_gitlab_install
+  notify: Reconfigure GitLab
+
+- name: PHASE 9 | Inspect installed GitLab IdM CA certificate
+  ansible.builtin.stat:
+    path: "{{ gitlab_idm_ca_gitlab_path_normalized }}"
+  register: gitlab_idm_ca_gitlab_status
+
+- name: PHASE 9 | Assert installed GitLab IdM CA certificate exists
+  ansible.builtin.assert:
+    that:
+      - gitlab_idm_ca_gitlab_status.stat.exists
+      - gitlab_idm_ca_gitlab_status.stat.isreg
+      - gitlab_idm_ca_gitlab_status.stat.size | int > 0
+    fail_msg: >-
+      The Red Hat IdM CA certificate was not installed successfully at
+      {{ gitlab_idm_ca_gitlab_path_normalized }}.
+
+- name: PHASE 9 | Validate installed GitLab IdM CA certificate
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ gitlab_idm_ca_gitlab_path_normalized }}"
+      - -noout
+      - -subject
+      - -issuer
+  changed_when: false
+
+###########################################################################
+# PHASE 9 | Render GitLab configuration
+###########################################################################
+
+- name: PHASE 9 | Render GitLab configuration
+  ansible.builtin.copy:
+    dest: /etc/gitlab/gitlab.rb
+    owner: root
+    group: root
+    mode: "0600"
+    backup: true
+    content: |
+      ############################################################################
+      # Managed by Ansible
+      ############################################################################
+
+      external_url {{ gitlab_external_url | to_json }}
+
+      ############################################################################
+      # HTTPS
+      ############################################################################
+
+      letsencrypt['enable'] = false
+
+      nginx['redirect_http_to_https'] = true
+      nginx['ssl_certificate'] = {{ gitlab_ssl_certificate_path | to_json }}
+      nginx['ssl_certificate_key'] = {{ gitlab_ssl_private_key_path | to_json }}
+
+      ############################################################################
+      # Normal user defaults
+      ############################################################################
+
+      gitlab_rails['gitlab_default_projects_limit'] = {{ gitlab_default_projects_limit | int }}
+      gitlab_rails['gitlab_default_can_create_group'] = {{ gitlab_default_can_create_group | bool | lower }}
+
+      ############################################################################
+      # Red Hat IdM LDAP
+      #
+      # LDAP authentication and just-in-time account creation are enabled.
+      # IdM administrator promotion is handled separately by PHASE 10.
+      #
+      # The IdM CA is installed in /etc/gitlab/trusted-certs and supplied
+      # explicitly through tls_options.ca_file.
+      #
+      # Do not configure admin_group or run gitlab:ldap:group_sync unless
+      # this GitLab instance has an active license supporting LDAP Group
+      # Sync.
+      ############################################################################
+
+      gitlab_rails['ldap_enabled'] = true
+      gitlab_rails['prevent_ldap_sign_in'] = false
+
+      gitlab_rails['ldap_servers'] = {
+        'main' => {
+          'label' => {{ gitlab_ldap_label | to_json }},
+          'host' => {{ gitlab_ldap_host | to_json }},
+          'port' => {{ gitlab_ldap_port | int }},
+          'uid' => 'uid',
+
+          'bind_dn' => {{ gitlab_ldap_bind_dn | to_json }},
+          'password' => {{ gitlab_ldap_bind_password | to_json }},
+
+          'encryption' => {{ gitlab_ldap_encryption | to_json }},
+          'verify_certificates' => {{ gitlab_ldap_verify_certificates | bool | lower }},
+          'timeout' => {{ gitlab_ldap_timeout | int }},
+
+          'tls_options' => {
+            'ca_file' => {{ gitlab_idm_ca_gitlab_path_normalized | to_json }}
+          },
+
+          'active_directory' => false,
+          'allow_username_or_email_login' => {{ gitlab_ldap_allow_username_or_email_login | bool | lower }},
+          'lowercase_usernames' => {{ gitlab_ldap_lowercase_usernames | bool | lower }},
+          'block_auto_created_users' => {{ gitlab_ldap_block_auto_created_users | bool | lower }},
+
+          'base' => {{ gitlab_ldap_user_base | to_json }},
+          'user_filter' => {{ gitlab_ldap_user_filter | to_json }},
+
+          'attributes' => {
+            'username' => ['uid'],
+            'email' => ['mail'],
+            'name' => 'cn',
+            'first_name' => 'givenName',
+            'last_name' => 'sn'
+          }
+        }
+      }
+
+      ############################################################################
+      # LDAP account provisioning
+      #
+      # IdM users matching the LDAP user filter may sign in. GitLab creates
+      # and links the account during the user's first successful LDAP login.
+      ############################################################################
+
+      gitlab_rails['omniauth_allow_single_sign_on'] = ['ldapmain']
+      gitlab_rails['omniauth_block_auto_created_users'] = false
+
+      ############################################################################
+      # GitLab container registry
+      ############################################################################
+
+      registry_external_url {{ gitlab_registry_external_url | to_json }}
+
+      gitlab_rails['registry_enabled'] = {{ gitlab_registry_enabled | bool | lower }}
+
+      registry_nginx['ssl_certificate'] = {{ gitlab_ssl_certificate_path | to_json }}
+      registry_nginx['ssl_certificate_key'] = {{ gitlab_ssl_private_key_path | to_json }}
+  register: gitlab_configuration
+  no_log: true
+  notify: Reconfigure GitLab
+
+###########################################################################
+# PHASE 9 | Apply GitLab configuration
+###########################################################################
+
+- name: PHASE 9 | Apply GitLab configuration
+  ansible.builtin.meta: flush_handlers
+
+###########################################################################
+# PHASE 9 | Verify GitLab embedded IdM CA trust
+###########################################################################
+
+- name: PHASE 9 | Verify IdM CA was added to GitLab embedded trust
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    ca_hash="$(
+      /opt/gitlab/embedded/bin/openssl x509 \
+        -in {{ gitlab_idm_ca_gitlab_path_normalized | quote }} \
+        -noout \
+        -hash
+    )"
+
+    test -n "$ca_hash"
+
+    find /opt/gitlab/embedded/ssl/certs \
+      -maxdepth 1 \
+      -name "${ca_hash}.*" \
+      -print \
+      -quit |
+    grep -q .
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: PHASE 9 | Verify IdM LDAPS with GitLab embedded OpenSSL
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    timeout 30 \
+      /opt/gitlab/embedded/bin/openssl s_client \
+        -connect {{ gitlab_ldap_host | quote }}:{{ gitlab_ldap_port | int }} \
+        -servername {{ gitlab_ldap_host | quote }} \
+        -CAfile {{ gitlab_idm_ca_gitlab_path_normalized | quote }} \
+        -verify_hostname {{ gitlab_ldap_host | quote }} \
+        -verify_return_error \
+        </dev/null 2>&1 |
+    grep -q "Verify return code: 0"
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+###########################################################################
+# PHASE 9 | Validate rendered GitLab configuration
+###########################################################################
+
+- name: PHASE 9 | Validate rendered GitLab configuration
+  ansible.builtin.command:
+    argv:
+      - gitlab-ctl
+      - show-config
+  register: gitlab_rendered_configuration
+  changed_when: false
+  no_log: true
+
+- name: PHASE 9 | Verify LDAP configuration is present
+  ansible.builtin.assert:
+    that:
+      - >-
+        'ldap_enabled'
+        in
+        (
+          gitlab_rendered_configuration.stdout
+          | default('')
+        )
+      - >-
+        gitlab_ldap_host
+        in
+        (
+          gitlab_rendered_configuration.stdout
+          | default('')
+        )
+      - >-
+        gitlab_idm_ca_gitlab_path_normalized
+        in
+        (
+          gitlab_rendered_configuration.stdout
+          | default('')
+        )
+    fail_msg: >-
+      GitLab reconfiguration completed, but the rendered configuration
+      does not contain the expected Red Hat IdM LDAP settings or the
+      configured IdM CA file.
+  no_log: true
+
+###########################################################################
+# PHASE 9 | Validate GitLab LDAP connectivity
+###########################################################################
+
+- name: PHASE 9 | Run GitLab LDAP connectivity check
+  ansible.builtin.command:
+    argv:
+      - gitlab-rake
+      - gitlab:ldap:check
+  register: gitlab_ldap_check_after_ca_install
+  changed_when: false
+  no_log: true
+
+###########################################################################
+# PHASE 9 | Validate configuration file security
+###########################################################################
+
+- name: PHASE 9 | Verify GitLab configuration file permissions
+  ansible.builtin.stat:
+    path: /etc/gitlab/gitlab.rb
+  register: gitlab_configuration_file
+
+- name: PHASE 9 | Assert GitLab configuration is protected
+  ansible.builtin.assert:
+    that:
+      - gitlab_configuration_file.stat.exists
+      - gitlab_configuration_file.stat.isreg
+      - gitlab_configuration_file.stat.pw_name == "root"
+      - gitlab_configuration_file.stat.gr_name == "root"
+      - gitlab_configuration_file.stat.mode == "0600"
+    fail_msg: >-
+      /etc/gitlab/gitlab.rb must exist, be owned by root:root, and have
+      mode 0600 because it contains the LDAP bind password.
+
+- name: PHASE 9 | Verify GitLab IdM CA file permissions
+  ansible.builtin.stat:
+    path: "{{ gitlab_idm_ca_gitlab_path_normalized }}"
+  register: gitlab_idm_ca_gitlab_file
+
+- name: PHASE 9 | Assert GitLab IdM CA file is protected
+  ansible.builtin.assert:
+    that:
+      - gitlab_idm_ca_gitlab_file.stat.exists
+      - gitlab_idm_ca_gitlab_file.stat.isreg
+      - gitlab_idm_ca_gitlab_file.stat.pw_name == "root"
+      - gitlab_idm_ca_gitlab_file.stat.gr_name == "root"
+      - gitlab_idm_ca_gitlab_file.stat.mode == "0644"
+    fail_msg: >-
+      {{ gitlab_idm_ca_gitlab_path_normalized }} must exist, be owned by
+      root:root, and have mode 0644.
+###########################################################################

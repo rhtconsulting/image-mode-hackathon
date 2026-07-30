@@ -1,0 +1,77 @@
+---
+# PHASE 6 | Install GitLab certificate and key
+###########################################################################
+
+- name: PHASE 6 | Inspect existing GitLab certificate
+  ansible.builtin.stat:
+    path: "{{ gitlab_ssl_certificate_path }}"
+  register: gitlab_existing_ssl_certificate
+
+- name: PHASE 6 | Back up existing GitLab certificate
+  ansible.builtin.copy:
+    src: "{{ gitlab_ssl_certificate_path }}"
+    dest: >-
+      {{ gitlab_tls_backup_directory }}/{{
+        gitlab_public_tls_fqdn
+      }}-{{ ansible_date_time.iso8601_basic_short }}.crt
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - gitlab_existing_ssl_certificate.stat.exists
+    - gitlab_force_public_tls_install | bool
+
+- name: PHASE 6 | Inspect existing GitLab private key
+  ansible.builtin.stat:
+    path: "{{ gitlab_ssl_private_key_path }}"
+  register: gitlab_existing_ssl_private_key
+
+- name: PHASE 6 | Back up existing GitLab private key
+  ansible.builtin.copy:
+    src: "{{ gitlab_ssl_private_key_path }}"
+    dest: >-
+      {{ gitlab_tls_backup_directory }}/{{
+        gitlab_public_tls_fqdn
+      }}-{{ ansible_date_time.iso8601_basic_short }}.key
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - gitlab_existing_ssl_private_key.stat.exists
+    - gitlab_force_public_tls_install | bool
+  no_log: true
+
+- name: PHASE 6 | Install GitLab full-chain certificate
+  ansible.builtin.copy:
+    src: "{{ gitlab_tls_fullchain_path }}"
+    dest: "{{ gitlab_ssl_certificate_path }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reconfigure GitLab
+
+- name: PHASE 6 | Install GitLab private key
+  ansible.builtin.copy:
+    src: "{{ gitlab_tls_private_key_path }}"
+    dest: "{{ gitlab_ssl_private_key_path }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Reconfigure GitLab
+
+- name: PHASE 6 | Remove temporary ACM export artifacts
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ gitlab_tls_export_json_path }}"
+    - "{{ gitlab_tls_passphrase_path }}"
+    - "{{ gitlab_tls_encrypted_private_key_path }}"
+  no_log: true
+
+###########################################################################

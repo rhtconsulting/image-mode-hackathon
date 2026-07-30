@@ -1,0 +1,64 @@
+---
+###########################################################################
+# PHASE 0 | Validate deployment inputs
+###########################################################################
+
+- name: PHASE 0 | Verify supported operating system
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == "RedHat"
+      - ansible_facts.distribution_major_version | int >= 8
+    fail_msg: >-
+      GitLab deployment requires RHEL or a compatible Red Hat-family
+      operating system version 8 or later.
+
+- name: PHASE 0 | Validate Terraform inventory variables
+  ansible.builtin.assert:
+    that:
+      - aws_region is defined
+      - aws_region | length > 0
+      - secret_prefix is defined
+      - secret_prefix | length > 0
+      - idm_domain_name is defined
+      - idm_domain_name | length > 0
+      - idm_server_fqdn is defined
+      - idm_server_fqdn | length > 0
+      - gitlab_fqdn | length > 0
+      - gitlab_public_tls_fqdn | length > 0
+      - gitlab_acm_certificate_arn | length > 0
+      - gitlab_acm_certificate_arn is match('^arn:aws[a-zA-Z-]*:acm:')
+      - gitlab_registry_effective_port | int > 0
+      - gitlab_registry_effective_port | int < 65536
+      - gitlab_idm_base_dn | length > 0
+      - "'\\\\1' not in gitlab_idm_base_dn"
+      - gitlab_idm_base_dn is match('^dc=[^,]+(?:,dc=[^,]+)+$')
+      - "'\\\\1' not in gitlab_ldap_bind_dn"
+      - "'\\\\1' not in gitlab_ldap_group_base"
+      - gitlab_ldap_admin_group_cn | length > 0
+      - gitlab_ldap_admin_group_dn | length > 0
+      - gitlab_ldap_admin_group_dn is match(
+          '^cn=[^,]+,cn=groups,cn=accounts,dc=[^,]+(?:,dc=[^,]+)+$'
+        )
+      - gitlab_ldap_provider | length > 0
+    fail_msg: >-
+      The Terraform inventory must provide aws_region, secret_prefix,
+      idm_domain_name, idm_server_fqdn, gitlab_hostname/public_tls_fqdn,
+      and acm_certificate_arn. gitlab_registry_port is optional and
+      defaults to 5050. The generated IdM LDAP distinguished names must
+      also be valid.
+
+- name: PHASE 0 | Verify IdM hostname resolves
+  ansible.builtin.command:
+    argv:
+      - getent
+      - ahostsv4
+      - "{{ gitlab_ldap_host }}"
+  changed_when: false
+
+- name: PHASE 0 | Verify GitLab hostname resolves
+  ansible.builtin.command:
+    argv:
+      - getent
+      - ahostsv4
+      - "{{ gitlab_fqdn }}"
+  changed_when: false

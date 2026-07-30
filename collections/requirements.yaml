@@ -1,6 +1,46 @@
+---
 collections:
+  #
+  # AWS
+  #
   - name: amazon.aws
-  - name: redhat.satellite
-  - name: ansible.posix
+    version: ">=10.3.0,<11.0.0"
+
+  #
+  # Red Hat Automation Platform
+  #
   - name: ansible.controller
+    version: ">=4.8.0,<5.0.0"
+
+  - name: ansible.eda
+    version: ">=2.13.0,<3.0.0"
+
+  - name: ansible.hub
+    version: ">=1.1.0,<2.0.0"
+
+  - name: ansible.platform
+    version: ">=2.7.0,<2.8.0"
+
+  #
+  # Core Ansible Collections
+  #
+  - name: ansible.posix
+    version: ">=2.2.0,<3.0.0"
+
+  - name: community.general
+    version: ">=11.0.0,<13.0.0"
+
+  - name: community.library_inventory_filtering_v1
+    version: ">=1.1.0,<2.0.0"
+
+  - name: containers.podman
+    version: ">=1.20.0,<2.0.0"
+
+  #
+  # Red Hat Infrastructure Collections
+  #
   - name: infra.aap_configuration
+    version: ">=4.7.0,<5.0.0"
+
+  - name: redhat.satellite
+    version: ">=5.11.0,<6.0.0"

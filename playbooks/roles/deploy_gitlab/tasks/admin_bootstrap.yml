@@ -1339,7 +1339,7 @@
           - mail
       register: gitlab_idm_developer_ldap_query
       changed_when: false
-      no_log: true
+      no_log: false
 
     ###########################################################################
     # Parse LDAP LDIF records

@@ -8,7 +8,6 @@
 ###############################################################################
 
 gitlab_group_visibility_rails_runner_path: /opt/gitlab/bin/gitlab-rails
-gitlab_group_visibility_service_command: /opt/gitlab/bin/gitlab-ctl
 
 ###############################################################################
 # Target GitLab group and project
@@ -40,10 +39,11 @@ gitlab_group_visibility_manage_restricted_levels: true
 gitlab_group_visibility_manage_default_group_visibility: true
 
 ###############################################################################
-# Existing namespace contents
+# Optional propagation controls
 ###############################################################################
 
-# Existing descendants remain unchanged unless explicitly enabled.
+# These are retained for future expansion. The current task directly updates
+# only the configured group and project.
 gitlab_group_visibility_make_existing_projects_public: false
 gitlab_group_visibility_make_existing_subgroups_public: false
 
@@ -53,19 +53,3 @@ gitlab_group_visibility_make_existing_subgroups_public: false
 
 gitlab_group_visibility_create_backup: false
 gitlab_group_visibility_restart_puma: false
-
-###############################################################################
-# Legacy temporary script settings
-#
-# These are not required when tasks/main.yml uses ansible.builtin.raw with an
-# inline Rails runner script, but retaining them does not cause a problem.
-###############################################################################
-
-gitlab_group_visibility_script_directory: /var/tmp
-
-gitlab_group_visibility_script_path: >-
-  {{ gitlab_group_visibility_script_directory }}/configure-gitlab-group-visibility.rb
-
-gitlab_group_visibility_script_owner: git
-gitlab_group_visibility_script_group: git
-gitlab_group_visibility_script_mode: "0600"

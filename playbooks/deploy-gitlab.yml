@@ -20,4 +20,4 @@
 
     - role: patch_gitlab_group_visibility
       tags:
-      - patch_gitlab_content_bootstrap
+      - patch_gitlab_group_visibility

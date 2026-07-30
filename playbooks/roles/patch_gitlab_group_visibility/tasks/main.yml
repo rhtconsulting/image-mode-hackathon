@@ -2,18 +2,22 @@
 ###############################################################################
 # Repair GitLab group settings and configure visibility
 #
-# This task file intentionally uses ansible.builtin.raw.
+# Uses ansible.builtin.raw because the remote SSH user cannot create Ansible
+# module staging directories under /var/tmp.
 #
-# The target host currently prevents the SSH user from creating Ansible module
-# staging directories under /var/tmp. The raw module executes commands directly
-# over SSH and does not require a rendered Ruby file on the GitLab host.
+# The Ruby program is supplied to gitlab-rails runner over standard input.
+# No temporary Ruby script is created on the GitLab server.
 ###############################################################################
 
 - name: GITLAB GROUP | Repair settings and make group and project public
   ansible.builtin.raw: |
-    sudo /opt/gitlab/bin/gitlab-rails runner '
-    group_path = {{ gitlab_group_visibility_group_path | quote }}
-    project_path = {{ gitlab_group_visibility_project_path | quote }}
+    set -o pipefail
+
+    cat <<'GITLAB_RUBY' |
+    /opt/gitlab/bin/gitlab-rails runner -
+
+    group_path = {{ gitlab_group_visibility_group_path | to_json }}
+    project_path = {{ gitlab_group_visibility_project_path | to_json }}
     public_level = Gitlab::VisibilityLevel::PUBLIC
     changes = []
 
@@ -48,7 +52,7 @@
     end
 
     ###########################################################################
-    # Read instance settings
+    # Read GitLab instance settings
     ###########################################################################
 
     application_settings = ApplicationSetting.current
@@ -58,7 +62,7 @@
     end
 
     ###########################################################################
-    # Ensure public visibility is not restricted at the instance level
+    # Allow public visibility at the GitLab instance level
     ###########################################################################
 
     restricted_levels =
@@ -75,7 +79,6 @@
       )
 
       application_settings.reload
-
       changes << "public_visibility_unrestricted"
 
       puts(
@@ -88,7 +91,7 @@
     end
 
     ###########################################################################
-    # Make public the default for newly created top-level groups
+    # Make public the default visibility for newly created groups
     ###########################################################################
 
     if application_settings.default_group_visibility.to_i != public_level
@@ -97,7 +100,6 @@
       )
 
       application_settings.reload
-
       changes << "default_group_visibility_public"
 
       puts(
@@ -119,7 +121,6 @@
       )
 
       group.reload
-
       changes << "group_visibility_public"
 
       puts(
@@ -132,7 +133,7 @@
     end
 
     ###########################################################################
-    # Locate and make the sample-rhel9-web project public
+    # Locate the sample-rhel9-web project
     ###########################################################################
 
     project = Project.find_by_full_path(project_path)
@@ -141,13 +142,16 @@
       abort("GitLab project #{project_path.inspect} was not found")
     end
 
+    ###########################################################################
+    # Make the sample-rhel9-web project public
+    ###########################################################################
+
     if project.visibility_level.to_i != public_level
       project.update!(
         visibility_level: public_level
       )
 
       project.reload
-
       changes << "project_visibility_public"
 
       puts(
@@ -196,7 +200,7 @@
     if final_restricted_levels.include?(public_level)
       abort(
         "Verification failed: public remains restricted at the " \
-        "instance level"
+        "GitLab instance level"
       )
     end
 
@@ -207,7 +211,7 @@
     end
 
     ###########################################################################
-    # Machine-readable results for Ansible
+    # Machine-readable Ansible results
     ###########################################################################
 
     puts "GITLAB_GROUP_PATH=#{group.full_path}"
@@ -228,9 +232,8 @@
     else
       puts "ANSIBLE_CHANGED=true"
     end
-    '
-  args:
-    executable: /bin/bash
+
+    GITLAB_RUBY
   register: gitlab_group_visibility_result
   changed_when: >-
     'ANSIBLE_CHANGED=true' in
@@ -239,8 +242,5 @@
     - gitlab_group_visibility_result.rc != 0
 
 - name: GITLAB GROUP | Display configuration result
-  ansible.builtin.raw: |
-    printf '%s\n' "GitLab visibility configuration completed successfully."
-  changed_when: false
-  when:
-    - gitlab_group_visibility_result.rc == 0
+  ansible.builtin.debug:
+    var: gitlab_group_visibility_result.stdout_lines

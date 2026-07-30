@@ -226,7 +226,7 @@ gitlab_idm_developer_bootstrap_enabled: true
 
 # Search base containing IdM user entries.
 gitlab_ldap_user_base_dn: >-
-  cn=users,cn=accounts,{{ gitlab_ldap_base_dn }}
+  cn=users,cn=accounts,{{ gitlab_idm_base_dn }}
 
 # LDAP filter used to select users that should receive GitLab access.
 #
@@ -240,7 +240,7 @@ gitlab_idm_developer_user_filter: >-
   )
 
 # GitLab group whose projects should be available to developers.
-gitlab_idm_developer_group_path: image-mode
+gitlab_idm_developer_group_path: "image-mode"
 
 # Specific project expected to inherit Developer access.
 gitlab_idm_developer_project_path: >-

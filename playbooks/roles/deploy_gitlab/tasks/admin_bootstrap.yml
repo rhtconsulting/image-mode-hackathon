@@ -907,7 +907,7 @@
             )
         )
         is not none
-      no_log: true
+      no_log: false
 
     - name: PHASE 10 | Extract GitLab IdM bootstrap result
       ansible.builtin.set_fact:
@@ -1134,6 +1134,7 @@
             | from_json
           }}
       no_log: true
+
 
     - name: PHASE 10 | Assert all IdM administrators were initialized
       ansible.builtin.assert:

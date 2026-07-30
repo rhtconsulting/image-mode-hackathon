@@ -13,3 +13,4 @@
 
   roles:
     - role: deploy_gitlab
+    - role: gitlab_content_bootstrap

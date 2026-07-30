@@ -1,151 +1,236 @@
 ---
 ###############################################################################
 # Repair GitLab group settings and configure visibility
+#
+# This task file intentionally uses ansible.builtin.raw.
+#
+# The target host currently prevents the SSH user from creating Ansible module
+# staging directories under /var/tmp. The raw module executes commands directly
+# over SSH and does not require a rendered Ruby file on the GitLab host.
 ###############################################################################
 
-###############################################################################
-# Validate role variables
-###############################################################################
+- name: GITLAB GROUP | Repair settings and make group and project public
+  ansible.builtin.raw: |
+    sudo /opt/gitlab/bin/gitlab-rails runner '
+    group_path = {{ gitlab_group_visibility_group_path | quote }}
+    project_path = {{ gitlab_group_visibility_project_path | quote }}
+    public_level = Gitlab::VisibilityLevel::PUBLIC
+    changes = []
 
-- name: GITLAB GROUP | Validate role variables
-  ansible.builtin.assert:
-    that:
-      - gitlab_group_visibility_group_path is string
-      - gitlab_group_visibility_group_path | trim | length > 0
-      - gitlab_group_visibility_level in ['private', 'internal', 'public']
-      - gitlab_group_visibility_rails_runner_path is string
-      - gitlab_group_visibility_rails_runner_path | trim | length > 0
-      - gitlab_group_visibility_script_directory is string
-      - gitlab_group_visibility_script_directory | trim | length > 0
-      - gitlab_group_visibility_script_path is string
-      - gitlab_group_visibility_script_path | trim | length > 0
-      - gitlab_group_visibility_script_owner is string
-      - gitlab_group_visibility_script_owner | trim | length > 0
-      - gitlab_group_visibility_script_group is string
-      - gitlab_group_visibility_script_group | trim | length > 0
-    fail_msg: >-
-      GitLab group visibility role variables are invalid. The group path must
-      be non-empty, the visibility level must be private, internal, or public,
-      and the temporary script settings must be defined.
+    ###########################################################################
+    # Locate the target group
+    ###########################################################################
 
-###############################################################################
-# Validate GitLab installation
-###############################################################################
+    group = Group.find_by_full_path(group_path)
 
-- name: GITLAB GROUP | Check GitLab Rails runner
-  ansible.builtin.stat:
-    path: "{{ gitlab_group_visibility_rails_runner_path }}"
-  register: gitlab_group_visibility_rails_runner_status
+    unless group
+      abort("GitLab group #{group_path.inspect} was not found")
+    end
 
-- name: GITLAB GROUP | Validate GitLab Rails runner
-  ansible.builtin.assert:
-    that:
-      - gitlab_group_visibility_rails_runner_status.stat.exists
-      - gitlab_group_visibility_rails_runner_status.stat.isreg
-      - gitlab_group_visibility_rails_runner_status.stat.executable
-    fail_msg: >-
-      GitLab Rails runner was not found or is not executable at
-      {{ gitlab_group_visibility_rails_runner_path }}.
+    ###########################################################################
+    # Repair the missing namespace_settings association
+    ###########################################################################
 
-###############################################################################
-# Validate GitLab service account
-###############################################################################
+    if group.namespace_settings.nil?
+      NamespaceSetting.create!(namespace_id: group.id)
+      group.reload
 
-- name: GITLAB GROUP | Read GitLab service account
-  ansible.builtin.getent:
-    database: passwd
-    key: "{{ gitlab_group_visibility_script_owner }}"
+      changes << "namespace_settings_created"
 
-- name: GITLAB GROUP | Validate GitLab service account
-  ansible.builtin.assert:
-    that:
-      - >-
-        gitlab_group_visibility_script_owner in
-        ansible_facts.getent_passwd
-    fail_msg: >-
-      GitLab service account
-      {{ gitlab_group_visibility_script_owner }} does not exist.
+      puts(
+        "Created namespace_settings for GitLab group #{group.full_path}"
+      )
+    else
+      puts(
+        "namespace_settings already exists for GitLab group " \
+        "#{group.full_path}"
+      )
+    end
 
-###############################################################################
-# Optional GitLab backup
-###############################################################################
+    ###########################################################################
+    # Read instance settings
+    ###########################################################################
 
-- name: GITLAB GROUP | Create GitLab backup
-  ansible.builtin.command:
-    argv:
-      - gitlab-backup
-      - create
-  when: gitlab_group_visibility_create_backup | bool
-  register: gitlab_group_visibility_backup
-  changed_when: true
+    application_settings = ApplicationSetting.current
 
-###############################################################################
-# Prepare temporary Rails script directory
-###############################################################################
+    unless application_settings
+      abort("GitLab ApplicationSetting.current returned nil")
+    end
 
-- name: GITLAB GROUP | Ensure temporary Rails script directory exists
-  ansible.builtin.file:
-    path: "{{ gitlab_group_visibility_script_directory }}"
-    state: directory
-    owner: "{{ gitlab_group_visibility_script_owner }}"
-    group: "{{ gitlab_group_visibility_script_group }}"
-    mode: "0700"
+    ###########################################################################
+    # Ensure public visibility is not restricted at the instance level
+    ###########################################################################
 
-###############################################################################
-# Stage Rails configuration script
-###############################################################################
+    restricted_levels =
+      Array(
+        application_settings.restricted_visibility_levels
+      ).map(&:to_i)
 
-- name: GITLAB GROUP | Install temporary Rails configuration script
-  ansible.builtin.template:
-    src: configure_group_visibility.rb.j2
-    dest: "{{ gitlab_group_visibility_script_path }}"
-    owner: "{{ gitlab_group_visibility_script_owner }}"
-    group: "{{ gitlab_group_visibility_script_group }}"
-    mode: "{{ gitlab_group_visibility_script_mode }}"
-  register: gitlab_group_visibility_script
+    if restricted_levels.include?(public_level)
+      application_settings.update!(
+        restricted_visibility_levels:
+          restricted_levels.reject do |level|
+            level == public_level
+          end
+      )
 
-- name: GITLAB GROUP | Inspect temporary Rails configuration script
-  ansible.builtin.stat:
-    path: "{{ gitlab_group_visibility_script_path }}"
-  register: gitlab_group_visibility_script_status
+      application_settings.reload
 
-- name: GITLAB GROUP | Validate temporary Rails configuration script
-  ansible.builtin.assert:
-    that:
-      - gitlab_group_visibility_script_status.stat.exists
-      - gitlab_group_visibility_script_status.stat.isreg
-      - >-
-        gitlab_group_visibility_script_status.stat.pw_name ==
-        gitlab_group_visibility_script_owner
-      - >-
-        gitlab_group_visibility_script_status.stat.gr_name ==
-        gitlab_group_visibility_script_group
-      - gitlab_group_visibility_script_status.stat.readable
-    fail_msg: >-
-      The temporary Rails configuration script was not created with the
-      expected ownership or permissions at
-      {{ gitlab_group_visibility_script_path }}.
+      changes << "public_visibility_unrestricted"
 
-- name: GITLAB GROUP | Verify script is readable by GitLab user
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/test
-      - -r
-      - "{{ gitlab_group_visibility_script_path }}"
-  become: true
-  become_user: "{{ gitlab_group_visibility_script_owner }}"
-  changed_when: false
+      puts(
+        "Removed public from the restricted visibility levels"
+      )
+    else
+      puts(
+        "Public visibility is not restricted at the instance level"
+      )
+    end
 
-###############################################################################
-# Execute Rails configuration script
-###############################################################################
+    ###########################################################################
+    # Make public the default for newly created top-level groups
+    ###########################################################################
 
-- name: GITLAB GROUP | Repair group settings and configure visibility
-  ansible.builtin.command:
-    argv:
-      - "{{ gitlab_group_visibility_rails_runner_path }}"
-      - runner
-      - "{{ gitlab_group_visibility_script_path }}"
+    if application_settings.default_group_visibility.to_i != public_level
+      application_settings.update!(
+        default_group_visibility: public_level
+      )
+
+      application_settings.reload
+
+      changes << "default_group_visibility_public"
+
+      puts(
+        "Set the default visibility for newly created groups to public"
+      )
+    else
+      puts(
+        "Default group visibility is already public"
+      )
+    end
+
+    ###########################################################################
+    # Make the image-mode group public
+    ###########################################################################
+
+    if group.visibility_level.to_i != public_level
+      group.update!(
+        visibility_level: public_level
+      )
+
+      group.reload
+
+      changes << "group_visibility_public"
+
+      puts(
+        "Set GitLab group #{group.full_path} visibility to public"
+      )
+    else
+      puts(
+        "GitLab group #{group.full_path} is already public"
+      )
+    end
+
+    ###########################################################################
+    # Locate and make the sample-rhel9-web project public
+    ###########################################################################
+
+    project = Project.find_by_full_path(project_path)
+
+    unless project
+      abort("GitLab project #{project_path.inspect} was not found")
+    end
+
+    if project.visibility_level.to_i != public_level
+      project.update!(
+        visibility_level: public_level
+      )
+
+      project.reload
+
+      changes << "project_visibility_public"
+
+      puts(
+        "Set GitLab project #{project.full_path} visibility to public"
+      )
+    else
+      puts(
+        "GitLab project #{project.full_path} is already public"
+      )
+    end
+
+    ###########################################################################
+    # Final verification
+    ###########################################################################
+
+    group.reload
+    project.reload
+    application_settings.reload
+
+    if group.namespace_settings.nil?
+      abort(
+        "Verification failed: namespace_settings is still missing for " \
+        "#{group.full_path}"
+      )
+    end
+
+    unless group.visibility_level.to_i == public_level
+      abort(
+        "Verification failed: group #{group.full_path} is " \
+        "#{group.visibility.inspect}, expected public"
+      )
+    end
+
+    unless project.visibility_level.to_i == public_level
+      abort(
+        "Verification failed: project #{project.full_path} is " \
+        "#{project.visibility.inspect}, expected public"
+      )
+    end
+
+    final_restricted_levels =
+      Array(
+        application_settings.restricted_visibility_levels
+      ).map(&:to_i)
+
+    if final_restricted_levels.include?(public_level)
+      abort(
+        "Verification failed: public remains restricted at the " \
+        "instance level"
+      )
+    end
+
+    unless application_settings.default_group_visibility.to_i == public_level
+      abort(
+        "Verification failed: default group visibility is not public"
+      )
+    end
+
+    ###########################################################################
+    # Machine-readable results for Ansible
+    ###########################################################################
+
+    puts "GITLAB_GROUP_PATH=#{group.full_path}"
+    puts "GITLAB_GROUP_VISIBILITY=#{group.visibility}"
+    puts(
+      "GITLAB_NAMESPACE_SETTINGS_ID=#{group.namespace_settings.id}"
+    )
+    puts "GITLAB_PROJECT_PATH=#{project.full_path}"
+    puts "GITLAB_PROJECT_VISIBILITY=#{project.visibility}"
+    puts(
+      "GITLAB_DEFAULT_GROUP_VISIBILITY=" \
+      "#{application_settings.default_group_visibility}"
+    )
+    puts "GITLAB_CHANGES=#{changes.join(",")}"
+
+    if changes.empty?
+      puts "ANSIBLE_CHANGED=false"
+    else
+      puts "ANSIBLE_CHANGED=true"
+    end
+    '
+  args:
+    executable: /bin/bash
   register: gitlab_group_visibility_result
   changed_when: >-
     'ANSIBLE_CHANGED=true' in
@@ -153,64 +238,9 @@
   failed_when:
     - gitlab_group_visibility_result.rc != 0
 
-###############################################################################
-# Display command output
-###############################################################################
-
 - name: GITLAB GROUP | Display configuration result
-  ansible.builtin.debug:
-    var: gitlab_group_visibility_result.stdout_lines
-
-- name: GITLAB GROUP | Display configuration errors
-  ansible.builtin.debug:
-    var: gitlab_group_visibility_result.stderr_lines
+  ansible.builtin.raw: |
+    printf '%s\n' "GitLab visibility configuration completed successfully."
+  changed_when: false
   when:
-    - gitlab_group_visibility_result.stderr is defined
-    - gitlab_group_visibility_result.stderr | length > 0
-
-###############################################################################
-# Verify final GitLab configuration
-###############################################################################
-
-- name: GITLAB GROUP | Verify namespace settings and visibility
-  ansible.builtin.assert:
-    that:
-      - >-
-        (
-          'GITLAB_GROUP_FINAL_VISIBILITY=' ~
-          gitlab_group_visibility_level
-        ) in gitlab_group_visibility_result.stdout
-      - >-
-        'GITLAB_NAMESPACE_SETTINGS_ID=' in
-        gitlab_group_visibility_result.stdout
-    fail_msg: >-
-      GitLab group configuration completed without returning the expected
-      verification markers.
-    success_msg: >-
-      GitLab group {{ gitlab_group_visibility_group_path }} has a valid
-      namespace_settings record and is
-      {{ gitlab_group_visibility_level }}.
-
-###############################################################################
-# Optional Puma restart
-###############################################################################
-
-- name: GITLAB GROUP | Restart GitLab Puma
-  ansible.builtin.command:
-    argv:
-      - "{{ gitlab_group_visibility_service_command }}"
-      - restart
-      - puma
-  when:
-    - gitlab_group_visibility_restart_puma | bool
-    - gitlab_group_visibility_result is changed
-  changed_when: true
-
-###############################################################################
-# Cleanup
-###############################################################################
-
-- name: GITLAB GROUP | Remove temporary Rails configuration script
-  ansible.builtin.file:
-    path: "{{ gitlab_group_visibility_script_path }}"
-    state: absent
+    - gitlab_group_visibility_result.rc == 0

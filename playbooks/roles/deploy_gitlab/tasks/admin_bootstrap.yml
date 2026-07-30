@@ -293,26 +293,26 @@
         stdin: |
           require "json"
           require "securerandom"
-
+    
           ldap_provider =
             ENV.fetch("GITLAB_LDAP_PROVIDER").to_s.strip
-
+    
           administrator_definitions =
             JSON.parse(
               ENV.fetch("GITLAB_IDM_ADMIN_USERS_JSON")
             )
-
+    
           group_definitions =
             JSON.parse(
               ENV.fetch("GITLAB_DEFAULT_GROUPS_JSON")
             )
-
+    
           reconcile_admin_removals =
             ENV.fetch(
               "RECONCILE_ADMIN_REMOVALS",
               "false"
             ) == "true"
-
+    
           result = {
             groups_created: [],
             groups_updated: [],
@@ -322,6 +322,7 @@
             users_existing: [],
             users_promoted: [],
             identities_created: [],
+            identities_updated: [],
             identities_existing: [],
             memberships_created: [],
             memberships_updated: [],
@@ -329,95 +330,148 @@
             administrators_demoted: [],
             errors: []
           }
-
+    
           actor =
             User.find_by(username: "root") ||
             User.where(admin: true).first
-
+    
           raise "No GitLab administrator account exists" unless actor
-
-          #################################################################
-          # Create or update the default GitLab groups
-          #################################################################
-
+    
+          visibility_levels = {
+            "private" => Gitlab::VisibilityLevel::PRIVATE,
+            "internal" => Gitlab::VisibilityLevel::INTERNAL,
+            "public" => Gitlab::VisibilityLevel::PUBLIC
+          }
+    
+          #####################################################################
+          # Create or reconcile the default GitLab groups
+          #####################################################################
+    
           groups = {}
-
+    
           group_definitions.each do |definition|
             path =
               definition.fetch("path").to_s.strip
-
+    
             name =
               definition.fetch("name").to_s.strip
-
+    
             description =
               definition.fetch(
                 "description",
                 ""
               ).to_s
-
+    
+            configured_visibility_name =
+              definition.fetch(
+                "visibility",
+                "internal"
+              ).to_s.strip.downcase
+    
             begin
               raise "group path is empty" if path.empty?
               raise "group name is empty" if name.empty?
-
+    
+              unless visibility_levels.key?(configured_visibility_name)
+                raise(
+                  "unsupported group visibility " \
+                  "#{configured_visibility_name.inspect}"
+                )
+              end
+    
+              configured_visibility =
+                visibility_levels.fetch(
+                  configured_visibility_name
+                )
+    
               group =
                 Group.find_by_full_path(path)
-
+    
               if group.nil?
                 group = Group.new(
                   name: name,
                   path: path,
                   description: description,
-                  visibility_level:
-                    Gitlab::VisibilityLevel::INTERNAL,
+                  visibility_level: configured_visibility,
                   project_creation_level:
                     Gitlab::Access::DEVELOPER
                 )
-
+    
                 if group.respond_to?(:organization_id=) &&
                    defined?(Organizations::Organization)
                   organization =
                     Organizations::Organization.default_organization
-
+    
                   organization ||=
                     Organizations::Organization.first
-
+    
                   group.organization_id =
                     organization.id if organization
                 end
-
+    
                 group.save!
-
+    
                 result[:groups_created] << path
               else
                 changed = false
-
+    
                 if group.name != name
                   group.name = name
                   changed = true
                 end
-
+    
                 if group.description.to_s != description
                   group.description = description
                   changed = true
                 end
-
-                if group.visibility_level !=
-                   Gitlab::VisibilityLevel::INTERNAL
+    
+                #################################################################
+                # A group cannot be less visible than a project it contains.
+                #
+                # The effective desired visibility is the most permissive of:
+                #
+                # - the configured group visibility
+                # - the highest visibility of an existing direct project
+                # - the group's current visibility
+                #
+                # Including current visibility prevents this bootstrap task from
+                # unexpectedly reducing a group that another task intentionally
+                # made more visible.
+                #################################################################
+    
+                direct_project_visibility_levels =
+                  group.projects.pluck(
+                    :visibility_level
+                  ).map(&:to_i)
+    
+                highest_project_visibility =
+                  direct_project_visibility_levels.max ||
+                  Gitlab::VisibilityLevel::PRIVATE
+    
+                effective_visibility =
+                  [
+                    configured_visibility.to_i,
+                    highest_project_visibility.to_i,
+                    group.visibility_level.to_i
+                  ].max
+    
+                if group.visibility_level.to_i !=
+                   effective_visibility
                   group.visibility_level =
-                    Gitlab::VisibilityLevel::INTERNAL
-
+                    effective_visibility
+    
                   changed = true
                 end
-
+    
                 if group.respond_to?(:project_creation_level) &&
-                   group.project_creation_level !=
+                   group.project_creation_level.to_i !=
                    Gitlab::Access::DEVELOPER
                   group.project_creation_level =
                     Gitlab::Access::DEVELOPER
-
+    
                   changed = true
                 end
-
+    
                 if changed
                   group.save!
                   result[:groups_updated] << path
@@ -425,7 +479,7 @@
                   result[:groups_existing] << path
                 end
               end
-
+    
               groups[path] = group
             rescue StandardError => error
               result[:errors] << {
@@ -436,81 +490,81 @@
               }
             end
           end
-
-          #################################################################
+    
+          #####################################################################
           # Create, link, and promote every IdM administrator
-          #################################################################
-
+          #####################################################################
+    
           administrator_definitions.each do |definition|
             username =
               definition.fetch("username")
                         .to_s
                         .strip
                         .downcase
-
+    
             name =
               definition.fetch("name")
                         .to_s
                         .strip
-
+    
             email =
               definition.fetch("email")
                         .to_s
                         .strip
                         .downcase
-
+    
             extern_uid =
               definition.fetch("dn")
                         .to_s
                         .strip
-
+    
             begin
               raise "username is empty" if username.empty?
               raise "name is empty" if name.empty?
               raise "email is empty" if email.empty?
               raise "LDAP DN is empty" if extern_uid.empty?
-
+    
               identity =
                 Identity.find_by(
                   provider: ldap_provider,
                   extern_uid: extern_uid
                 )
-
+    
               username_user =
                 User.find_by(
                   "lower(username) = ?",
                   username
                 )
-
+    
               email_user =
                 User.find_by(
                   "lower(email) = ?",
                   email
                 )
-
+    
               user =
                 identity&.user ||
                 username_user ||
                 email_user
-
+    
               conflicting_users =
                 [
                   identity&.user,
                   username_user,
                   email_user
                 ].compact.uniq
-
+    
               if conflicting_users.length > 1
                 raise(
                   "username, email, and LDAP identity resolve " \
                   "to different GitLab users"
                 )
               end
-
+    
               if user.nil?
                 generated_password =
                   SecureRandom.base64(48)
-
+    
                 user_attributes = {
                   username: username,
                   name: name,
@@ -521,24 +575,24 @@
                   admin: true,
                   skip_confirmation: true
                 }
-
+    
                 if defined?(Organizations::Organization)
                   organization =
                     Organizations::Organization.default_organization
-
+    
                   organization ||=
                     Organizations::Organization.first
-
+    
                   user_attributes[:organization_id] =
                     organization.id if organization
                 end
-
+    
                 if defined?(Users::CreateService)
                   response =
                     Users::CreateService
                       .new(actor, user_attributes)
                       .execute
-
+    
                   if response.respond_to?(:success?)
                     unless response.success?
                       message =
@@ -547,17 +601,17 @@
                         else
                           response.to_s
                         end
-
+    
                       raise(
                         "Users::CreateService failed: #{message}"
                       )
                     end
-
+    
                     payload =
                       response.respond_to?(:payload) ?
                         response.payload :
                         nil
-
+    
                     user =
                       if payload.is_a?(Hash)
                         payload[:user] ||
@@ -569,7 +623,7 @@
                     user = response
                   end
                 end
-
+    
                 if user.nil?
                   user = User.new(
                     username: username,
@@ -580,68 +634,68 @@
                       generated_password,
                     admin: true
                   )
-
+    
                   if user.respond_to?(
                     :assign_personal_namespace
                   ) &&
                      defined?(Organizations::Organization)
                     organization =
                       Organizations::Organization.default_organization
-
+    
                     organization ||=
                       Organizations::Organization.first
-
+    
                     if organization
                       user.assign_personal_namespace(
                         organization
                       )
                     end
                   end
-
+    
                   user.skip_confirmation!
                   user.save!
                 end
-
+    
                 raise(
                   "GitLab user creation returned no user"
                 ) unless user
-
+    
                 result[:users_created] << username
               else
                 user_changed = false
-
+    
                 if user.username.downcase != username
                   raise(
                     "GitLab user #{user.username} conflicts " \
                     "with IdM username #{username}"
                   )
                 end
-
+    
                 if user.email.downcase != email
                   raise(
                     "GitLab user #{username} has email " \
                     "#{user.email}, but IdM specifies #{email}"
                   )
                 end
-
+    
                 if user.name != name
                   user.name = name
                   user_changed = true
                 end
-
+    
                 unless user.admin?
                   user.admin = true
                   user_changed = true
                   result[:users_promoted] << username
                 end
-
+    
                 if user.respond_to?(:confirmed?) &&
                    !user.confirmed?
                   user.skip_confirmation!
                   user.confirm
                   user_changed = true
                 end
-
+    
                 if user_changed
                   user.save!
                   result[:users_updated] << username
@@ -649,17 +703,24 @@
                   result[:users_existing] << username
                 end
               end
-
+    
               unless user.admin?
                 user.update!(admin: true)
-                result[:users_promoted] << username
+    
+                unless result[:users_promoted].include?(username)
+                  result[:users_promoted] << username
+                end
               end
-
+    
+              #################################################################
+              # Reconcile the LDAP identity
+              #################################################################
+    
               ldap_identity =
                 user.identities.find_by(
                   provider: ldap_provider
                 )
-
+    
               if ldap_identity
                 if ldap_identity.extern_uid != extern_uid
                   conflicting_identity =
@@ -667,7 +728,7 @@
                       provider: ldap_provider,
                       extern_uid: extern_uid
                     )
-
+    
                   if conflicting_identity &&
                      conflicting_identity.user_id != user.id
                     raise(
@@ -676,12 +737,12 @@
                       "#{conflicting_identity.user_id}"
                     )
                   end
-
+    
                   ldap_identity.update!(
                     extern_uid: extern_uid
                   )
-
-                  result[:identities_created] << username
+    
+                  result[:identities_updated] << username
                 else
                   result[:identities_existing] << username
                 end
@@ -691,7 +752,7 @@
                     provider: ldap_provider,
                     extern_uid: extern_uid
                   )
-
+    
                 if conflicting_identity &&
                    conflicting_identity.user_id != user.id
                   raise(
@@ -700,37 +761,41 @@
                     "#{conflicting_identity.user_id}"
                   )
                 end
-
+    
                 user.identities.create!(
                   provider: ldap_provider,
                   extern_uid: extern_uid
                 )
-
+    
                 result[:identities_created] << username
               end
-
+    
+              #################################################################
+              # Ensure every administrator remains Owner of each default group
+              #################################################################
+    
               groups.each do |group_path, group|
                 membership =
                   group.members.find_by(
                     user_id: user.id
                   )
-
+    
                 if membership.nil?
                   group.add_owner(user)
-
+    
                   result[:memberships_created] << {
                     username: username,
                     group: group_path,
                     access_level:
                       Gitlab::Access::OWNER
                   }
-                elsif membership.access_level !=
+                elsif membership.access_level.to_i !=
                       Gitlab::Access::OWNER
                   membership.update!(
                     access_level:
                       Gitlab::Access::OWNER
                   )
-
+    
                   result[:memberships_updated] << {
                     username: username,
                     group: group_path,
@@ -756,15 +821,11 @@
               }
             end
           end
-
-          #################################################################
+    
+          #####################################################################
           # Optionally demote LDAP administrators removed from IdM
-          #
-          # This changes instance administrator status only. It does not
-          # remove group memberships because those may have been granted
-          # independently for project ownership.
-          #################################################################
-
+          #####################################################################
+    
           if reconcile_admin_removals
             expected_usernames =
               administrator_definitions
@@ -775,7 +836,7 @@
                             .downcase
                 end
                 .uniq
-
+    
             User
               .joins(:identities)
               .where(
@@ -790,24 +851,26 @@
               )
               .find_each do |user|
                 next if user.username == "root"
-
+    
                 user.update!(admin: false)
-
+    
                 result[:administrators_demoted] <<
                   user.username
               end
           end
-
+    
           puts(
             "GITLAB_IDM_BOOTSTRAP_RESULT=" +
             JSON.generate(result)
           )
-
+    
           exit 1 unless result[:errors].empty?
       environment:
         GITLAB_LDAP_PROVIDER: "{{ gitlab_ldap_provider }}"
+    
         GITLAB_IDM_ADMIN_USERS_JSON: >-
           {{ gitlab_idm_admin_users | to_json }}
+    
         GITLAB_DEFAULT_GROUPS_JSON: >-
           {{
             [
@@ -816,18 +879,21 @@
                 'path': 'redhat-consulting',
                 'description': (
                   'Shared namespace for Red Hat consulting projects.'
-                )
+                ),
+                'visibility': 'internal'
               },
               {
                 'name': 'Image Mode',
                 'path': 'image-mode',
                 'description': (
                   'Shared namespace for Image Mode development projects.'
-                )
+                ),
+                'visibility': 'public'
               }
             ]
             | to_json
           }}
+    
         RECONCILE_ADMIN_REMOVALS: >-
           {{
             gitlab_idm_admin_reconcile_removals
@@ -835,6 +901,7 @@
             | lower
           }}
       register: gitlab_idm_bootstrap_command
+    
       changed_when: >-
         (
           gitlab_idm_bootstrap_command.stdout
@@ -887,6 +954,14 @@
         (
           gitlab_idm_bootstrap_command.stdout
           | regex_search(
+              '"identities_updated":\s*\[(?!\])'
+            )
+        )
+        is not none
+        or
+        (
+          gitlab_idm_bootstrap_command.stdout
+          | regex_search(
               '"memberships_created":\s*\[(?!\])'
             )
         )
@@ -907,7 +982,9 @@
             )
         )
         is not none
-      no_log: false
+    
+      failed_when:
+        - gitlab_idm_bootstrap_command.rc != 0
 
     - name: PHASE 10 | Extract GitLab IdM bootstrap result
       ansible.builtin.set_fact:

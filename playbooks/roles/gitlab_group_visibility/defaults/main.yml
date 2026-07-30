@@ -34,3 +34,8 @@ gitlab_group_visibility_restart_puma: false
 gitlab_group_visibility_script_directory: /var/tmp
 gitlab_group_visibility_script_path: >-
   {{ gitlab_group_visibility_script_directory }}/configure-gitlab-group-visibility.rb
+
+
+gitlab_group_visibility_script_owner: git
+gitlab_group_visibility_script_group: git
+gitlab_group_visibility_script_mode: "0600"

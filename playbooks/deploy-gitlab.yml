@@ -14,3 +14,4 @@
   roles:
     - role: deploy_gitlab
     - role: gitlab_content_bootstrap
+    - role: gitlab_group_visibility

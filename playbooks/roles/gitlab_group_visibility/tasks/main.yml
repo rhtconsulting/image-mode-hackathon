@@ -1,0 +1,100 @@
+---
+###############################################################################
+# Repair GitLab group settings and configure visibility
+###############################################################################
+
+- name: GITLAB GROUP | Validate role variables
+  ansible.builtin.assert:
+    that:
+      - gitlab_group_visibility_group_path is string
+      - gitlab_group_visibility_group_path | trim | length > 0
+      - gitlab_group_visibility_level in ['private', 'internal', 'public']
+      - gitlab_group_visibility_rails_runner_path is string
+      - gitlab_group_visibility_rails_runner_path | trim | length > 0
+    fail_msg: >-
+      GitLab group visibility role variables are invalid. The group path must
+      be non-empty and the visibility level must be private, internal, or
+      public.
+
+- name: GITLAB GROUP | Check GitLab Rails runner
+  ansible.builtin.stat:
+    path: "{{ gitlab_group_visibility_rails_runner_path }}"
+  register: gitlab_group_visibility_rails_runner_status
+
+- name: GITLAB GROUP | Validate GitLab Rails runner
+  ansible.builtin.assert:
+    that:
+      - gitlab_group_visibility_rails_runner_status.stat.exists
+      - gitlab_group_visibility_rails_runner_status.stat.isreg
+      - gitlab_group_visibility_rails_runner_status.stat.executable
+    fail_msg: >-
+      GitLab Rails runner was not found or is not executable at
+      {{ gitlab_group_visibility_rails_runner_path }}.
+
+- name: GITLAB GROUP | Create GitLab backup
+  ansible.builtin.command:
+    argv:
+      - gitlab-backup
+      - create
+  when: gitlab_group_visibility_create_backup | bool
+  register: gitlab_group_visibility_backup
+  changed_when: true
+
+- name: GITLAB GROUP | Install temporary Rails configuration script
+  ansible.builtin.template:
+    src: configure_group_visibility.rb.j2
+    dest: "{{ gitlab_group_visibility_script_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  register: gitlab_group_visibility_script
+
+- name: GITLAB GROUP | Repair group settings and configure visibility
+  ansible.builtin.command:
+    argv:
+      - "{{ gitlab_group_visibility_rails_runner_path }}"
+      - runner
+      - "{{ gitlab_group_visibility_script_path }}"
+  register: gitlab_group_visibility_result
+  changed_when: >-
+    'ANSIBLE_CHANGED=true' in gitlab_group_visibility_result.stdout
+  failed_when:
+    - gitlab_group_visibility_result.rc != 0
+
+- name: GITLAB GROUP | Display configuration result
+  ansible.builtin.debug:
+    var: gitlab_group_visibility_result.stdout_lines
+
+- name: GITLAB GROUP | Verify namespace settings and visibility
+  ansible.builtin.assert:
+    that:
+      - >-
+        ('GITLAB_GROUP_FINAL_VISIBILITY=' ~
+         gitlab_group_visibility_level) in
+        gitlab_group_visibility_result.stdout
+      - >-
+        'GITLAB_NAMESPACE_SETTINGS_ID=' in
+        gitlab_group_visibility_result.stdout
+    fail_msg: >-
+      GitLab group configuration completed without returning the expected
+      verification markers.
+    success_msg: >-
+      GitLab group {{ gitlab_group_visibility_group_path }} has a valid
+      namespace_settings record and is
+      {{ gitlab_group_visibility_level }}.
+
+- name: GITLAB GROUP | Restart GitLab Puma
+  ansible.builtin.command:
+    argv:
+      - "{{ gitlab_group_visibility_service_command }}"
+      - restart
+      - puma
+  when:
+    - gitlab_group_visibility_restart_puma | bool
+    - gitlab_group_visibility_result is changed
+  changed_when: true
+
+- name: GITLAB GROUP | Remove temporary Rails configuration script
+  ansible.builtin.file:
+    path: "{{ gitlab_group_visibility_script_path }}"
+    state: absent

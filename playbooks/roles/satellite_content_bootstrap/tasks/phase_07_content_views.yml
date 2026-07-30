@@ -231,17 +231,43 @@
       - python3
       - -c
       - |
+        import base64
         import json
         import os
         import sys
 
-        content_view = json.loads(
-            os.environ["CONTENT_VIEW_JSON"]
-        )
+        try:
+            content_view_json = base64.b64decode(
+                os.environ["CONTENT_VIEW_JSON_B64"]
+            ).decode("utf-8")
 
-        expected_repositories = json.loads(
-            os.environ["EXPECTED_REPOSITORIES"]
-        )
+            expected_repositories_json = base64.b64decode(
+                os.environ["EXPECTED_REPOSITORIES_B64"]
+            ).decode("utf-8")
+
+            content_view = json.loads(
+                content_view_json
+            )
+
+            expected_repositories = json.loads(
+                expected_repositories_json
+            )
+
+        except Exception as exception:
+            result = {
+                "error": "Unable to decode validation input",
+                "exception_type": type(exception).__name__,
+                "exception": str(exception),
+            }
+
+            print(
+                json.dumps(
+                    result,
+                    sort_keys=True,
+                )
+            )
+
+            sys.exit(3)
 
         repositories_raw = content_view.get(
             "Yum Repositories",
@@ -353,8 +379,12 @@
         if missing_repository_ids:
             sys.exit(2)
   environment:
-    CONTENT_VIEW_JSON: "{{ item.stdout }}"
-    EXPECTED_REPOSITORIES: >-
+    CONTENT_VIEW_JSON_B64: >-
+      {{
+        item.stdout
+        | b64encode
+      }}
+    EXPECTED_REPOSITORIES_B64: >-
       {{
         satellite_content_bootstrap_resolved_repositories
         | selectattr(
@@ -364,6 +394,7 @@
           )
         | list
         | to_json
+        | b64encode
       }}
   loop: "{{ satellite_content_bootstrap_final_content_view_info.results }}"
   loop_control:
@@ -377,17 +408,18 @@
     that:
       - item.rc == 0
     fail_msg: >-
-      Content view {{ item.item.item.content_view }} is missing one or more
-      required repositories.
+      Content view {{ item.item.item.content_view }} repository validation
+      failed with return code {{ item.rc }}.
 
-      Validation result:
+      Validation output:
 
       {{
-        item.stdout
-        | default(
-            item.stderr,
-            true
-          )
+        (
+          item.stdout
+          if item.stdout | default('') | trim | length > 0
+          else item.stderr
+        )
+        | default('No validation output was returned.', true)
         | trim
       }}
     success_msg: >-

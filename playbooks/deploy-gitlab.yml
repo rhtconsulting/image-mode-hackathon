@@ -13,11 +13,13 @@
 
   roles:
     - role: deploy_gitlab
+      tags:
+        - deploy_gitlab
 
     - role: gitlab_content_bootstrap
       tags:
-      - gitlab_content_bootstrap
+        - gitlab_content_bootstrap
 
     - role: patch_gitlab_group_visibility
       tags:
-      - patch_gitlab_group_visibility
+        - patch_gitlab_group_visibility

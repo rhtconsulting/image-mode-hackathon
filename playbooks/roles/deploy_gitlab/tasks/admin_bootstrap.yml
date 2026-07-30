@@ -949,7 +949,7 @@
         fail_msg: >-
           GitLab IdM administrator initialization did not return the
           expected successful structured result.
-      no_log: true
+      no_log: false
 
     #######################################################################
     # Verify accounts, LDAP identities, administrator roles, and groups

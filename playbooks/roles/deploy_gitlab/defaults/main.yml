@@ -215,3 +215,42 @@ gitlab_internal_readiness_url: >-
 
 gitlab_readiness_retries: 60
 gitlab_readiness_delay: 20
+
+###############################################################################
+# GitLab IdM developer bootstrap
+###############################################################################
+
+# Pre-create all eligible IdM users in GitLab and grant non-administrators
+# Developer access to the target GitLab group.
+gitlab_idm_developer_bootstrap_enabled: true
+
+# Search base containing IdM user entries.
+gitlab_ldap_user_base_dn: >-
+  cn=users,cn=accounts,{{ gitlab_ldap_base_dn }}
+
+# LDAP filter used to select users that should receive GitLab access.
+#
+# Excludes common IdM service and disabled account patterns. Adjust this filter
+# if the lab uses an explicit IdM developers group instead of all users.
+gitlab_idm_developer_user_filter: >-
+  (&
+    (objectClass=posixAccount)
+    (uid=*)
+    (mail=*)
+  )
+
+# GitLab group whose projects should be available to developers.
+gitlab_idm_developer_group_path: image-mode
+
+# Specific project expected to inherit Developer access.
+gitlab_idm_developer_project_path: >-
+  {{ gitlab_idm_developer_group_path }}/sample-rhel9-web
+
+# LDAP administrators remain GitLab administrators and group Owners.
+gitlab_idm_developer_exclude_administrators: true
+
+# Existing GitLab access is preserved when it is higher than Developer.
+gitlab_idm_developer_preserve_higher_access: true
+
+# Existing lower direct membership is promoted to Developer.
+gitlab_idm_developer_promote_lower_access: true

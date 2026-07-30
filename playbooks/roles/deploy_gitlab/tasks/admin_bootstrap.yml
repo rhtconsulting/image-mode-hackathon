@@ -928,7 +928,7 @@
             )
             | from_json
           }}
-      no_log: true
+      no_log: false
 
     - name: PHASE 10 | Validate GitLab IdM bootstrap result
       ansible.builtin.assert:
@@ -949,7 +949,7 @@
         fail_msg: >-
           GitLab IdM administrator initialization did not return the
           expected successful structured result.
-      no_log: false
+      no_log: true
 
     #######################################################################
     # Verify accounts, LDAP identities, administrator roles, and groups

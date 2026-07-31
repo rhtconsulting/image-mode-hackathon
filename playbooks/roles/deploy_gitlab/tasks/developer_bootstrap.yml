@@ -824,7 +824,10 @@
       no_log: false
 
     ###########################################################################
-    # Verify every ordinary IdM account has at least Developer access
+    # Verify every ordinary IdM account is resolvable by GitLab's configured
+    # LDAP provider and has at least Developer access. Checking only database
+    # rows is not enough: Git-over-HTTPS must be able to resolve the username
+    # through GitLab's LDAP adapter before the user's first Web UI login.
     ###########################################################################
 
     - name: PHASE 11 | Verify initialized GitLab IdM developers
@@ -852,6 +855,11 @@
             verified: [],
             errors: []
           }
+
+          ldap_adapter =
+            Gitlab::Auth::Ldap::Adapter.new(
+              ldap_provider
+            )
 
           group =
             Group.find_by_full_path(group_path)
@@ -886,6 +894,33 @@
                 raise(
                   "GitLab user does not exist"
                 ) unless user
+
+                if user.respond_to?(:active?) &&
+                   !user.active?
+                  raise(
+                    "GitLab user state #{user.state.inspect} is not active"
+                  )
+                end
+
+                ldap_person =
+                  Gitlab::Auth::Ldap::Person.find_by_uid(
+                    username,
+                    ldap_adapter
+                  )
+
+                raise(
+                  "#{ldap_provider} cannot resolve the IdM username"
+                ) unless ldap_person
+
+                resolved_dn =
+                  ldap_person.dn.to_s.strip
+
+                unless resolved_dn.casecmp?(extern_uid)
+                  raise(
+                    "#{ldap_provider} resolved DN #{resolved_dn.inspect}, " \
+                    "but the GitLab identity expects #{extern_uid.inspect}"
+                  )
+                end
 
                 identity =
                   user.identities.find_by(
@@ -1000,7 +1035,8 @@
             {{ gitlab_idm_developer_project_path }}
           - >-
             All eligible IdM users were pre-created in GitLab, linked to
-            {{ gitlab_ldap_provider }}, and granted at least Developer access.
+            {{ gitlab_ldap_provider }}, resolved successfully through GitLab's
+            LDAP adapter, and granted at least Developer access.
           - >-
             Existing GitLab administrators and Owner or Maintainer memberships
             were preserved.

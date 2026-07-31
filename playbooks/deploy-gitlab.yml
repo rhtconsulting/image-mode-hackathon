@@ -12,14 +12,26 @@
     AWS_DEFAULT_REGION: "{{ aws_region }}"
 
   roles:
+    # Install/configure GitLab, create the image-mode group,
+    # and bootstrap IdM administrators.
     - role: deploy_gitlab
       tags:
         - deploy_gitlab
 
+    # Create image-mode/sample-rhel9-web and seed its content.
     - role: gitlab_content_bootstrap
       tags:
         - gitlab_content_bootstrap
 
+    # Re-enter deploy_gitlab using the post-content task entry point.
+    # This runs developer bootstrap, protected-branch configuration,
+    # and final verification.
+    - role: deploy_gitlab
+      tasks_from: post_content_bootstrap.yml
+      tags:
+        - deploy_gitlab_post_content
+
+    # Reconcile final group/project visibility.
     - role: patch_gitlab_group_visibility
       tags:
         - patch_gitlab_group_visibility

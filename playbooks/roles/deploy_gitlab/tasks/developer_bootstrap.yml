@@ -1043,6 +1043,91 @@
           - >-
             No first-login bootstrap or post-login playbook rerun is required.
 
+    ###########################################################################
+    # Continuously reconcile IdM users created after the Ansible deployment
+    ###########################################################################
+
+    - name: PHASE 11 | Install continuous IdM developer sync script
+      ansible.builtin.copy:
+        src: gitlab-idm-developer-sync.rb
+        dest: /usr/local/libexec/gitlab-idm-developer-sync.rb
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: PHASE 11 | Install continuous IdM developer sync service
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Reconcile Red Hat IdM users into GitLab
+          After=gitlab-runsvdir.service network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          User=root
+          Environment="GITLAB_LDAP_PROVIDER={{ gitlab_ldap_provider }}"
+          Environment="GITLAB_DEVELOPER_GROUP_PATH={{ gitlab_idm_developer_group_path }}"
+          Environment="GITLAB_IDM_USER_FILTER={{ gitlab_idm_developer_user_filter | regex_replace('\\s+', '') }}"
+          ExecStart=/opt/gitlab/bin/gitlab-rails runner /usr/local/libexec/gitlab-idm-developer-sync.rb
+          Nice=10
+          TimeoutStartSec=300
+        dest: /etc/systemd/system/gitlab-idm-developer-sync.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: gitlab_idm_developer_sync_service
+
+    - name: PHASE 11 | Install continuous IdM developer sync timer
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Run GitLab IdM developer reconciliation periodically
+
+          [Timer]
+          OnBootSec=30s
+          OnUnitActiveSec={{ gitlab_idm_developer_sync_interval }}
+          AccuracySec=5s
+          Persistent=true
+          Unit=gitlab-idm-developer-sync.service
+
+          [Install]
+          WantedBy=timers.target
+        dest: /etc/systemd/system/gitlab-idm-developer-sync.timer
+        owner: root
+        group: root
+        mode: "0644"
+      register: gitlab_idm_developer_sync_timer
+
+    - name: PHASE 11 | Reload systemd for IdM developer sync
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: >-
+        gitlab_idm_developer_sync_service.changed or
+        gitlab_idm_developer_sync_timer.changed
+
+    - name: PHASE 11 | Enable continuous IdM developer reconciliation
+      ansible.builtin.systemd_service:
+        name: gitlab-idm-developer-sync.timer
+        enabled: true
+        state: started
+
+    - name: PHASE 11 | Run continuous sync once immediately
+      ansible.builtin.systemd_service:
+        name: gitlab-idm-developer-sync.service
+        state: started
+      changed_when: false
+
+    - name: PHASE 11 | Verify continuous sync timer is active
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - gitlab-idm-developer-sync.timer
+      register: gitlab_idm_developer_sync_timer_status
+      changed_when: false
+      failed_when: gitlab_idm_developer_sync_timer_status.stdout != 'active'
+
   always:
     - name: PHASE 11 | Remove temporary LDAP bind-password file
       ansible.builtin.file:

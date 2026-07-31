@@ -259,3 +259,9 @@ gitlab_idm_developer_preserve_higher_access: true
 
 # Upgrade Guest or Reporter memberships to Developer.
 gitlab_idm_developer_promote_lower_access: true
+
+# Continuously discover IdM users created after the deployment. GitLab's
+# built-in LDAP user sync only updates existing LDAP-linked users; it does not
+# create new GitLab accounts. A one-minute interval bounds first-push delay
+# without requiring another Ansible run.
+gitlab_idm_developer_sync_interval: "1min"

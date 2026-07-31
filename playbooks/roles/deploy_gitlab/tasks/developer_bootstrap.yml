@@ -1223,7 +1223,6 @@
           User=root
           Environment="GITLAB_LDAP_PROVIDER={{ gitlab_ldap_provider }}"
           Environment="GITLAB_DEVELOPER_GROUP_PATH={{ gitlab_idm_developer_group_path }}"
-          Environment="GITLAB_IDM_USER_FILTER={{ gitlab_idm_developer_user_filter | regex_replace('\\s+', '') }}"
           ExecStart=/opt/gitlab/bin/gitlab-rails runner /usr/local/libexec/gitlab-idm-developer-sync.rb
           Nice=10
           TimeoutStartSec=300

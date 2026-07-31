@@ -1,11 +1,31 @@
-###########################################################################
+---
 ###############################################################################
-# PHASE 11 | Bootstrap all IdM developers into GitLab
+# PHASE 11 | Bootstrap IdM ipausers as GitLab developers
 ###############################################################################
 
 - name: PHASE 11 | Bootstrap GitLab developers from IdM
   when: gitlab_idm_developer_bootstrap_enabled | bool
   block:
+    ###########################################################################
+    # Validate ipausers bootstrap configuration
+    ###########################################################################
+
+    - name: PHASE 11 | Validate IdM ipausers bootstrap configuration
+      ansible.builtin.assert:
+        that:
+          - gitlab_ldap_user_base | default('') | length > 0
+          - gitlab_idm_developer_group_cn | default('') | length > 0
+          - gitlab_idm_developer_group_dn | default('') | length > 0
+          - gitlab_idm_developer_group_dn is match(
+              '^cn=[^,]+,cn=groups,cn=accounts,'
+            )
+          - gitlab_idm_developer_user_filter | default('') | length > 0
+          - gitlab_idm_developer_group_path | default('') | length > 0
+        fail_msg: >-
+          IdM developer bootstrap configuration is incomplete. Confirm the
+          ipausers group DN, LDAP user base, LDAP filter, and target GitLab
+          group path in roles/deploy_gitlab/defaults/main.yml.
+
     ###########################################################################
     # Create secure LDAP bind-password file
     ###########################################################################
@@ -28,10 +48,10 @@
       no_log: true
 
     ###########################################################################
-    # Query every eligible IdM user
+    # Query members of IdM's default ipausers group
     ###########################################################################
 
-    - name: PHASE 11 | Query eligible IdM users
+    - name: PHASE 11 | Query IdM ipausers members
       ansible.builtin.command:
         argv:
           - ldapsearch
@@ -46,7 +66,7 @@
           - -y
           - "{{ gitlab_developer_bootstrap_password_file.path }}"
           - -b
-          - "{{ gitlab_ldap_user_base_dn }}"
+          - "{{ gitlab_ldap_user_base }}"
           - -s
           - one
           - "{{ gitlab_idm_developer_user_filter | regex_replace('\\s+', '') }}"
@@ -56,13 +76,13 @@
           - mail
       register: gitlab_idm_developer_ldap_query
       changed_when: false
-      no_log: false
+      no_log: true
 
     ###########################################################################
     # Parse LDAP LDIF records
     ###########################################################################
 
-    - name: PHASE 11 | Parse eligible IdM user records
+    - name: PHASE 11 | Parse IdM ipausers records
       ansible.builtin.command:
         argv:
           - python3
@@ -124,13 +144,13 @@
       changed_when: false
       no_log: true
 
-    - name: PHASE 11 | Store eligible IdM user definitions
+    - name: PHASE 11 | Store IdM ipausers definitions
       ansible.builtin.set_fact:
         gitlab_idm_all_user_definitions: >-
           {{ gitlab_idm_developer_parser.stdout | from_json }}
       no_log: true
 
-    - name: PHASE 11 | Validate eligible IdM user definitions
+    - name: PHASE 11 | Validate IdM ipausers definitions
       ansible.builtin.assert:
         that:
           - gitlab_idm_all_user_definitions | length > 0
@@ -176,7 +196,7 @@
           }}
       no_log: true
 
-    - name: PHASE 11 | Build ordinary IdM developer definitions
+    - name: PHASE 11 | Build non-administrator ipausers definitions
       ansible.builtin.set_fact:
         gitlab_idm_developer_users: >-
           {%- set developers = [] -%}

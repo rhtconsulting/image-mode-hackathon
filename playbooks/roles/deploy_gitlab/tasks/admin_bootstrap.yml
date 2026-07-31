@@ -2033,7 +2033,7 @@
           - gitlab_idm_developer_bootstrap_result.errors | length == 0
         fail_msg: >-
           GitLab IdM developer initialization returned one or more errors.
-      no_log: true
+      no_log: false
 
     ###########################################################################
     # Verify every ordinary IdM account has at least Developer access

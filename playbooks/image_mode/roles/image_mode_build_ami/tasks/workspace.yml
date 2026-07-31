@@ -13,7 +13,6 @@
     group: root
     mode: "0755"
   loop:
-    - "{{ Containerfile.j2 }}"
     - "{{ image_mode_workspace }}"
     - "{{ image_mode_files_directory }}"
     - "{{ image_mode_output_directory }}"

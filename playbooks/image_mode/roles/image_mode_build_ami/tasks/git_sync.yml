@@ -302,24 +302,22 @@
       - "{{ image_mode_git_checkout_directory_resolved }}"
       - add
       - --all
-  when: image_mode_git_changes_detected | bool
   changed_when: true
 
-- name: IMAGE MODE GIT | Commit successful build source
+- name: IMAGE MODE GIT | Commit successful build source on every run
   ansible.builtin.command:
     argv:
       - git
       - -C
       - "{{ image_mode_git_checkout_directory_resolved }}"
       - commit
+      - --allow-empty
       - --message
       - "{{ image_mode_git_commit_message }}"
   register: image_mode_git_commit_result
-  when: image_mode_git_changes_detected | bool
   changed_when: image_mode_git_commit_result.rc == 0
 
 - name: IMAGE MODE GIT | Push successful build source
-  when: image_mode_git_changes_detected | bool
   block:
     - name: IMAGE MODE GIT | Create temporary authentication directory
       ansible.builtin.tempfile:

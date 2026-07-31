@@ -11,27 +11,44 @@
     LC_ALL: C.UTF-8
     AWS_DEFAULT_REGION: "{{ aws_region }}"
 
-  roles:
-    # Install/configure GitLab, create the image-mode group,
-    # and bootstrap IdM administrators.
-    - role: deploy_gitlab
+  tasks:
+    - name: Install GitLab and bootstrap administrators
+      ansible.builtin.include_role:
+        name: deploy_gitlab
+        apply:
+          tags:
+            - deploy_gitlab
       tags:
+        - always
         - deploy_gitlab
 
-    # Create image-mode/sample-rhel9-web and seed its content.
-    - role: gitlab_content_bootstrap
+    - name: Create and seed GitLab project content
+      ansible.builtin.include_role:
+        name: gitlab_content_bootstrap
+        apply:
+          tags:
+            - gitlab_content_bootstrap
       tags:
+        - always
         - gitlab_content_bootstrap
 
-    # Re-enter deploy_gitlab using the post-content task entry point.
-    # This runs developer bootstrap, protected-branch configuration,
-    # and final verification.
-    - role: deploy_gitlab
-      tasks_from: post_content_bootstrap.yml
+    - name: Bootstrap developers and configure project access
+      ansible.builtin.include_role:
+        name: deploy_gitlab
+        tasks_from: post_content_bootstrap.yml
+        apply:
+          tags:
+            - deploy_gitlab_post_content
       tags:
+        - always
         - deploy_gitlab_post_content
 
-    # Reconcile final group/project visibility.
-    - role: patch_gitlab_group_visibility
+    - name: Patch GitLab group and project visibility
+      ansible.builtin.include_role:
+        name: patch_gitlab_group_visibility
+        apply:
+          tags:
+            - patch_gitlab_group_visibility
       tags:
+        - always
         - patch_gitlab_group_visibility

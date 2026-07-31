@@ -45,7 +45,7 @@
         owner: root
         group: root
         mode: "0600"
-      no_log: true
+      no_log: false
 
     ###########################################################################
     # Query members of IdM's default ipausers group

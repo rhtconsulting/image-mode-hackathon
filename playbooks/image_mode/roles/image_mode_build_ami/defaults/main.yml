@@ -168,3 +168,10 @@ image_mode_ami_tags:
 image_mode_base_images:
   "9": "registry.redhat.io/rhel9/rhel-bootc:latest"
   "10": "registry.redhat.io/rhel10/rhel-bootc:latest"
+
+###############################################################################
+# GitLab synchronization
+###############################################################################
+
+# Publish successful image build sources to GitLab.
+image_mode_git_sync_enabled: true

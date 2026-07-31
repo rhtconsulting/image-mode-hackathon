@@ -682,6 +682,38 @@
           from {{ quay_registry_ldap_secret_name | trim }}.
       no_log: true
 
+    - name: Set IdM non-admin credentials from LDAP secret
+      ansible.builtin.set_fact:
+        idm_normal_username: >-
+          {{
+            quay_registry_ldap_credentials.username
+            | string
+            | trim
+          }}
+
+        idm_normal_password: >-
+          {{
+            quay_registry_ldap_credentials.password
+            | string
+            | trim
+          }}
+      no_log: true
+
+    - name: Validate IdM non-admin credentials
+      ansible.builtin.assert:
+        that:
+          - idm_normal_username | string | trim | length > 0
+          - idm_normal_password | string | trim | length > 0
+          - idm_normal_username == quay_registry_ldap_username
+          - idm_normal_username != "None"
+          - idm_normal_password != "None"
+        fail_msg: >-
+          The IdM non-admin credentials could not be resolved from AWS
+          Secrets Manager secret
+          '{{ quay_registry_ldap_secret_name | trim }}'.
+      no_log: true
+
+
     ###########################################################################
     # Read Terraform-generated SSH private key
     ###########################################################################

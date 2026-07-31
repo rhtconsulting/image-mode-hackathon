@@ -7,6 +7,47 @@
   when: gitlab_idm_developer_bootstrap_enabled | bool
   block:
     ###########################################################################
+    # Resolve LDAP bind password for standalone Phase 11 execution
+    ###########################################################################
+
+    - name: PHASE 11 | Retrieve IdM LDAP bind password when not already loaded
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ gitlab_idm_admin_password_secret_name }}"
+          - --region
+          - "{{ aws_region }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: gitlab_idm_developer_password_lookup
+      when: gitlab_ldap_bind_password | default('') | length == 0
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 11 | Store retrieved IdM LDAP bind password
+      ansible.builtin.set_fact:
+        gitlab_ldap_bind_password: >-
+          {{ gitlab_idm_developer_password_lookup.stdout | trim }}
+      when: gitlab_idm_developer_password_lookup.stdout is defined
+      no_log: true
+
+    - name: PHASE 11 | Validate IdM LDAP bind password
+      ansible.builtin.assert:
+        that:
+          - gitlab_ldap_bind_password | default('') | length > 0
+          - gitlab_ldap_bind_password not in ['None', 'null']
+        fail_msg: >-
+          The IdM LDAP bind password was not already loaded and could not be
+          retrieved from AWS Secrets Manager secret
+          {{ gitlab_idm_admin_password_secret_name }}.
+      no_log: true
+
+    ###########################################################################
     # Validate ipausers bootstrap configuration
     ###########################################################################
 

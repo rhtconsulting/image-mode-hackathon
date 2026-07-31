@@ -24,5 +24,11 @@
   ansible.builtin.import_tasks: ami.yml
   when: image_mode_build_required | bool
 
+- name: IMAGE MODE AMI | Synchronize successful build source with GitLab
+  ansible.builtin.import_tasks: git_sync.yml
+  when:
+    - image_mode_build_required | bool
+    - image_mode_git_sync_enabled | bool
+
 - name: IMAGE MODE AMI | Publish final result
   ansible.builtin.import_tasks: result.yml

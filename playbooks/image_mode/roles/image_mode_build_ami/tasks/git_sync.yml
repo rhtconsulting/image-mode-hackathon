@@ -1,0 +1,586 @@
+---
+###############################################################################
+# Synchronize successfully built Image Mode source with GitLab
+#
+# This task file runs only after:
+#
+#   1. The bootc container image was built and pushed successfully.
+#   2. The AWS AMI was built and registered successfully.
+#
+# The GitLab repository is public for clone and fetch operations.
+#
+# The push operation uses the IdM-backed GitLab account injected by the AAP
+# credential through:
+#
+#   IDM_ADMIN_USERNAME
+#   IDM_ADMIN_PASSWORD
+#
+# Expected values:
+#
+#   IDM_ADMIN_USERNAME=image-builder
+#   IDM_ADMIN_PASSWORD=<IdM password for image-builder>
+#
+# Build output directories and disk images are intentionally excluded from
+# synchronization and are also protected by the generated .gitignore file.
+###############################################################################
+
+###############################################################################
+# Resolve GitLab server from inventory
+###############################################################################
+
+- name: IMAGE MODE GIT | Validate GitLab inventory group
+  ansible.builtin.assert:
+    that:
+      - groups['gitlab'] is defined
+      - groups['gitlab'] | length > 0
+    fail_msg: >-
+      The Ansible inventory must contain at least one host in the gitlab group.
+
+- name: IMAGE MODE GIT | Select GitLab inventory host
+  ansible.builtin.set_fact:
+    image_mode_gitlab_inventory_host: "{{ groups['gitlab'] | first }}"
+
+- name: IMAGE MODE GIT | Resolve GitLab hostname
+  ansible.builtin.set_fact:
+    image_mode_gitlab_hostname_resolved: >-
+      {{
+        hostvars[image_mode_gitlab_inventory_host].gitlab_hostname
+        | default(
+            hostvars[image_mode_gitlab_inventory_host].public_tls_fqdn,
+            true
+          )
+        | default(
+            image_mode_gitlab_inventory_host,
+            true
+          )
+      }}
+
+###############################################################################
+# Resolve repository and credential settings
+###############################################################################
+
+- name: IMAGE MODE GIT | Resolve repository settings
+  ansible.builtin.set_fact:
+    image_mode_git_repository_url_resolved: >-
+      https://{{ image_mode_gitlab_hostname_resolved
+      }}/{{ image_mode_gitlab_namespace
+      }}/{{ image_mode_gitlab_project }}.git
+    image_mode_git_checkout_directory_resolved: >-
+      {{
+        image_mode_git_checkout_directory
+        | default(
+            image_mode_workspace_root
+            ~ '/git/'
+            ~ image_mode_gitlab_project,
+            true
+          )
+      }}
+
+- name: IMAGE MODE GIT | Read injected IdM-backed GitLab credentials
+  ansible.builtin.set_fact:
+    image_mode_git_username_resolved: >-
+      {{ lookup('ansible.builtin.env', 'IDM_ADMIN_USERNAME') }}
+    image_mode_git_password_resolved: >-
+      {{ lookup('ansible.builtin.env', 'IDM_ADMIN_PASSWORD') }}
+  no_log: true
+
+###############################################################################
+# Validate synchronization inputs
+###############################################################################
+
+- name: IMAGE MODE GIT | Validate synchronization configuration
+  ansible.builtin.assert:
+    that:
+      - image_mode_gitlab_hostname_resolved | length > 0
+      - image_mode_gitlab_namespace | length > 0
+      - image_mode_gitlab_project | length > 0
+      - image_mode_git_branch | length > 0
+      - image_mode_git_runtime_user | length > 0
+      - image_mode_git_commit_name | length > 0
+      - image_mode_git_commit_email | length > 0
+      - image_mode_git_commit_message | length > 0
+      - image_mode_git_username_resolved | length > 0
+      - image_mode_git_password_resolved | length > 0
+      - image_mode_git_checkout_directory_resolved | length > 0
+      - image_mode_git_checkout_directory_resolved != image_mode_workspace
+      - not image_mode_git_checkout_directory_resolved.startswith(
+          image_mode_workspace ~ '/'
+        )
+    fail_msg: >-
+      GitLab synchronization configuration is incomplete. Confirm that the
+      gitlab inventory group exists, the repository settings are defined, and
+      the Image Mode IdM credential is attached to the AAP job template.
+  no_log: true
+
+###############################################################################
+# Validate generated workspace
+###############################################################################
+
+- name: IMAGE MODE GIT | Inspect generated Image Mode workspace
+  ansible.builtin.stat:
+    path: "{{ image_mode_workspace }}"
+  register: image_mode_git_workspace_status
+
+- name: IMAGE MODE GIT | Validate generated Image Mode workspace
+  ansible.builtin.assert:
+    that:
+      - image_mode_git_workspace_status.stat.exists
+      - image_mode_git_workspace_status.stat.isdir
+    fail_msg: >-
+      The generated Image Mode workspace {{ image_mode_workspace }} does not
+      exist or is not a directory.
+
+- name: IMAGE MODE GIT | Inspect generated Containerfile
+  ansible.builtin.stat:
+    path: "{{ image_mode_containerfile_path }}"
+  register: image_mode_git_containerfile_status
+
+- name: IMAGE MODE GIT | Validate generated Containerfile
+  ansible.builtin.assert:
+    that:
+      - image_mode_git_containerfile_status.stat.exists
+      - image_mode_git_containerfile_status.stat.isreg
+    fail_msg: >-
+      The generated Containerfile {{ image_mode_containerfile_path }} does not
+      exist. The successful build source cannot be published to GitLab.
+
+###############################################################################
+# Validate local IdM image-builder account
+###############################################################################
+
+- name: IMAGE MODE GIT | Resolve local image-builder account
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ image_mode_git_runtime_user }}"
+
+- name: IMAGE MODE GIT | Validate local image-builder account
+  ansible.builtin.assert:
+    that:
+      - image_mode_git_runtime_user in ansible_facts.getent_passwd
+    fail_msg: >-
+      The local account {{ image_mode_git_runtime_user }} cannot be resolved on
+      {{ inventory_hostname }}. Confirm that the host is enrolled in IdM and
+      that SSSD can resolve the image-builder user.
+
+###############################################################################
+# Install synchronization tools
+###############################################################################
+
+- name: IMAGE MODE GIT | Install Git synchronization packages
+  ansible.builtin.package:
+    name:
+      - git
+      - rsync
+    state: present
+
+###############################################################################
+# Prepare repository checkout directory
+###############################################################################
+
+- name: IMAGE MODE GIT | Create repository checkout parent directory
+  ansible.builtin.file:
+    path: "{{ image_mode_git_checkout_directory_resolved | dirname }}"
+    state: directory
+    owner: "{{ image_mode_git_runtime_user }}"
+    group: "{{ image_mode_git_runtime_user }}"
+    mode: "0750"
+
+- name: IMAGE MODE GIT | Inspect existing repository checkout
+  ansible.builtin.stat:
+    path: "{{ image_mode_git_checkout_directory_resolved }}/.git"
+  register: image_mode_git_checkout_status
+
+- name: IMAGE MODE GIT | Remove invalid repository checkout
+  ansible.builtin.file:
+    path: "{{ image_mode_git_checkout_directory_resolved }}"
+    state: absent
+  when: not image_mode_git_checkout_status.stat.exists
+
+###############################################################################
+# Clone or update the public GitLab repository
+###############################################################################
+
+- name: IMAGE MODE GIT | Clone or refresh public GitLab repository
+  ansible.builtin.git:
+    repo: "{{ image_mode_git_repository_url_resolved }}"
+    dest: "{{ image_mode_git_checkout_directory_resolved }}"
+    version: "{{ image_mode_git_branch }}"
+    single_branch: true
+    update: true
+    force: true
+    accept_hostkey: true
+  become: true
+  become_user: "{{ image_mode_git_runtime_user }}"
+  register: image_mode_git_clone_result
+
+- name: IMAGE MODE GIT | Configure repository origin
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ image_mode_git_checkout_directory_resolved }}"
+      - remote
+      - set-url
+      - origin
+      - "{{ image_mode_git_repository_url_resolved }}"
+  become: true
+  become_user: "{{ image_mode_git_runtime_user }}"
+  changed_when: false
+
+- name: IMAGE MODE GIT | Fetch latest repository state
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ image_mode_git_checkout_directory_resolved }}"
+      - fetch
+      - --prune
+      - origin
+      - "{{ image_mode_git_branch }}"
+  become: true
+  become_user: "{{ image_mode_git_runtime_user }}"
+  changed_when: false
+
+- name: IMAGE MODE GIT | Check out repository branch
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ image_mode_git_checkout_directory_resolved }}"
+      - checkout
+      - -B
+      - "{{ image_mode_git_branch }}"
+      - "origin/{{ image_mode_git_branch }}"
+  become: true
+  become_user: "{{ image_mode_git_runtime_user }}"
+  changed_when: false
+
+- name: IMAGE MODE GIT | Reset checkout to remote branch
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ image_mode_git_checkout_directory_resolved }}"
+      - reset
+      - --hard
+      - "origin/{{ image_mode_git_branch }}"
+  become: true
+  become_user: "{{ image_mode_git_runtime_user }}"
+  changed_when: false
+
+- name: IMAGE MODE GIT | Remove untracked repository content
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ image_mode_git_checkout_directory_resolved }}"
+      - clean
+      - -d
+      - -f
+  become: true
+  become_user: "{{ image_mode_git_runtime_user }}"
+  changed_when: false
+
+###############################################################################
+# Synchronize successful build source
+#
+# Build outputs are excluded from the checkout. The trailing slashes on the
+# source and destination paths are intentional.
+###############################################################################
+
+- name: IMAGE MODE GIT | Synchronize successful build source
+  ansible.builtin.command:
+    argv:
+      - rsync
+      - --archive
+      - --delete
+      - --itemize-changes
+      - --exclude=.git/
+      - --exclude=outputs/
+      - --exclude=output/
+      - --exclude=*.raw
+      - --exclude=*.qcow2
+      - --exclude=*.img
+      - --exclude=*.iso
+      - --exclude=*.vmdk
+      - --exclude=*.vhd
+      - --exclude=*.vhdx
+      - --exclude=*.ova
+      - --exclude=*.tar
+      - --exclude=*.tar.gz
+      - --exclude=*.xz
+      - --exclude=*.zst
+      - --exclude=*.log
+      - "{{ image_mode_workspace }}/"
+      - "{{ image_mode_git_checkout_directory_resolved }}/"
+  register: image_mode_git_rsync_result
+  changed_when: >-
+    image_mode_git_rsync_result.stdout_lines
+    | reject('match', '^$')
+    | list
+    | length > 0
+
+- name: IMAGE MODE GIT | Set repository ownership
+  ansible.builtin.file:
+    path: "{{ image_mode_git_checkout_directory_resolved }}"
+    state: directory
+    owner: "{{ image_mode_git_runtime_user }}"
+    group: "{{ image_mode_git_runtime_user }}"
+    recurse: true
+
+###############################################################################
+# Protect repository from generated AMI artifacts
+###############################################################################
+
+- name: IMAGE MODE GIT | Create repository gitignore
+  ansible.builtin.copy:
+    dest: "{{ image_mode_git_checkout_directory_resolved }}/.gitignore"
+    owner: "{{ image_mode_git_runtime_user }}"
+    group: "{{ image_mode_git_runtime_user }}"
+    mode: "0644"
+    content: |
+      ###############################################################################
+      # Image Mode build output directories
+      ###############################################################################
+
+      outputs/
+      output/
+
+      ###############################################################################
+      # Disk and virtual-machine image artifacts
+      ###############################################################################
+
+      *.raw
+      *.qcow2
+      *.img
+      *.iso
+      *.vmdk
+      *.vhd
+      *.vhdx
+      *.ova
+
+      ###############################################################################
+      # Compressed build artifacts
+      ###############################################################################
+
+      *.tar
+      *.tar.gz
+      *.xz
+      *.zst
+
+      ###############################################################################
+      # Temporary and local files
+      ###############################################################################
+
+      *.log
+      *.tmp
+      *~
+      .DS_Store
+      __pycache__/
+      *.pyc
+
+###############################################################################
+# Configure Git commit identity
+###############################################################################
+
+- name: IMAGE MODE GIT | Configure Git commit username
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ image_mode_git_checkout_directory_resolved }}"
+      - config
+      - user.name
+      - "{{ image_mode_git_commit_name }}"
+  become: true
+  become_user: "{{ image_mode_git_runtime_user }}"
+  changed_when: false
+
+- name: IMAGE MODE GIT | Configure Git commit email
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ image_mode_git_checkout_directory_resolved }}"
+      - config
+      - user.email
+      - "{{ image_mode_git_commit_email }}"
+  become: true
+  become_user: "{{ image_mode_git_runtime_user }}"
+  changed_when: false
+
+###############################################################################
+# Detect generated changes
+###############################################################################
+
+- name: IMAGE MODE GIT | Check repository status
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ image_mode_git_checkout_directory_resolved }}"
+      - status
+      - --porcelain
+  become: true
+  become_user: "{{ image_mode_git_runtime_user }}"
+  register: image_mode_git_status
+  changed_when: false
+
+- name: IMAGE MODE GIT | Record repository change state
+  ansible.builtin.set_fact:
+    image_mode_git_changes_detected: >-
+      {{ image_mode_git_status.stdout | trim | length > 0 }}
+
+###############################################################################
+# Commit successful build source
+###############################################################################
+
+- name: IMAGE MODE GIT | Stage successful build source
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ image_mode_git_checkout_directory_resolved }}"
+      - add
+      - --all
+  become: true
+  become_user: "{{ image_mode_git_runtime_user }}"
+  when: image_mode_git_changes_detected | bool
+  changed_when: true
+
+- name: IMAGE MODE GIT | Commit successful build source
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ image_mode_git_checkout_directory_resolved }}"
+      - commit
+      - --message
+      - "{{ image_mode_git_commit_message }}"
+  become: true
+  become_user: "{{ image_mode_git_runtime_user }}"
+  register: image_mode_git_commit_result
+  when: image_mode_git_changes_detected | bool
+  changed_when: image_mode_git_commit_result.rc == 0
+
+###############################################################################
+# Push commit using the injected IdM-backed GitLab credentials
+###############################################################################
+
+- name: IMAGE MODE GIT | Push successful build source
+  when: image_mode_git_changes_detected | bool
+  block:
+
+    - name: IMAGE MODE GIT | Create temporary authentication directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: image-mode-git-auth-
+      register: image_mode_git_auth_directory
+      no_log: true
+
+    - name: IMAGE MODE GIT | Set authentication directory ownership
+      ansible.builtin.file:
+        path: "{{ image_mode_git_auth_directory.path }}"
+        state: directory
+        owner: "{{ image_mode_git_runtime_user }}"
+        group: "{{ image_mode_git_runtime_user }}"
+        mode: "0700"
+      no_log: true
+
+    - name: IMAGE MODE GIT | Write temporary Git username
+      ansible.builtin.copy:
+        dest: "{{ image_mode_git_auth_directory.path }}/username"
+        content: "{{ image_mode_git_username_resolved }}"
+        owner: "{{ image_mode_git_runtime_user }}"
+        group: "{{ image_mode_git_runtime_user }}"
+        mode: "0600"
+      no_log: true
+
+    - name: IMAGE MODE GIT | Write temporary Git password
+      ansible.builtin.copy:
+        dest: "{{ image_mode_git_auth_directory.path }}/password"
+        content: "{{ image_mode_git_password_resolved }}"
+        owner: "{{ image_mode_git_runtime_user }}"
+        group: "{{ image_mode_git_runtime_user }}"
+        mode: "0600"
+      no_log: true
+
+    - name: IMAGE MODE GIT | Create Git askpass helper
+      ansible.builtin.copy:
+        dest: "{{ image_mode_git_auth_directory.path }}/askpass.sh"
+        owner: "{{ image_mode_git_runtime_user }}"
+        group: "{{ image_mode_git_runtime_user }}"
+        mode: "0700"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          case "${1:-}" in
+            *Username*|*username*)
+              cat "{{ image_mode_git_auth_directory.path }}/username"
+              ;;
+            *Password*|*password*)
+              cat "{{ image_mode_git_auth_directory.path }}/password"
+              ;;
+            *)
+              exit 1
+              ;;
+          esac
+      no_log: true
+
+    - name: IMAGE MODE GIT | Push committed source to GitLab
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ image_mode_git_checkout_directory_resolved }}"
+          - push
+          - origin
+          - "HEAD:{{ image_mode_git_branch }}"
+      environment:
+        GIT_ASKPASS: "{{ image_mode_git_auth_directory.path }}/askpass.sh"
+        GIT_TERMINAL_PROMPT: "0"
+      become: true
+      become_user: "{{ image_mode_git_runtime_user }}"
+      register: image_mode_git_push_result
+      changed_when: true
+      no_log: true
+
+  always:
+
+    - name: IMAGE MODE GIT | Remove temporary authentication directory
+      ansible.builtin.file:
+        path: "{{ image_mode_git_auth_directory.path }}"
+        state: absent
+      when:
+        - image_mode_git_auth_directory is defined
+        - image_mode_git_auth_directory.path is defined
+      no_log: true
+
+###############################################################################
+# Read and publish Git synchronization result
+###############################################################################
+
+- name: IMAGE MODE GIT | Read published commit
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ image_mode_git_checkout_directory_resolved }}"
+      - rev-parse
+      - HEAD
+  become: true
+  become_user: "{{ image_mode_git_runtime_user }}"
+  register: image_mode_git_commit_sha
+  changed_when: false
+
+- name: IMAGE MODE GIT | Publish synchronization result
+  ansible.builtin.set_stats:
+    data:
+      image_mode_git_repository: "{{ image_mode_git_repository_url_resolved }}"
+      image_mode_git_branch_published: "{{ image_mode_git_branch }}"
+      image_mode_git_commit_published: >-
+        {{ image_mode_git_commit_sha.stdout | trim }}
+      image_mode_git_changes_published: >-
+        {{ image_mode_git_changes_detected | bool }}
+    per_host: false

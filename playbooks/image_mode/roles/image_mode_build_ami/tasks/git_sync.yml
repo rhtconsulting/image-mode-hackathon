@@ -3,8 +3,8 @@
 # Synchronize Image Mode build source with GitLab.
 #
 # Authentication is supplied by the AAP credential as Ansible variables:
-#   idm_admin_username
-#   idm_admin_password
+#   idm_normal_username
+#   idm_normal_password
 #
 # The IdM identity is used only for HTTPS Git authentication. It does not need
 # to exist as a local operating-system account on the managed host.
@@ -59,8 +59,8 @@
       - image_mode_git_commit_name | length > 0
       - image_mode_git_commit_email | length > 0
       - image_mode_git_commit_message | length > 0
-      - idm_admin_username | default('') | length > 0
-      - idm_admin_password | default('') | length > 0
+      - idm_normal_username | default('') | length > 0
+      - idm_normal_password | default('') | length > 0
       - image_mode_git_checkout_directory_resolved | length > 0
       - image_mode_git_checkout_directory_resolved != image_mode_workspace
       - not image_mode_git_checkout_directory_resolved.startswith(
@@ -69,7 +69,7 @@
     fail_msg: >-
       GitLab synchronization configuration is incomplete. Confirm the GitLab
       inventory host variables and repository settings and verify that the AAP
-      IdM credential injects idm_admin_username and idm_admin_password.
+      IdM credential injects idm_normal_username and idm_normal_password.
   no_log: false
 
 - name: IMAGE MODE GIT | Inspect generated Image Mode workspace
@@ -360,8 +360,8 @@
       environment:
         GIT_ASKPASS: "{{ image_mode_git_auth_directory.path }}/askpass.sh"
         GIT_TERMINAL_PROMPT: "0"
-        IMAGE_MODE_GIT_USERNAME: "{{ idm_admin_username }}"
-        IMAGE_MODE_GIT_PASSWORD: "{{ idm_admin_password }}"
+        IMAGE_MODE_GIT_USERNAME: "{{ idm_normal_username }}"
+        IMAGE_MODE_GIT_PASSWORD: "{{ idm_normal_password }}"
       register: image_mode_git_push_result
       changed_when: true
       no_log: false

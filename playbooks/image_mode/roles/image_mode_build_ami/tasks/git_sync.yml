@@ -364,7 +364,7 @@
         IMAGE_MODE_GIT_PASSWORD: "{{ idm_admin_password }}"
       register: image_mode_git_push_result
       changed_when: true
-      no_log: true
+      no_log: false
 
   always:
     - name: IMAGE MODE GIT | Remove temporary authentication directory

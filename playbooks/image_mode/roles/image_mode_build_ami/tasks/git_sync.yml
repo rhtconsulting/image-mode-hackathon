@@ -70,7 +70,7 @@
       GitLab synchronization configuration is incomplete. Confirm the GitLab
       inventory host variables and repository settings and verify that the AAP
       IdM credential injects idm_admin_username and idm_admin_password.
-  no_log: true
+  no_log: false
 
 - name: IMAGE MODE GIT | Inspect generated Image Mode workspace
   ansible.builtin.stat:

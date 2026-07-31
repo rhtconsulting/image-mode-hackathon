@@ -13,7 +13,7 @@
 - name: IMAGE MODE GIT | Extract domain from current image-builder hostname
   ansible.builtin.set_fact:
     image_mode_current_host_domain: >-
-      {{ inventory_hostname | regex_replace('^[^.]+\\.', '') }}
+      {{ inventory_hostname.split('.')[1:] | join('.') }}
 
 - name: IMAGE MODE GIT | Validate hostname-based GitLab discovery inputs
   ansible.builtin.assert:

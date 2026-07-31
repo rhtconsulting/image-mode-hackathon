@@ -10,16 +10,22 @@
 # to exist as a local operating-system account on the managed host.
 ###############################################################################
 
-- name: IMAGE MODE GIT | Validate GitLab inventory group
+- name: IMAGE MODE GIT | Validate configured GitLab inventory group
   ansible.builtin.assert:
     that:
-      - groups.get('gitlab', []) | length > 0
+      - image_mode_gitlab_inventory_group | default('') | length > 0
+      - image_mode_gitlab_inventory_group in groups
+      - groups[image_mode_gitlab_inventory_group] | length > 0
     fail_msg: >-
-      The Ansible inventory must contain at least one host in the gitlab group.
+      The configured GitLab inventory group
+      '{{ image_mode_gitlab_inventory_group | default('UNDEFINED') }}' does not
+      exist or contains no hosts. Set image_mode_gitlab_inventory_group in the
+      role defaults to the exact GitLab group name in the active AAP inventory.
 
 - name: IMAGE MODE GIT | Select GitLab inventory host
   ansible.builtin.set_fact:
-    image_mode_gitlab_inventory_host: "{{ groups['gitlab'] | first }}"
+    image_mode_gitlab_inventory_host: >-
+      {{ groups[image_mode_gitlab_inventory_group] | first }}
 
 - name: IMAGE MODE GIT | Resolve GitLab hostname
   ansible.builtin.set_fact:
@@ -68,8 +74,8 @@
           image_mode_workspace ~ '/'
         )
     fail_msg: >-
-      GitLab synchronization configuration is incomplete. Confirm that the
-      gitlab inventory group and repository settings exist and that the AAP
+      GitLab synchronization configuration is incomplete. Confirm the GitLab
+      inventory host variables and repository settings and verify that the AAP
       IdM credential injects idm_admin_username and idm_admin_password.
   no_log: true
 

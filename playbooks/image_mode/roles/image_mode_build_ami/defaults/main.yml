@@ -169,12 +169,16 @@ image_mode_base_images:
   "9": "registry.redhat.io/rhel9/rhel-bootc:latest"
   "10": "registry.redhat.io/rhel10/rhel-bootc:latest"
 
-###############################################################################
+################################################################################
 # GitLab synchronization
 ###############################################################################
 
-# Publish successful image build sources to GitLab.
 image_mode_git_sync_enabled: true
+
+# Name of the GitLab group in the active AAP inventory. The role selects the
+# first host in this group and resolves gitlab_hostname, then public_tls_fqdn,
+# and finally the inventory hostname.
+image_mode_gitlab_inventory_group: "gitlab"
 
 image_mode_gitlab_namespace: "image-mode"
 image_mode_gitlab_project: "sample-rhel9-web"

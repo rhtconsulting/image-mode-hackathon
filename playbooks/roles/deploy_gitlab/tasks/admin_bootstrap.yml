@@ -1996,6 +1996,7 @@
         )
         is not none
       no_log: true
+      ignore_errors: true
 
     - name: PHASE 11 | Extract GitLab IdM developer bootstrap result
       ansible.builtin.set_fact:

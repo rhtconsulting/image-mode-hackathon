@@ -1995,7 +1995,7 @@
           | regex_search('"memberships_updated":\s*\[(?!\])')
         )
         is not none
-      no_log: true
+      no_log: false
       ignore_errors: true
 
     - name: PHASE 11 | Extract GitLab IdM developer bootstrap result
@@ -2018,6 +2018,7 @@
             | from_json
           }}
       no_log: true
+      ignore_errors: true
 
     - name: PHASE 11 | Validate GitLab IdM developer bootstrap
       ansible.builtin.assert:

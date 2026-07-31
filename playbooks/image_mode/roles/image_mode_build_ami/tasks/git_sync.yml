@@ -10,22 +10,30 @@
 # to exist as a local operating-system account on the managed host.
 ###############################################################################
 
-- name: IMAGE MODE GIT | Validate configured GitLab inventory group
+- name: IMAGE MODE GIT | Find GitLab hosts in the active inventory
+  ansible.builtin.set_fact:
+    image_mode_gitlab_inventory_candidates: >-
+      {{
+        groups.get('all', [])
+        | select('match', '^' ~ image_mode_gitlab_inventory_hostname_prefix)
+        | list
+      }}
+
+- name: IMAGE MODE GIT | Validate discovered GitLab inventory host
   ansible.builtin.assert:
     that:
-      - image_mode_gitlab_inventory_group | default('') | length > 0
-      - image_mode_gitlab_inventory_group in groups
-      - groups[image_mode_gitlab_inventory_group] | length > 0
+      - image_mode_gitlab_inventory_hostname_prefix | default('') | length > 0
+      - image_mode_gitlab_inventory_candidates | length > 0
     fail_msg: >-
-      The configured GitLab inventory group
-      '{{ image_mode_gitlab_inventory_group | default('UNDEFINED') }}' does not
-      exist or contains no hosts. Set image_mode_gitlab_inventory_group in the
-      role defaults to the exact GitLab group name in the active AAP inventory.
+      No host beginning with
+      '{{ image_mode_gitlab_inventory_hostname_prefix | default('gitlab-') }}'
+      exists in the active AAP inventory. Confirm the inventory hosts or update
+      image_mode_gitlab_inventory_hostname_prefix in the role defaults.
 
 - name: IMAGE MODE GIT | Select GitLab inventory host
   ansible.builtin.set_fact:
     image_mode_gitlab_inventory_host: >-
-      {{ groups[image_mode_gitlab_inventory_group] | first }}
+      {{ image_mode_gitlab_inventory_candidates | first }}
 
 - name: IMAGE MODE GIT | Resolve GitLab hostname
   ansible.builtin.set_fact:

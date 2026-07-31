@@ -218,24 +218,24 @@ gitlab_readiness_delay: 20
 
 ###############################################################################
 # GitLab IdM developer bootstrap
+#
+# Merge this section into roles/deploy_gitlab/defaults/main.yml. It assumes
+# gitlab_ldap_user_base, gitlab_ldap_group_base, and gitlab_ldap_provider are
+# already defined by the role's Red Hat IdM LDAP defaults.
 ###############################################################################
 
-# Pre-create eligible members of IdM's default ipausers group in GitLab and
-# grant non-administrators Developer access to the target GitLab group.
+# Pre-create eligible IdM users and their LDAP identities so Git-over-HTTPS
+# works before the first Web UI login.
 gitlab_idm_developer_bootstrap_enabled: true
 
-# Compatibility alias for developer_bootstrap.yml. The canonical role default
-# is gitlab_ldap_user_base, defined in the Red Hat IdM LDAP section.
-gitlab_ldap_user_base_dn: "{{ gitlab_ldap_user_base }}"
-
-# Default IdM group containing ordinary users. Members of idm-admins are also
-# commonly members of ipausers; their higher GitLab access is preserved below.
+# IdM's default group for ordinary users.
 gitlab_idm_developer_group_cn: "ipausers"
 
 gitlab_idm_developer_group_dn: >-
   cn={{ gitlab_idm_developer_group_cn }},{{ gitlab_ldap_group_base }}
 
-# Select only usable person accounts that belong to ipausers.
+# Query person accounts that have the attributes GitLab requires. Whitespace
+# is removed from this expression before it is passed to ldapsearch.
 gitlab_idm_developer_user_filter: >-
   (&
     (objectClass=posixAccount)
@@ -244,18 +244,18 @@ gitlab_idm_developer_user_filter: >-
     (memberOf={{ gitlab_idm_developer_group_dn }})
   )
 
-# Grant group-level access so projects under image-mode inherit it.
+# Grant access at the parent group so all projects beneath it inherit access.
 gitlab_idm_developer_group_path: "image-mode"
 
+# Informational path retained for role reporting and downstream checks.
 gitlab_idm_developer_project_path: >-
   {{ gitlab_idm_developer_group_path }}/sample-rhel9-web
 
-# Phase 10 grants idm-admins GitLab administrator and group Owner access.
-# Excluding them from Phase 11 prevents any accidental demotion.
+# Phase 10 handles IdM administrators. Do not alter their group access here.
 gitlab_idm_developer_exclude_administrators: true
 
-# Never reduce Owner or Maintainer access to Developer.
+# Never reduce Maintainer or Owner access to Developer.
 gitlab_idm_developer_preserve_higher_access: true
 
-# Promote Guest or Reporter memberships to Developer.
+# Upgrade Guest or Reporter memberships to Developer.
 gitlab_idm_developer_promote_lower_access: true

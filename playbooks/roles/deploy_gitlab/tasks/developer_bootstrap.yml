@@ -1,0 +1,966 @@
+###########################################################################
+###############################################################################
+# PHASE 11 | Bootstrap all IdM developers into GitLab
+###############################################################################
+
+- name: PHASE 11 | Bootstrap GitLab developers from IdM
+  when: gitlab_idm_developer_bootstrap_enabled | bool
+  block:
+    ###########################################################################
+    # Create secure LDAP bind-password file
+    ###########################################################################
+
+    - name: PHASE 11 | Create temporary LDAP bind-password file
+      ansible.builtin.tempfile:
+        state: file
+        path: /run
+        prefix: gitlab-developer-bootstrap-ldap-
+      register: gitlab_developer_bootstrap_password_file
+      no_log: true
+
+    - name: PHASE 11 | Store LDAP bind password securely
+      ansible.builtin.copy:
+        content: "{{ gitlab_ldap_bind_password }}"
+        dest: "{{ gitlab_developer_bootstrap_password_file.path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    ###########################################################################
+    # Query every eligible IdM user
+    ###########################################################################
+
+    - name: PHASE 11 | Query eligible IdM users
+      ansible.builtin.command:
+        argv:
+          - ldapsearch
+          - -LLL
+          - -o
+          - ldif-wrap=no
+          - -x
+          - -H
+          - "ldaps://{{ gitlab_ldap_host }}:{{ gitlab_ldap_port }}"
+          - -D
+          - "{{ gitlab_ldap_bind_dn }}"
+          - -y
+          - "{{ gitlab_developer_bootstrap_password_file.path }}"
+          - -b
+          - "{{ gitlab_ldap_user_base_dn }}"
+          - -s
+          - one
+          - "{{ gitlab_idm_developer_user_filter | regex_replace('\\s+', '') }}"
+          - dn
+          - uid
+          - cn
+          - mail
+      register: gitlab_idm_developer_ldap_query
+      changed_when: false
+      no_log: false
+
+    ###########################################################################
+    # Parse LDAP LDIF records
+    ###########################################################################
+
+    - name: PHASE 11 | Parse eligible IdM user records
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json
+            import sys
+
+            records = []
+            current = {}
+
+            for raw_line in sys.stdin.read().splitlines():
+                line = raw_line.strip()
+
+                if not line:
+                    if current:
+                        records.append(current)
+                        current = {}
+                    continue
+
+                if ": " not in line:
+                    continue
+
+                key, value = line.split(": ", 1)
+                key = key.lower()
+
+                if key in {"dn", "uid", "cn", "mail"}:
+                    current[key] = value.strip()
+
+            if current:
+                records.append(current)
+
+            normalized = []
+
+            for record in records:
+                username = record.get("uid", "").strip().lower()
+                name = record.get("cn", "").strip()
+                email = record.get("mail", "").strip().lower()
+                dn = record.get("dn", "").strip()
+
+                if not username:
+                    continue
+
+                normalized.append(
+                    {
+                        "username": username,
+                        "name": name,
+                        "email": email,
+                        "dn": dn,
+                    }
+                )
+
+            normalized.sort(key=lambda item: item["username"])
+
+            print(json.dumps(normalized))
+      args:
+        stdin: "{{ gitlab_idm_developer_ldap_query.stdout }}"
+      register: gitlab_idm_developer_parser
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 11 | Store eligible IdM user definitions
+      ansible.builtin.set_fact:
+        gitlab_idm_all_user_definitions: >-
+          {{ gitlab_idm_developer_parser.stdout | from_json }}
+      no_log: true
+
+    - name: PHASE 11 | Validate eligible IdM user definitions
+      ansible.builtin.assert:
+        that:
+          - gitlab_idm_all_user_definitions | length > 0
+          - item.username | length > 0
+          - item.name | length > 0
+          - item.email | length > 0
+          - item.email is search('@')
+          - item.dn | length > 0
+          - item.dn is match('^uid=[^,]+,cn=users,cn=accounts,')
+        fail_msg: >-
+          The IdM user {{ item.username | default('unknown') }} does not
+          contain the uid, cn, mail, and DN attributes required to initialize
+          a GitLab LDAP account.
+      loop: "{{ gitlab_idm_all_user_definitions }}"
+      loop_control:
+        label: "{{ item.username | default('unknown') }}"
+      no_log: true
+
+    ###########################################################################
+    # Build administrator exclusion lists
+    #
+    # gitlab_idm_admin_users was created by Phase 10.
+    ###########################################################################
+
+    - name: PHASE 11 | Build IdM administrator exclusion lists
+      ansible.builtin.set_fact:
+        gitlab_idm_admin_usernames_resolved: >-
+          {{
+            gitlab_idm_admin_users
+            | default([])
+            | map(attribute='username')
+            | map('lower')
+            | list
+            | unique
+          }}
+        gitlab_idm_admin_dns_resolved: >-
+          {{
+            gitlab_idm_admin_users
+            | default([])
+            | map(attribute='dn')
+            | list
+            | unique
+          }}
+      no_log: true
+
+    - name: PHASE 11 | Build ordinary IdM developer definitions
+      ansible.builtin.set_fact:
+        gitlab_idm_developer_users: >-
+          {%- set developers = [] -%}
+          {%- for user in gitlab_idm_all_user_definitions -%}
+          {%-   set is_admin =
+                  (
+                    user.username
+                    in gitlab_idm_admin_usernames_resolved
+                  )
+                  or
+                  (
+                    user.dn
+                    in gitlab_idm_admin_dns_resolved
+                  )
+          -%}
+          {%-   if
+                  (
+                    not gitlab_idm_developer_exclude_administrators
+                  )
+                  or
+                  (
+                    not is_admin
+                  )
+          -%}
+          {%-     set _ = developers.append(user) -%}
+          {%-   endif -%}
+          {%- endfor -%}
+          {{ developers }}
+      no_log: true
+
+    - name: PHASE 11 | Validate administrator exclusion
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              gitlab_idm_developer_users
+              | map(attribute='username')
+              | list
+              | intersect(gitlab_idm_admin_usernames_resolved)
+              | length
+            )
+            == 0
+        fail_msg: >-
+          One or more IdM administrators remain in the ordinary developer
+          definition list.
+      when: gitlab_idm_developer_exclude_administrators | bool
+      no_log: true
+
+    ###########################################################################
+    # Pre-create users, link LDAP identities, and grant Developer access
+    ###########################################################################
+
+    - name: PHASE 11 | Initialize GitLab IdM developers
+      ansible.builtin.command:
+        argv:
+          - gitlab-rails
+          - runner
+          - "-"
+      args:
+        stdin: |
+          require "json"
+          require "securerandom"
+
+          ldap_provider =
+            ENV.fetch("GITLAB_LDAP_PROVIDER").to_s.strip
+
+          developer_definitions =
+            JSON.parse(
+              ENV.fetch("GITLAB_IDM_DEVELOPER_USERS_JSON")
+            )
+
+          administrator_usernames =
+            JSON.parse(
+              ENV.fetch("GITLAB_IDM_ADMIN_USERNAMES_JSON")
+            ).map do |username|
+              username.to_s.strip.downcase
+            end
+
+          target_group_path =
+            ENV.fetch("GITLAB_DEVELOPER_GROUP_PATH")
+               .to_s
+               .strip
+
+          preserve_higher_access =
+            ENV.fetch(
+              "PRESERVE_HIGHER_ACCESS",
+              "true"
+            ) == "true"
+
+          promote_lower_access =
+            ENV.fetch(
+              "PROMOTE_LOWER_ACCESS",
+              "true"
+            ) == "true"
+
+          result = {
+            users_created: [],
+            users_updated: [],
+            users_existing: [],
+            identities_created: [],
+            identities_updated: [],
+            identities_existing: [],
+            memberships_created: [],
+            memberships_updated: [],
+            memberships_existing: [],
+            administrators_preserved: [],
+            errors: []
+          }
+
+          actor =
+            User.find_by(username: "root") ||
+            User.where(admin: true).first
+
+          raise "No GitLab administrator account exists" unless actor
+
+          group =
+            Group.find_by_full_path(target_group_path)
+
+          raise(
+            "GitLab group #{target_group_path.inspect} does not exist"
+          ) unless group
+
+          developer_access =
+            Gitlab::Access::DEVELOPER
+
+          developer_definitions.each do |definition|
+            username =
+              definition.fetch("username")
+                        .to_s
+                        .strip
+                        .downcase
+
+            name =
+              definition.fetch("name")
+                        .to_s
+                        .strip
+
+            email =
+              definition.fetch("email")
+                        .to_s
+                        .strip
+                        .downcase
+
+            extern_uid =
+              definition.fetch("dn")
+                        .to_s
+                        .strip
+
+            begin
+              raise "username is empty" if username.empty?
+              raise "name is empty" if name.empty?
+              raise "email is empty" if email.empty?
+              raise "LDAP DN is empty" if extern_uid.empty?
+
+              if administrator_usernames.include?(username)
+                result[:administrators_preserved] << username
+                next
+              end
+
+              identity =
+                Identity.find_by(
+                  provider: ldap_provider,
+                  extern_uid: extern_uid
+                )
+
+              username_user =
+                User.find_by(
+                  "lower(username) = ?",
+                  username
+                )
+
+              email_user =
+                User.find_by(
+                  "lower(email) = ?",
+                  email
+                )
+
+              user =
+                identity&.user ||
+                username_user ||
+                email_user
+
+              conflicting_users =
+                [
+                  identity&.user,
+                  username_user,
+                  email_user
+                ].compact.uniq
+
+              if conflicting_users.length > 1
+                raise(
+                  "username, email, and LDAP identity resolve " \
+                  "to different GitLab users"
+                )
+              end
+
+              if user.nil?
+                generated_password =
+                  SecureRandom.base64(48)
+
+                user_attributes = {
+                  username: username,
+                  name: name,
+                  email: email,
+                  password: generated_password,
+                  password_confirmation:
+                    generated_password,
+                  admin: false,
+                  skip_confirmation: true
+                }
+
+                if defined?(Organizations::Organization)
+                  organization =
+                    Organizations::Organization.default_organization
+
+                  organization ||=
+                    Organizations::Organization.first
+
+                  user_attributes[:organization_id] =
+                    organization.id if organization
+                end
+
+                if defined?(Users::CreateService)
+                  response =
+                    Users::CreateService
+                      .new(actor, user_attributes)
+                      .execute
+
+                  if response.respond_to?(:success?)
+                    unless response.success?
+                      message =
+                        if response.respond_to?(:message)
+                          response.message
+                        else
+                          response.to_s
+                        end
+
+                      raise(
+                        "Users::CreateService failed: #{message}"
+                      )
+                    end
+
+                    payload =
+                      response.respond_to?(:payload) ?
+                        response.payload :
+                        nil
+
+                    user =
+                      if payload.is_a?(Hash)
+                        payload[:user] ||
+                          payload["user"]
+                      elsif payload.is_a?(User)
+                        payload
+                      end
+                  elsif response.is_a?(User)
+                    user = response
+                  end
+                end
+
+                if user.nil?
+                  user = User.new(
+                    username: username,
+                    name: name,
+                    email: email,
+                    password: generated_password,
+                    password_confirmation:
+                      generated_password,
+                    admin: false
+                  )
+
+                  if user.respond_to?(:assign_personal_namespace) &&
+                     defined?(Organizations::Organization)
+                    organization =
+                      Organizations::Organization.default_organization
+
+                    organization ||=
+                      Organizations::Organization.first
+
+                    if organization
+                      user.assign_personal_namespace(
+                        organization
+                      )
+                    end
+                  end
+
+                  user.skip_confirmation!
+                  user.save!
+                end
+
+                raise(
+                  "GitLab user creation returned no user"
+                ) unless user
+
+                result[:users_created] << username
+              else
+                changed = false
+
+                if user.username.downcase != username
+                  raise(
+                    "GitLab user #{user.username} conflicts with " \
+                    "IdM username #{username}"
+                  )
+                end
+
+                if user.email.downcase != email
+                  raise(
+                    "GitLab user #{username} has email #{user.email}, " \
+                    "but IdM specifies #{email}"
+                  )
+                end
+
+                if user.name != name
+                  user.name = name
+                  changed = true
+                end
+
+                if user.respond_to?(:confirmed?) &&
+                   !user.confirmed?
+                  user.skip_confirmation!
+                  user.confirm
+                  changed = true
+                end
+
+                if changed
+                  user.save!
+                  result[:users_updated] << username
+                else
+                  result[:users_existing] << username
+                end
+              end
+
+              #################################################################
+              # Never demote an existing GitLab administrator
+              #################################################################
+
+              if user.admin?
+                result[:administrators_preserved] << username
+              end
+
+              #################################################################
+              # Create or repair LDAP identity
+              #################################################################
+
+              ldap_identity =
+                user.identities.find_by(
+                  provider: ldap_provider
+                )
+
+              if ldap_identity
+                if ldap_identity.extern_uid != extern_uid
+                  conflicting_identity =
+                    Identity.find_by(
+                      provider: ldap_provider,
+                      extern_uid: extern_uid
+                    )
+
+                  if conflicting_identity &&
+                     conflicting_identity.user_id != user.id
+                    raise(
+                      "LDAP identity #{extern_uid} is already linked " \
+                      "to GitLab user ID " \
+                      "#{conflicting_identity.user_id}"
+                    )
+                  end
+
+                  ldap_identity.update!(
+                    extern_uid: extern_uid
+                  )
+
+                  result[:identities_updated] << username
+                else
+                  result[:identities_existing] << username
+                end
+              else
+                conflicting_identity =
+                  Identity.find_by(
+                    provider: ldap_provider,
+                    extern_uid: extern_uid
+                  )
+
+                if conflicting_identity &&
+                   conflicting_identity.user_id != user.id
+                  raise(
+                    "LDAP identity #{extern_uid} is already linked " \
+                    "to GitLab user ID " \
+                    "#{conflicting_identity.user_id}"
+                  )
+                end
+
+                user.identities.create!(
+                  provider: ldap_provider,
+                  extern_uid: extern_uid
+                )
+
+                result[:identities_created] << username
+              end
+
+              #################################################################
+              # Grant Developer membership without reducing higher access
+              #################################################################
+
+              membership =
+                group.members.find_by(
+                  user_id: user.id
+                )
+
+              if membership.nil?
+                group.add_member(
+                  user,
+                  developer_access
+                )
+
+                result[:memberships_created] << {
+                  username: username,
+                  group: target_group_path,
+                  access_level: developer_access
+                }
+              elsif membership.access_level == developer_access
+                result[:memberships_existing] << {
+                  username: username,
+                  group: target_group_path,
+                  access_level: membership.access_level
+                }
+              elsif membership.access_level > developer_access &&
+                    preserve_higher_access
+                result[:memberships_existing] << {
+                  username: username,
+                  group: target_group_path,
+                  access_level: membership.access_level
+                }
+              elsif membership.access_level < developer_access &&
+                    promote_lower_access
+                membership.update!(
+                  access_level: developer_access
+                )
+
+                result[:memberships_updated] << {
+                  username: username,
+                  group: target_group_path,
+                  access_level: developer_access
+                }
+              else
+                result[:memberships_existing] << {
+                  username: username,
+                  group: target_group_path,
+                  access_level: membership.access_level
+                }
+              end
+            rescue StandardError => error
+              result[:errors] << {
+                object: username,
+                operation: "initialize_idm_developer",
+                error:
+                  "#{error.class}: #{error.message}"
+              }
+            end
+          end
+
+          puts(
+            "GITLAB_IDM_DEVELOPER_BOOTSTRAP_RESULT=" +
+            JSON.generate(result)
+          )
+
+          exit 1 unless result[:errors].empty?
+      environment:
+        GITLAB_LDAP_PROVIDER: "{{ gitlab_ldap_provider }}"
+        GITLAB_IDM_DEVELOPER_USERS_JSON: >-
+          {{ gitlab_idm_developer_users | to_json }}
+        GITLAB_IDM_ADMIN_USERNAMES_JSON: >-
+          {{ gitlab_idm_admin_usernames_resolved | to_json }}
+        GITLAB_DEVELOPER_GROUP_PATH: >-
+          {{ gitlab_idm_developer_group_path }}
+        PRESERVE_HIGHER_ACCESS: >-
+          {{
+            gitlab_idm_developer_preserve_higher_access
+            | bool
+            | lower
+          }}
+        PROMOTE_LOWER_ACCESS: >-
+          {{
+            gitlab_idm_developer_promote_lower_access
+            | bool
+            | lower
+          }}
+      register: gitlab_idm_developer_bootstrap_command
+      changed_when: >-
+        (
+          gitlab_idm_developer_bootstrap_command.stdout
+          | regex_search('"users_created":\s*\[(?!\])')
+        )
+        is not none
+        or
+        (
+          gitlab_idm_developer_bootstrap_command.stdout
+          | regex_search('"users_updated":\s*\[(?!\])')
+        )
+        is not none
+        or
+        (
+          gitlab_idm_developer_bootstrap_command.stdout
+          | regex_search('"identities_created":\s*\[(?!\])')
+        )
+        is not none
+        or
+        (
+          gitlab_idm_developer_bootstrap_command.stdout
+          | regex_search('"identities_updated":\s*\[(?!\])')
+        )
+        is not none
+        or
+        (
+          gitlab_idm_developer_bootstrap_command.stdout
+          | regex_search('"memberships_created":\s*\[(?!\])')
+        )
+        is not none
+        or
+        (
+          gitlab_idm_developer_bootstrap_command.stdout
+          | regex_search('"memberships_updated":\s*\[(?!\])')
+        )
+        is not none
+      no_log: false
+      ignore_errors: true
+
+    - name: PHASE 11 | Validate GitLab IdM developer bootstrap output
+      ansible.builtin.assert:
+        that:
+          - >-
+            gitlab_idm_developer_bootstrap_command.stdout
+            is search(
+              '(?m)^GITLAB_IDM_DEVELOPER_BOOTSTRAP_RESULT='
+            )
+        fail_msg: >-
+          GitLab IdM developer initialization did not return a parseable
+          result (rc={{ gitlab_idm_developer_bootstrap_command.rc }}):
+          {{
+            gitlab_idm_developer_bootstrap_command.stderr
+            | default('no stderr')
+          }}
+
+    - name: PHASE 11 | Extract GitLab IdM developer bootstrap result
+      ansible.builtin.set_fact:
+        gitlab_idm_developer_bootstrap_result: >-
+          {{
+            (
+              gitlab_idm_developer_bootstrap_command.stdout_lines
+              | select(
+                  'match',
+                  '^GITLAB_IDM_DEVELOPER_BOOTSTRAP_RESULT='
+                )
+              | map(
+                  'regex_replace',
+                  '^GITLAB_IDM_DEVELOPER_BOOTSTRAP_RESULT=',
+                  ''
+                )
+              | first
+            )
+            | from_json
+          }}
+      no_log: true
+
+    - name: PHASE 11 | Validate GitLab IdM developer bootstrap
+      ansible.builtin.assert:
+        that:
+          - gitlab_idm_developer_bootstrap_result.users_created is defined
+          - gitlab_idm_developer_bootstrap_result.users_updated is defined
+          - gitlab_idm_developer_bootstrap_result.users_existing is defined
+          - gitlab_idm_developer_bootstrap_result.identities_created is defined
+          - gitlab_idm_developer_bootstrap_result.identities_updated is defined
+          - gitlab_idm_developer_bootstrap_result.identities_existing is defined
+          - gitlab_idm_developer_bootstrap_result.memberships_created is defined
+          - gitlab_idm_developer_bootstrap_result.memberships_updated is defined
+          - gitlab_idm_developer_bootstrap_result.memberships_existing is defined
+          - gitlab_idm_developer_bootstrap_result.administrators_preserved is defined
+          - gitlab_idm_developer_bootstrap_result.errors is defined
+          - gitlab_idm_developer_bootstrap_result.errors | length == 0
+        fail_msg: >-
+          GitLab IdM developer initialization returned one or more errors:
+          {{
+            gitlab_idm_developer_bootstrap_result.errors
+            | default(['result did not contain an errors field'])
+            | to_json
+          }}
+      no_log: false
+
+    ###########################################################################
+    # Verify every ordinary IdM account has at least Developer access
+    ###########################################################################
+
+    - name: PHASE 11 | Verify initialized GitLab IdM developers
+      ansible.builtin.command:
+        argv:
+          - gitlab-rails
+          - runner
+          - "-"
+      args:
+        stdin: |
+          require "json"
+
+          ldap_provider =
+            ENV.fetch("GITLAB_LDAP_PROVIDER")
+
+          expected_users =
+            JSON.parse(
+              ENV.fetch("GITLAB_IDM_DEVELOPER_USERS_JSON")
+            )
+
+          group_path =
+            ENV.fetch("GITLAB_DEVELOPER_GROUP_PATH")
+
+          result = {
+            verified: [],
+            errors: []
+          }
+
+          group =
+            Group.find_by_full_path(group_path)
+
+          unless group
+            result[:errors] << {
+              object: group_path,
+              error: "GitLab group does not exist"
+            }
+          end
+
+          if group
+            expected_users.each do |definition|
+              username =
+                definition.fetch("username")
+                          .to_s
+                          .strip
+                          .downcase
+
+              extern_uid =
+                definition.fetch("dn")
+                          .to_s
+                          .strip
+
+              begin
+                user =
+                  User.find_by(
+                    "lower(username) = ?",
+                    username
+                  )
+
+                raise(
+                  "GitLab user does not exist"
+                ) unless user
+
+                identity =
+                  user.identities.find_by(
+                    provider: ldap_provider,
+                    extern_uid: extern_uid
+                  )
+
+                raise(
+                  "#{ldap_provider} identity is missing"
+                ) unless identity
+
+                membership =
+                  group.members.find_by(
+                    user_id: user.id
+                  )
+
+                raise(
+                  "user is not a direct member of #{group_path}"
+                ) unless membership
+
+                if membership.access_level <
+                   Gitlab::Access::DEVELOPER
+                  raise(
+                    "access level #{membership.access_level} is below " \
+                    "Developer"
+                  )
+                end
+
+                result[:verified] << username
+              rescue StandardError => error
+                result[:errors] << {
+                  object: username,
+                  error:
+                    "#{error.class}: #{error.message}"
+                }
+              end
+            end
+          end
+
+          puts(
+            "GITLAB_IDM_DEVELOPER_VERIFICATION=" +
+            JSON.generate(result)
+          )
+
+          exit 1 unless result[:errors].empty?
+      environment:
+        GITLAB_LDAP_PROVIDER: "{{ gitlab_ldap_provider }}"
+        GITLAB_IDM_DEVELOPER_USERS_JSON: >-
+          {{ gitlab_idm_developer_users | to_json }}
+        GITLAB_DEVELOPER_GROUP_PATH: >-
+          {{ gitlab_idm_developer_group_path }}
+      register: gitlab_idm_developer_verification_command
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 11 | Extract GitLab IdM developer verification
+      ansible.builtin.set_fact:
+        gitlab_idm_developer_verification: >-
+          {{
+            (
+              gitlab_idm_developer_verification_command.stdout_lines
+              | select(
+                  'match',
+                  '^GITLAB_IDM_DEVELOPER_VERIFICATION='
+                )
+              | map(
+                  'regex_replace',
+                  '^GITLAB_IDM_DEVELOPER_VERIFICATION=',
+                  ''
+                )
+              | first
+            )
+            | from_json
+          }}
+      no_log: true
+
+    - name: PHASE 11 | Assert all ordinary IdM users were initialized
+      ansible.builtin.assert:
+        that:
+          - gitlab_idm_developer_verification.errors | length == 0
+          - >-
+            (
+              gitlab_idm_developer_verification.verified
+              | sort
+            )
+            ==
+            (
+              gitlab_idm_developer_users
+              | map(attribute='username')
+              | list
+              | sort
+            )
+        fail_msg: >-
+          One or more ordinary IdM users were not initialized with Developer
+          access to the image-mode GitLab group.
+      no_log: true
+
+    - name: PHASE 11 | Report GitLab IdM developer bootstrap
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Pre-provisioned IdM developers:
+            {{
+              gitlab_idm_developer_verification.verified
+              | length
+            }}
+          - >-
+            Target GitLab group:
+            {{ gitlab_idm_developer_group_path }}
+          - >-
+            Inherited project access:
+            {{ gitlab_idm_developer_project_path }}
+          - >-
+            All eligible IdM users were pre-created in GitLab, linked to
+            {{ gitlab_ldap_provider }}, and granted at least Developer access.
+          - >-
+            Existing GitLab administrators and Owner or Maintainer memberships
+            were preserved.
+          - >-
+            No first-login bootstrap or post-login playbook rerun is required.
+
+  always:
+    - name: PHASE 11 | Remove temporary LDAP bind-password file
+      ansible.builtin.file:
+        path: "{{ gitlab_developer_bootstrap_password_file.path }}"
+        state: absent
+      when:
+        - gitlab_developer_bootstrap_password_file is defined
+        - gitlab_developer_bootstrap_password_file.path is defined
+      no_log: true
+
+- name: PHASE 11 | Report disabled IdM developer bootstrap
+  ansible.builtin.debug:
+    msg: >-
+      GitLab developer bootstrap from IdM is disabled by
+      gitlab_idm_developer_bootstrap_enabled=false.
+  when: not gitlab_idm_developer_bootstrap_enabled | bool
+
+###############################################################################

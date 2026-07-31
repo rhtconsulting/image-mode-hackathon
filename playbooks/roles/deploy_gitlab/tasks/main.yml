@@ -39,11 +39,6 @@
   ansible.builtin.import_tasks: configure.yml
   tags: [configure, idm, registry]
 
-- name: Bootstrap GitLab administrators from IdM
+- name: Validate GitLab and bootstrap administrators from IdM
   ansible.builtin.import_tasks: admin_bootstrap.yml
-  when: gitlab_idm_admin_bootstrap_enabled | bool
   tags: [idm_admins]
-
-- name: Verify GitLab
-  ansible.builtin.import_tasks: verify.yml
-  tags: [verify]

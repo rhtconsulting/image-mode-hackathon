@@ -1047,6 +1047,14 @@
     # Continuously reconcile IdM users created after the Ansible deployment
     ###########################################################################
 
+    - name: PHASE 11 | Create local libexec directory
+      ansible.builtin.file:
+        path: /usr/local/libexec
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
     - name: PHASE 11 | Install continuous IdM developer sync script
       ansible.builtin.copy:
         content: |
@@ -1060,7 +1068,10 @@
           
           provider = ENV.fetch("GITLAB_LDAP_PROVIDER").strip
           group_path = ENV.fetch("GITLAB_DEVELOPER_GROUP_PATH").strip
-          user_filter = ENV.fetch("GITLAB_IDM_USER_FILTER").gsub(/\s+/, "")
+          user_filter = ENV.fetch(
+            "GITLAB_IDM_USER_FILTER",
+            "(&(objectClass=posixAccount)(uid=*)(mail=*))"
+          ).gsub(/\s+/, "")
           
           adapter = Gitlab::Auth::Ldap::Adapter.new(provider)
           filter = Net::LDAP::Filter.construct(user_filter)
@@ -1195,7 +1206,9 @@
         dest: /usr/local/libexec/gitlab-idm-developer-sync.rb
         owner: root
         group: root
-        mode: "0600"
+        # gitlab-rails runs application code as GitLab's service account, so
+        # the program must be readable by that account. It contains no secrets.
+        mode: "0644"
 
     - name: PHASE 11 | Install continuous IdM developer sync service
       ansible.builtin.copy:

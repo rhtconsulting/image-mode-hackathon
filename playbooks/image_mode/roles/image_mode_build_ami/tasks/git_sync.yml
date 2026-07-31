@@ -10,42 +10,27 @@
 # to exist as a local operating-system account on the managed host.
 ###############################################################################
 
-- name: IMAGE MODE GIT | Find GitLab hosts in the active inventory
+- name: IMAGE MODE GIT | Extract domain from current image-builder hostname
   ansible.builtin.set_fact:
-    image_mode_gitlab_inventory_candidates: >-
-      {{
-        groups.get('all', [])
-        | select('match', '^' ~ image_mode_gitlab_inventory_hostname_prefix)
-        | list
-      }}
+    image_mode_current_host_domain: >-
+      {{ inventory_hostname | regex_replace('^[^.]+\\.', '') }}
 
-- name: IMAGE MODE GIT | Validate discovered GitLab inventory host
+- name: IMAGE MODE GIT | Validate hostname-based GitLab discovery inputs
   ansible.builtin.assert:
     that:
-      - image_mode_gitlab_inventory_hostname_prefix | default('') | length > 0
-      - image_mode_gitlab_inventory_candidates | length > 0
+      - image_mode_gitlab_hostname_prefix | default('') | length > 0
+      - inventory_hostname is match('^[^.]+\\..+$')
+      - image_mode_current_host_domain | length > 0
+      - image_mode_current_host_domain != inventory_hostname
     fail_msg: >-
-      No host beginning with
-      '{{ image_mode_gitlab_inventory_hostname_prefix | default('gitlab-') }}'
-      exists in the active AAP inventory. Confirm the inventory hosts or update
-      image_mode_gitlab_inventory_hostname_prefix in the role defaults.
-
-- name: IMAGE MODE GIT | Select GitLab inventory host
-  ansible.builtin.set_fact:
-    image_mode_gitlab_inventory_host: >-
-      {{ image_mode_gitlab_inventory_candidates | first }}
+      The current inventory hostname '{{ inventory_hostname }}' is not a fully
+      qualified hostname, or image_mode_gitlab_hostname_prefix is empty. The
+      role needs the image-builder FQDN to derive the GitLab FQDN.
 
 - name: IMAGE MODE GIT | Resolve GitLab hostname
   ansible.builtin.set_fact:
     image_mode_gitlab_hostname_resolved: >-
-      {{
-        hostvars[image_mode_gitlab_inventory_host].gitlab_hostname
-        | default(
-            hostvars[image_mode_gitlab_inventory_host].public_tls_fqdn
-            | default(image_mode_gitlab_inventory_host, true),
-            true
-          )
-      }}
+      {{ image_mode_gitlab_hostname_prefix }}.{{ image_mode_current_host_domain }}
 
 - name: IMAGE MODE GIT | Resolve repository settings
   ansible.builtin.set_fact:

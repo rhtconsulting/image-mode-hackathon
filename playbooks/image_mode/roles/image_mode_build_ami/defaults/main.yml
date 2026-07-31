@@ -179,7 +179,7 @@ image_mode_git_sync_enabled: true
 image_mode_gitlab_namespace: "image-mode"
 image_mode_gitlab_project: "sample-rhel9-web"
 image_mode_git_branch: "main"
-image_mode_git_runtime_user: "image-builder"
+image_mode_git_runtime_user: "image-mode-builder"
 image_mode_git_commit_name: "Image Builder"
 image_mode_git_commit_email: "image-builder@example.com"
 image_mode_git_commit_message: "Publish successful Image Mode build"

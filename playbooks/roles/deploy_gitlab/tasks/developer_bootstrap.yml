@@ -1240,7 +1240,10 @@
 
           [Timer]
           OnBootSec=30s
-          OnUnitActiveSec={{ gitlab_idm_developer_sync_interval }}
+          # Schedule from completion, not start. The Rails runner takes about
+          # 50 seconds to load; OnUnitActiveSec=1min left only a few seconds
+          # between expensive executions.
+          OnUnitInactiveSec={{ gitlab_idm_developer_sync_interval }}
           AccuracySec=5s
           Persistent=true
           Unit=gitlab-idm-developer-sync.service

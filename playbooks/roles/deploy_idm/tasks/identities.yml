@@ -102,6 +102,9 @@
 # group. Verify it instead of calling group-add-member, which returns rc=1 when
 # that automatic membership already exists.
 - name: Read the built-in ipausers membership
+# FreeIPA normally adds new accounts to ipausers automatically. Reconcile the
+# membership anyway, treating its rc=1 "already a member" response as success.
+- name: Ensure ordinary users are members of ipausers
   ansible.builtin.command:
     argv: [ipa, group-show, ipausers, --all, --raw]
   register: idm_ipausers_group
@@ -114,6 +117,19 @@
         ('member_user: ' ~ item.uid)
         in (idm_ipausers_group.stdout | default(''))
     fail_msg: "{{ item.uid }} is not a member of ipausers."
+    argv: [ipa, group-add-member, ipausers, "--users={{ item.uid }}"]
+  register: idm_ipausers_update
+  changed_when: >-
+    'Number of members added 1'
+    in (idm_ipausers_update.stdout | default(''))
+  failed_when:
+    - idm_ipausers_update.rc != 0
+    - >-
+      'already a member'
+      not in (idm_ipausers_update.stdout | default('') | lower)
+    - >-
+      'already a member'
+      not in (idm_ipausers_update.stderr | default('') | lower)
   loop: "{{ idm_managed_users | rejectattr('admin') | list }}"
   loop_control:
     label: "{{ item.uid }}"
@@ -164,4 +180,3 @@
     - idm_sudo_member.rc != 0
     - "'already a member' not in (idm_sudo_member.stdout | default('') | lower)"
     - "'already a member' not in (idm_sudo_member.stderr | default('') | lower)"
-

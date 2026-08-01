@@ -1,0 +1,330 @@
+---
+###########################################################################
+# Detect existing installation or partial installation
+###########################################################################
+
+- name: Check whether IdM services are fully operational
+  ansible.builtin.command:
+    argv:
+      - ipactl
+      - status
+  register: ipa_status
+  failed_when: false
+  changed_when: false
+
+- name: Check for existing IdM default configuration
+  ansible.builtin.stat:
+    path: /etc/ipa/default.conf
+  register: ipa_default_conf
+
+- name: Check for existing IPA installation marker
+  ansible.builtin.stat:
+    path: /var/lib/ipa/sysrestore/sysrestore.state
+  register: ipa_sysrestore_state
+
+- name: Report partial IdM installation detection
+  ansible.builtin.debug:
+    msg: >-
+      Existing IdM configuration was found, but ipactl status failed.
+      The incomplete installation will be removed before reinstalling.
+  when:
+    - ipa_status.rc != 0
+    - >-
+      ipa_default_conf.stat.exists
+      or ipa_sysrestore_state.stat.exists
+
+- name: Remove failed partial IdM installation
+  ansible.builtin.command:
+    argv:
+      - ipa-server-install
+      - --uninstall
+      - --unattended
+  async: 1200
+  poll: 15
+  register: ipa_partial_uninstall
+  changed_when: ipa_partial_uninstall.rc == 0
+  failed_when: false
+  when:
+    - ipa_status.rc != 0
+    - >-
+      ipa_default_conf.stat.exists
+      or ipa_sysrestore_state.stat.exists
+
+- name: Remove stale IdM installation logs before clean installation
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ idm_install_wrapper_log }}"
+    - "{{ idm_install_diagnostics_log }}"
+  when: ipa_status.rc != 0
+
+###########################################################################
+# Install IdM
+###########################################################################
+
+- name: Install IdM server with integrated DNS for lab subdomain
+  when: ipa_status.rc != 0
+  block:
+    - name: Display IdM installation start information
+      ansible.builtin.debug:
+        msg:
+          - "Starting Red Hat IdM server installation."
+          - "Hostname: {{ idm_fqdn }}"
+          - "Private IP: {{ idm_private_ip }}"
+          - "Domain: {{ idm_domain }}"
+          - "Realm: {{ idm_realm }}"
+          - "DNS forwarder: {{ aws_dns_resolver }}"
+          - >-
+            Installer timeout:
+            {{ idm_install_timeout_seconds }} seconds
+          - >-
+            Ansible poll interval:
+            {{ idm_install_poll_seconds }} seconds
+          - "Installer log: {{ idm_install_log }}"
+          - "Wrapper log: {{ idm_install_wrapper_log }}"
+
+    - name: Run bounded IdM server installation
+      ansible.builtin.shell: |
+        set -o pipefail
+
+        ipa-server-install \
+          --hostname="{{ idm_fqdn }}" \
+          --ip-address="{{ idm_private_ip }}" \
+          --domain="{{ idm_domain }}" \
+          --realm="{{ idm_realm }}" \
+          --ds-password="${IDM_DM_PASSWORD}" \
+          --admin-password="${IDM_ADMIN_PASSWORD}" \
+          --setup-dns \
+          --forwarder="{{ aws_dns_resolver }}" \
+          --forward-policy="{{ idm_forward_policy }}" \
+          --no-dnssec-validation \
+          --no-host-dns \
+          --no-reverse \
+          --no-ntp \
+          --unattended \
+          > "{{ idm_install_wrapper_log }}" 2>&1
+      args:
+        executable: /bin/bash
+      environment:
+        IDM_DM_PASSWORD: "{{ idm_vault_dm_password }}"
+        IDM_ADMIN_PASSWORD: "{{ idm_vault_admin_password }}"
+      async: "{{ idm_install_timeout_seconds }}"
+      poll: "{{ idm_install_poll_seconds }}"
+      register: ipa_install
+      changed_when: ipa_install.rc == 0
+      no_log: false
+
+    - name: Wait for IdM services to become operational
+      ansible.builtin.command:
+        argv:
+          - ipactl
+          - status
+      register: ipa_post_install_status
+      changed_when: false
+      retries: 20
+      delay: 15
+      until: ipa_post_install_status.rc == 0
+
+  rescue:
+    - name: Capture IdM installation diagnostics
+      ansible.builtin.shell: |
+        {
+          echo "============================================================"
+          echo "IdM installation diagnostics"
+          echo "Generated: $(date --iso-8601=seconds)"
+          echo "============================================================"
+
+          echo
+          echo "HOSTNAME"
+          hostnamectl || true
+          hostname --fqdn || true
+
+          echo
+          echo "HOSTNAME RESOLUTION"
+          getent ahostsv4 "{{ idm_fqdn }}" || true
+
+          echo
+          echo "HOSTS FILE"
+          cat /etc/hosts || true
+
+          echo
+          echo "RESOLVER CONFIGURATION"
+          cat /etc/resolv.conf || true
+          resolvectl status || true
+          nmcli device show "{{ idm_network_interface }}" || true
+
+          echo
+          echo "AWS RESOLVER UDP TEST"
+          dig +time=3 +tries=1 \
+            "@{{ aws_dns_resolver }}" amazon.com A || true
+
+          echo
+          echo "AWS RESOLVER TCP TEST"
+          dig +tcp +time=3 +tries=1 \
+            "@{{ aws_dns_resolver }}" amazon.com A || true
+
+          echo
+          echo "IDM DOMAIN LOOKUP"
+          dig +time=3 +tries=1 \
+            "@{{ aws_dns_resolver }}" "{{ idm_domain }}" SOA || true
+
+          echo
+          echo "SYSTEM TIME"
+          timedatectl || true
+          chronyc tracking || true
+          chronyc sources -v || true
+
+          echo
+          echo "FILESYSTEM"
+          df -h || true
+          df -i || true
+
+          echo
+          echo "MEMORY"
+          free -m || true
+
+          echo
+          echo "LISTENING PORTS"
+          ss -lntup || true
+
+          echo
+          echo "RUNNING IPA INSTALLER PROCESSES"
+          ps -ef | grep -E \
+            'ipa-server-install|pkispawn|dscreate' |
+            grep -v grep || true
+
+          echo
+          echo "FAILED SYSTEMD SERVICES"
+          systemctl --failed --no-pager || true
+
+          echo
+          echo "IPA SERVICE STATUS"
+          ipactl status || true
+
+          echo
+          echo "DIRECTORY SERVER SERVICES"
+          systemctl --no-pager --full status 'dirsrv@*' || true
+
+          echo
+          echo "PKI TOMCAT STATUS"
+          systemctl --no-pager --full status \
+            pki-tomcatd@pki-tomcat.service || true
+
+          echo
+          echo "NAMED STATUS"
+          systemctl --no-pager --full status \
+            named-pkcs11.service named.service || true
+
+          echo
+          echo "WRAPPER LOG - LAST 300 LINES"
+          tail -n 300 "{{ idm_install_wrapper_log }}" || true
+
+          echo
+          echo "IPA INSTALLER LOG - LAST 500 LINES"
+          tail -n 500 "{{ idm_install_log }}" || true
+
+          echo
+          echo "IPA INSTALLER ERROR LOG"
+          tail -n 300 /var/log/ipaserver-install.log || true
+
+          echo
+          echo "DIRECTORY SERVER JOURNAL"
+          journalctl --no-pager -n 200 -u 'dirsrv@*' || true
+
+          echo
+          echo "PKI TOMCAT JOURNAL"
+          journalctl --no-pager -n 200 \
+            -u pki-tomcatd@pki-tomcat.service || true
+
+          echo
+          echo "NAMED JOURNAL"
+          journalctl --no-pager -n 200 \
+            -u named-pkcs11.service \
+            -u named.service || true
+
+          echo
+          echo "RECENT SYSTEM JOURNAL"
+          journalctl --no-pager -n 500 || true
+        } > "{{ idm_install_diagnostics_log }}" 2>&1
+
+        cat "{{ idm_install_diagnostics_log }}"
+      args:
+        executable: /bin/bash
+      register: idm_install_diagnostics
+      changed_when: false
+      failed_when: false
+
+    - name: Display IdM installation diagnostics
+      ansible.builtin.debug:
+        var: idm_install_diagnostics.stdout_lines
+
+    - name: Stop after failed or timed-out IdM installation
+      ansible.builtin.fail:
+        msg: >-
+          IdM installation failed or exceeded the
+          {{ idm_install_timeout_seconds }}-second timeout.
+          Review {{ idm_install_log }},
+          {{ idm_install_wrapper_log }}, and
+          {{ idm_install_diagnostics_log }} on
+          {{ inventory_hostname }}.
+
+###########################################################################
+# Verify installation
+###########################################################################
+
+- name: Verify IdM services are running
+  ansible.builtin.command:
+    argv:
+      - ipactl
+      - status
+  register: ipa_verify
+  changed_when: false
+  retries: 10
+  delay: 15
+  until: ipa_verify.rc == 0
+
+###########################################################################
+# Configure post-install DNS
+#
+# IdM named is now operational, so localhost can safely become primary DNS.
+###########################################################################
+
+- name: Configure local IdM DNS as primary resolver
+  community.general.nmcli:
+    conn_name: "{{ idm_nm_connection }}"
+    dns4:
+      - "127.0.0.1"
+      - "{{ aws_dns_resolver }}"
+    dns4_ignore_auto: true
+    state: present
+  register: idm_postinstall_nmcli_dns
+
+- name: Reapply NetworkManager connection after IdM DNS installation
+  ansible.builtin.command:
+    argv:
+      - nmcli
+      - device
+      - reapply
+      - "{{ idm_network_interface }}"
+  register: idm_postinstall_nmcli_reapply
+  changed_when: idm_postinstall_nmcli_reapply.rc == 0
+  when: idm_postinstall_nmcli_dns.changed
+
+- name: Wait for local IdM DNS server to answer
+  ansible.builtin.command:
+    argv:
+      - dig
+      - "+time=2"
+      - "+tries=1"
+      - "+short"
+      - "@127.0.0.1"
+      - "{{ idm_fqdn }}"
+      - A
+  register: idm_local_dns_ready
+  changed_when: false
+  retries: 30
+  delay: 5
+  until:
+    - idm_local_dns_ready.rc == 0
+    - idm_private_ip in idm_local_dns_ready.stdout_lines

@@ -1,0 +1,43 @@
+---
+###########################################################################
+# Final validation
+###########################################################################
+
+- name: Verify final IdM service status
+  ansible.builtin.command:
+    argv:
+      - ipactl
+      - status
+  register: idm_final_status
+  changed_when: false
+  failed_when: idm_final_status.rc != 0
+
+- name: Verify admin group membership
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - group-show
+      - "{{ idm_admin_group }}"
+      - --all
+  register: idm_admin_group_verify
+  changed_when: false
+  failed_when: idm_admin_group_verify.rc != 0
+
+- name: Show IdM installation status
+  ansible.builtin.debug:
+    msg:
+      - "IdM installation completed and verified."
+      - "AWS parent DNS domain: {{ idm_parent_domain }}"
+      - "IdM DNS domain: {{ idm_domain }}"
+      - "IdM FQDN: {{ idm_fqdn }}"
+      - "IdM realm: {{ idm_realm }}"
+      - "IdM private IP: {{ idm_private_ip }}"
+      - "AWS DNS forwarder: {{ aws_dns_resolver }}"
+      - "Primary local resolver: 127.0.0.1"
+      - "NetworkManager connection: {{ idm_nm_connection }}"
+      - >-
+        Created or verified users:
+        {{ idm_managed_users | map(attribute='uid') | join(', ') }}
+      - "Admin group: {{ idm_admin_group }}"
+      - "Sudo rule: {{ idm_sudo_rule }}"
+      - "Installer log: {{ idm_install_log }}"

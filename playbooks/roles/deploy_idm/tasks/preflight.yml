@@ -1,0 +1,245 @@
+---
+###########################################################################
+# Validate inventory and AWS settings
+###########################################################################
+
+- name: Validate required AWS lookup inputs
+  ansible.builtin.assert:
+    that:
+      - secret_prefix is defined
+      - secret_prefix | length > 0
+      - aws_region is defined
+      - aws_region | length > 0
+      - aws_profile is defined
+      - aws_profile | length > 0
+    fail_msg: >-
+      Missing secret_prefix, aws_region, or aws_profile from the
+      generated Ansible inventory.
+
+###########################################################################
+# Read IdM secrets from AWS Secrets Manager
+###########################################################################
+
+- name: Read IdM admin password from AWS Secrets Manager
+  ansible.builtin.command:
+    argv:
+      - aws
+      - secretsmanager
+      - get-secret-value
+      - --secret-id
+      - "{{ idm_admin_password_secret_name }}"
+      - --region
+      - "{{ aws_region }}"
+      - --profile
+      - "{{ aws_profile }}"
+      - --query
+      - SecretString
+      - --output
+      - text
+  delegate_to: localhost
+  become: false
+  register: idm_admin_secret_result
+  changed_when: false
+  no_log: true
+
+- name: Read IdM Directory Manager password from AWS Secrets Manager
+  ansible.builtin.command:
+    argv:
+      - aws
+      - secretsmanager
+      - get-secret-value
+      - --secret-id
+      - "{{ idm_dm_password_secret_name }}"
+      - --region
+      - "{{ aws_region }}"
+      - --profile
+      - "{{ aws_profile }}"
+      - --query
+      - SecretString
+      - --output
+      - text
+  delegate_to: localhost
+  become: false
+  register: idm_dm_secret_result
+  changed_when: false
+  no_log: true
+
+- name: Read IdM default user password from AWS Secrets Manager
+  ansible.builtin.command:
+    argv:
+      - aws
+      - secretsmanager
+      - get-secret-value
+      - --secret-id
+      - "{{ idm_default_user_password_secret_name }}"
+      - --region
+      - "{{ aws_region }}"
+      - --profile
+      - "{{ aws_profile }}"
+      - --query
+      - SecretString
+      - --output
+      - text
+  delegate_to: localhost
+  become: false
+  register: idm_default_user_password_result
+  changed_when: false
+  no_log: true
+
+- name: Set IdM password facts
+  ansible.builtin.set_fact:
+    idm_vault_admin_password: >-
+      {{ idm_admin_secret_result.stdout | trim }}
+    idm_vault_dm_password: >-
+      {{ idm_dm_secret_result.stdout | trim }}
+    idm_default_user_password: >-
+      {{ idm_default_user_password_result.stdout | trim }}
+  no_log: true
+
+- name: Validate required AWS secret values
+  ansible.builtin.assert:
+    that:
+      - idm_vault_dm_password is defined
+      - idm_vault_dm_password | length > 0
+      - idm_vault_admin_password is defined
+      - idm_vault_admin_password | length > 0
+      - idm_default_user_password is defined
+      - idm_default_user_password | length > 0
+    fail_msg: >-
+      Missing IdM values from AWS Secrets Manager. Verify that Terraform
+      created the IdM secrets and stored secret versions successfully.
+  no_log: true
+
+###########################################################################
+# Validate Terraform-generated DNS settings
+###########################################################################
+
+- name: Validate Terraform-provided DNS variables
+  ansible.builtin.assert:
+    that:
+      - parent_domain_name is defined
+      - parent_domain_name | length > 0
+      - idm_domain_name is defined
+      - idm_domain_name | length > 0
+      - idm_realm_name is defined
+      - idm_realm_name | length > 0
+      - idm_server_fqdn is defined
+      - idm_server_fqdn | length > 0
+      - aws_dns_resolver is defined
+      - aws_dns_resolver | length > 0
+      - public_tls_fqdn is defined
+      - public_tls_fqdn | length > 0
+      - acm_certificate_arn is defined
+      - acm_certificate_arn | length > 0
+    fail_msg: >-
+      Missing Terraform DNS inventory variables. Check inventory.tpl and
+      the variables passed to Terraform templatefile().
+
+- name: Validate AWS private IPv4 discovery
+  ansible.builtin.assert:
+    that:
+      - >-
+        idm_server_ip is defined
+        or private_ip is defined
+        or ansible_facts["default_ipv4"]["address"] is defined
+    fail_msg: >-
+      Could not detect the private IPv4 address for the IdM server.
+
+- name: Set discovered IdM network facts
+  ansible.builtin.set_fact:
+    idm_private_ip: >-
+      {{
+        idm_server_ip
+        | default(
+            private_ip
+            | default(
+                ansible_facts["default_ipv4"]["address"],
+                true
+              ),
+            true
+          )
+      }}
+    idm_network_interface: >-
+      {{ ansible_facts["default_ipv4"]["interface"] }}
+
+- name: Determine active NetworkManager connection name
+  ansible.builtin.command:
+    argv:
+      - nmcli
+      - -g
+      - GENERAL.CONNECTION
+      - device
+      - show
+      - "{{ idm_network_interface }}"
+  register: idm_nm_connection_result
+  changed_when: false
+
+- name: Set NetworkManager connection fact
+  ansible.builtin.set_fact:
+    idm_nm_connection: >-
+      {{ idm_nm_connection_result.stdout | trim }}
+
+- name: Validate NetworkManager connection discovery
+  ansible.builtin.assert:
+    that:
+      - idm_nm_connection | length > 0
+      - idm_nm_connection != "--"
+    fail_msg: >-
+      Could not determine the active NetworkManager connection for
+      interface {{ idm_network_interface }}.
+
+- name: Validate IdM DNS relationship
+  ansible.builtin.assert:
+    that:
+      - idm_domain == "lab." ~ idm_parent_domain
+      - idm_fqdn == idm_short_name ~ "." ~ idm_domain
+      - idm_realm == idm_domain | upper
+    fail_msg: >-
+      DNS relationship mismatch detected. Expected:
+      idm_fqdn={{ idm_short_name }}.{{ idm_domain }},
+      idm_domain=lab.{{ idm_parent_domain }},
+      idm_realm={{ idm_domain | upper }}.
+
+- name: Validate Terraform-provided IdM identity inputs
+  ansible.builtin.assert:
+    that:
+      - idm_users is defined or lab_users is defined
+      - (idm_users | default([]) | length) + (lab_users | default({}) | length) > 0
+      - lab_users | default({}) is mapping
+      - idm_users | default([]) is sequence
+    fail_msg: >-
+      Define at least one identity in idm_users or lab_users. lab_users must be
+      a mapping and idm_users must be a list.
+
+
+- name: Verify the local AWS CLI is available
+  ansible.builtin.command:
+    argv:
+      - aws
+      - --version
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Verify the IdM ACM certificate is issued
+  ansible.builtin.command:
+    argv:
+      - aws
+      - acm
+      - describe-certificate
+      - --certificate-arn
+      - "{{ idm_acm_certificate_arn }}"
+      - --region
+      - "{{ aws_region }}"
+      - --profile
+      - "{{ aws_profile }}"
+      - --query
+      - Certificate.Status
+      - --output
+      - text
+  delegate_to: localhost
+  become: false
+  register: idm_acm_certificate_status
+  changed_when: false
+  failed_when: >-
+    idm_acm_certificate_status.rc != 0

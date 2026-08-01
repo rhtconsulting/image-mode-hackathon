@@ -1,0 +1,186 @@
+---
+- name: Authenticate to IdM for identity reconciliation
+  ansible.builtin.command:
+    argv: [kinit, admin]
+    stdin: "{{ idm_vault_admin_password }}"
+  changed_when: false
+  no_log: true
+
+- name: Verify the IdM administrative credential cache
+  ansible.builtin.command:
+    argv: [klist, -s]
+  changed_when: false
+
+- name: Build normalized IdM user records
+  ansible.builtin.set_fact:
+    idm_managed_users: >-
+      {{
+        (idm_managed_users | default([]))
+        + [{
+          'uid': item.key,
+          'first_name': item.value.first_name | default(item.key),
+          'last_name': item.value.last_name | default('User'),
+          'groups': (item.value.groups | default([])) + ['ipausers'],
+          'admin': false
+        }]
+      }}
+  loop: "{{ lab_users | default({}) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Add normalized administrative user records
+  ansible.builtin.set_fact:
+    idm_managed_users: >-
+      {{
+        (idm_managed_users | default([]))
+        + [{
+          'uid': item,
+          'first_name': item,
+          'last_name': 'User',
+          'groups': [idm_admin_group],
+          'admin': true
+        }]
+      }}
+  loop: "{{ idm_users | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Validate managed identity data
+  ansible.builtin.assert:
+    that:
+      - idm_managed_users | default([]) | length > 0
+      - >-
+        (idm_managed_users | map(attribute='uid') | list | unique | length)
+        == (idm_managed_users | length)
+    fail_msg: >-
+      At least one user is required and each UID must occur only once across
+      lab_users and idm_users.
+
+- name: Build requested IdM group list
+  ansible.builtin.set_fact:
+    idm_managed_groups: >-
+      {{
+        idm_managed_users
+        | map(attribute='groups')
+        | flatten
+        | reject('equalto', 'ipausers')
+        | reject('equalto', 'admins')
+        | unique
+        | list
+      }}
+
+- name: Ensure managed IdM groups exist
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - group-add
+      - "{{ item }}"
+      - "--desc=Ansible-managed IdM group"
+  register: idm_group_create
+  changed_when: idm_group_create.rc == 0
+  failed_when:
+    - idm_group_create.rc != 0
+    - "'already exists' not in (idm_group_create.stderr | default(''))"
+    - "'already exists' not in (idm_group_create.stdout | default(''))"
+  loop: "{{ idm_managed_groups }}"
+
+- name: Ensure managed IdM users exist
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - user-add
+      - "{{ item.uid }}"
+      - "--first={{ item.first_name }}"
+      - "--last={{ item.last_name }}"
+  register: idm_user_create
+  changed_when: idm_user_create.rc == 0
+  failed_when:
+    - idm_user_create.rc != 0
+    - "'already exists' not in (idm_user_create.stderr | default(''))"
+    - "'already exists' not in (idm_user_create.stdout | default(''))"
+  loop: "{{ idm_managed_users }}"
+  loop_control:
+    label: "{{ item.uid }}"
+
+- name: Set the initial password on newly created users
+  ansible.builtin.command:
+    argv: [ipa, passwd, "{{ item.item.uid }}"]
+    stdin: |
+      {{ idm_default_user_password }}
+      {{ idm_default_user_password }}
+  no_log: true
+  changed_when: true
+  loop: "{{ idm_user_create.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.uid }}"
+  when: item.rc == 0
+
+- name: Ensure users belong to their requested groups
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - group-add-member
+      - "{{ item.1 }}"
+      - "--users={{ item.0.uid }}"
+  register: idm_membership_update
+  changed_when: >-
+    'Number of members added 1'
+    in (idm_membership_update.stdout | default(''))
+  failed_when: idm_membership_update.rc != 0
+  loop: "{{ idm_managed_users | subelements('groups') }}"
+  loop_control:
+    label: "{{ item.0.uid }} -> {{ item.1 }}"
+
+- name: Add the delegated admin group to built-in admins
+  ansible.builtin.command:
+    argv: [ipa, group-add-member, admins, "--groups={{ idm_admin_group }}"]
+  register: idm_console_admin_add
+  changed_when: >-
+    'Number of members added 1' in (idm_console_admin_add.stdout | default(''))
+  failed_when: idm_console_admin_add.rc != 0
+
+- name: Ensure the administrator sudo rule exists
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - sudorule-add
+      - "{{ idm_sudo_rule }}"
+      - "--desc=Allow {{ idm_admin_group }} sudo access on all hosts"
+  register: idm_sudo_rule_add
+  changed_when: idm_sudo_rule_add.rc == 0
+  failed_when:
+    - idm_sudo_rule_add.rc != 0
+    - "'already exists' not in (idm_sudo_rule_add.stderr | default(''))"
+    - "'already exists' not in (idm_sudo_rule_add.stdout | default(''))"
+
+- name: Configure the administrator sudo rule categories
+  ansible.builtin.command:
+    argv: [ipa, sudorule-mod, "{{ idm_sudo_rule }}", --hostcat=all, --cmdcat=all]
+  register: idm_sudo_categories
+  changed_when: >-
+    'Modified Sudo Rule' in (idm_sudo_categories.stdout | default(''))
+  failed_when:
+    - idm_sudo_categories.rc != 0
+    - >-
+      'no modifications to be performed'
+      not in (idm_sudo_categories.stderr | default(''))
+
+- name: Attach the administrator group to the sudo rule
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - sudorule-add-user
+      - "{{ idm_sudo_rule }}"
+      - "--groups={{ idm_admin_group }}"
+  register: idm_sudo_group_add
+  changed_when: >-
+    'Number of members added 1' in (idm_sudo_group_add.stdout | default(''))
+  failed_when: idm_sudo_group_add.rc != 0
+
+- name: Verify every managed user exists
+  ansible.builtin.command:
+    argv: [ipa, user-show, "{{ item.uid }}"]
+  changed_when: false
+  loop: "{{ idm_managed_users }}"
+  loop_control:
+    label: "{{ item.uid }}"

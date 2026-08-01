@@ -1,0 +1,121 @@
+---
+###########################################################################
+# Authenticate to IdM
+###########################################################################
+
+- name: Authenticate to IdM as admin
+  ansible.builtin.command:
+    argv:
+      - kinit
+      - admin
+  args:
+    stdin: "{{ idm_vault_admin_password }}"
+  changed_when: false
+  no_log: true
+
+- name: Verify Kerberos credentials
+  ansible.builtin.command:
+    argv:
+      - klist
+      - -s
+  changed_when: false
+
+###########################################################################
+# Create DNS records for inventory hosts
+###########################################################################
+
+- name: Check existing IdM DNS A records for inventory hosts
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - dnsrecord-show
+      - "{{ idm_domain }}"
+      - "{{ item.split('.')[0] }}"
+  register: idm_dns_record_checks
+  failed_when: false
+  changed_when: false
+  loop: "{{ groups['all'] }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - hostvars[item].private_ip is defined
+
+- name: Add missing IdM DNS A records for inventory hosts
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - dnsrecord-add
+      - "{{ idm_domain }}"
+      - "{{ item.item.split('.')[0] }}"
+      - "--a-rec={{ hostvars[item.item].private_ip }}"
+  register: idm_dns_record_add
+  changed_when: idm_dns_record_add.rc == 0
+  failed_when:
+    - idm_dns_record_add.rc != 0
+    - >-
+      'already exists'
+      not in (idm_dns_record_add.stderr | default(''))
+    - >-
+      'already exists'
+      not in (idm_dns_record_add.stdout | default(''))
+  loop: "{{ idm_dns_record_checks.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - item.rc is defined
+    - item.rc != 0
+    - hostvars[item.item].private_ip is defined
+
+- name: Update incorrect IdM DNS A records for inventory hosts
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - dnsrecord-mod
+      - "{{ idm_domain }}"
+      - "{{ item.item.split('.')[0] }}"
+      - "--a-rec={{ hostvars[item.item].private_ip }}"
+  register: idm_dns_record_mod
+  changed_when: >-
+    'Modified record'
+    in (idm_dns_record_mod.stdout | default(''))
+  failed_when:
+    - idm_dns_record_mod.rc != 0
+    - >-
+      'no modifications to be performed'
+      not in (idm_dns_record_mod.stderr | default(''))
+    - >-
+      'no modifications to be performed'
+      not in (idm_dns_record_mod.stdout | default(''))
+  loop: "{{ idm_dns_record_checks.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - item.rc is defined
+    - item.rc == 0
+    - hostvars[item.item].private_ip is defined
+    - >-
+      'A record: ' ~ hostvars[item.item].private_ip
+      not in (item.stdout | default(''))
+
+- name: Verify IdM DNS resolves inventory hosts to private addresses
+  ansible.builtin.command:
+    argv:
+      - dig
+      - "+time=3"
+      - "+tries=1"
+      - "+short"
+      - "@127.0.0.1"
+      - "{{ item }}"
+      - A
+  register: idm_dns_verify
+  changed_when: false
+  retries: 5
+  delay: 3
+  until:
+    - idm_dns_verify.rc == 0
+    - hostvars[item].private_ip in idm_dns_verify.stdout_lines
+  loop: "{{ groups['all'] }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - hostvars[item].private_ip is defined

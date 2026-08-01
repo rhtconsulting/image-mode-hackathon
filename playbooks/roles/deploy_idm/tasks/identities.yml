@@ -98,25 +98,10 @@
   loop_control:
     label: "{{ item.0.uid }} -> {{ item.1 }}"
 
-# user-add automatically places every account in FreeIPA's default ipausers
-# group. Verify it instead of calling group-add-member, which returns rc=1 when
-# that automatic membership already exists.
-- name: Read the built-in ipausers membership
 # FreeIPA normally adds new accounts to ipausers automatically. Reconcile the
 # membership anyway, treating its rc=1 "already a member" response as success.
 - name: Ensure ordinary users are members of ipausers
   ansible.builtin.command:
-    argv: [ipa, group-show, ipausers, --all, --raw]
-  register: idm_ipausers_group
-  changed_when: false
-
-- name: Verify ordinary users are members of ipausers
-  ansible.builtin.assert:
-    that:
-      - >-
-        ('member_user: ' ~ item.uid)
-        in (idm_ipausers_group.stdout | default(''))
-    fail_msg: "{{ item.uid }} is not a member of ipausers."
     argv: [ipa, group-add-member, ipausers, "--users={{ item.uid }}"]
   register: idm_ipausers_update
   changed_when: >-

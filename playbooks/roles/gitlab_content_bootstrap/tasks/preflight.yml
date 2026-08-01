@@ -1,0 +1,207 @@
+---
+###########################################################################
+# PHASE 0 | Validate operating system
+###########################################################################
+
+- name: PHASE 0 | Verify supported operating system
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == "RedHat"
+      - ansible_facts.distribution_major_version | int >= 8
+    fail_msg: >-
+      GitLab project provisioning requires RHEL or a compatible
+      Red Hat-family operating system version 8 or later.
+
+###########################################################################
+# PHASE 0 | Validate project variables
+###########################################################################
+
+- name: PHASE 0 | Validate project configuration
+  ansible.builtin.assert:
+    that:
+      - gitlab_project_group_path | length > 0
+      - >-
+        gitlab_project_group_path
+        is match('^[a-z0-9][a-z0-9._-]*$')
+      - gitlab_project_name | length > 0
+      - gitlab_project_path | length > 0
+      - >-
+        gitlab_project_path
+        is match('^[a-z0-9][a-z0-9._-]*$')
+      - >-
+        gitlab_project_full_path
+        ==
+        "image-mode/sample-rhel9-web"
+      - gitlab_project_default_branch | length > 0
+      - gitlab_project_source_directory | length > 0
+      - gitlab_project_fqdn | length > 0
+      - >-
+        gitlab_project_visibility
+        in
+        [
+          "private",
+          "internal",
+          "public"
+        ]
+    fail_msg: >-
+      The GitLab project configuration is invalid. This playbook expects
+      project image-mode/sample-rhel9-web and a valid source directory.
+
+###########################################################################
+# PHASE 0 | Install local prerequisites
+###########################################################################
+
+- name: PHASE 0 | Install project provisioning packages
+  ansible.builtin.dnf:
+    name:
+      - git
+      - rsync
+      - curl
+      - ca-certificates
+    state: present
+
+###########################################################################
+# PHASE 0 | Create or validate project source directory
+#
+# The directory is created before any assertion requires it to exist.
+###########################################################################
+
+- name: PHASE 0 | Inspect project source path
+  ansible.builtin.stat:
+    path: "{{ gitlab_project_source_directory }}"
+  register: gitlab_project_source_path_status
+
+- name: PHASE 0 | Reject source path when it is not a directory
+  ansible.builtin.assert:
+    that:
+      - >-
+        not gitlab_project_source_path_status.stat.exists
+        or
+        gitlab_project_source_path_status.stat.isdir
+    fail_msg: >-
+      The project source path
+      {{ gitlab_project_source_directory }} exists, but it is not a
+      directory on {{ inventory_hostname }}.
+
+- name: PHASE 0 | Create project source directory when missing
+  ansible.builtin.file:
+    path: "{{ gitlab_project_source_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: PHASE 0 | Inspect project source content
+  ansible.builtin.find:
+    paths: "{{ gitlab_project_source_directory }}"
+    file_type: any
+    hidden: true
+    recurse: true
+  register: gitlab_project_source_files
+
+- name: PHASE 0 | Create starter README when source directory is empty
+  ansible.builtin.copy:
+    dest: "{{ gitlab_project_source_directory }}/README.md"
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+    content: |
+      # sample-rhel9-web
+
+      Sample RHEL 9 Image Mode web application and bootc image source.
+
+      This repository is managed automatically by Ansible.
+  when: gitlab_project_source_files.matched | int == 0
+
+- name: PHASE 0 | Reinspect project source content
+  ansible.builtin.find:
+    paths: "{{ gitlab_project_source_directory }}"
+    file_type: any
+    hidden: true
+    recurse: true
+  register: gitlab_project_source_files_final
+
+- name: PHASE 0 | Verify project source directory contains content
+  ansible.builtin.assert:
+    that:
+      - gitlab_project_source_files_final.matched | int > 0
+    fail_msg: >-
+      The project source directory
+      {{ gitlab_project_source_directory }} could not be initialized
+      with project content.
+
+###########################################################################
+# PHASE 0 | Validate GitLab installation
+###########################################################################
+
+- name: PHASE 0 | Verify required commands
+  ansible.builtin.command:
+    argv:
+      - /bin/bash
+      - -c
+      - "command -v {{ item }}"
+  loop:
+    - git
+    - gitlab-rails
+    - gitlab-ctl
+    - rsync
+  changed_when: false
+
+- name: PHASE 0 | Check GitLab service status
+  ansible.builtin.command:
+    argv:
+      - gitlab-ctl
+      - status
+  register: gitlab_project_service_status
+  changed_when: false
+
+- name: PHASE 0 | Verify GitLab local administrator exists
+  ansible.builtin.command:
+    argv:
+      - gitlab-rails
+      - runner
+      - "-"
+  args:
+    stdin: |
+      actor =
+        User.find_by(username: "root") ||
+        User.where(admin: true).first
+
+      raise(
+        "No local GitLab administrator account exists"
+      ) unless actor
+
+      puts(
+        "GITLAB_LOCAL_ADMIN=#{actor.username}"
+      )
+  register: gitlab_project_local_admin_check
+  changed_when: false
+
+- name: PHASE 0 | Verify target GitLab group exists
+  ansible.builtin.command:
+    argv:
+      - gitlab-rails
+      - runner
+      - "-"
+  args:
+    stdin: |
+      group_path =
+        ENV.fetch("GITLAB_PROJECT_GROUP_PATH")
+           .to_s
+           .strip
+
+      group =
+        Group.find_by_full_path(group_path)
+
+      raise(
+        "GitLab group #{group_path} does not exist"
+      ) unless group
+
+      puts(
+        "GITLAB_GROUP_ID=#{group.id}"
+      )
+  environment:
+    GITLAB_PROJECT_GROUP_PATH: "{{ gitlab_project_group_path }}"
+  register: gitlab_project_group_check
+  changed_when: false

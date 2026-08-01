@@ -1,0 +1,12 @@
+---
+- name: Validate bootstrap inputs and prerequisites
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [always, validate]
+
+- name: Create and seed the GitLab project
+  ansible.builtin.import_tasks: provision.yml
+  tags: [bootstrap]
+
+- name: Report the bootstrap result
+  ansible.builtin.import_tasks: report.yml
+  tags: [report]

@@ -1,0 +1,44 @@
+---
+- name: Validate deployment inputs
+  ansible.builtin.import_tasks: validate.yml
+  tags: [always, validate]
+
+- name: Install operating-system prerequisites
+  ansible.builtin.import_tasks: prerequisites.yml
+  tags: [prerequisites]
+
+- name: Retrieve deployment secrets
+  ansible.builtin.import_tasks: aws_secrets.yml
+  tags: [secrets]
+
+- name: Configure Red Hat IdM trust
+  ansible.builtin.import_tasks: idm_trust.yml
+  tags: [idm, tls]
+
+- name: Export the ACM certificate
+  ansible.builtin.import_tasks: acm_certificate.yml
+  tags: [acm, tls]
+
+- name: Validate the exported TLS material
+  ansible.builtin.import_tasks: tls_validation.yml
+  tags: [acm, tls]
+
+- name: Install the GitLab TLS material
+  ansible.builtin.import_tasks: tls_install.yml
+  tags: [tls]
+
+- name: Configure the GitLab package repository
+  ansible.builtin.import_tasks: repository.yml
+  tags: [repository]
+
+- name: Install GitLab
+  ansible.builtin.import_tasks: install.yml
+  tags: [install]
+
+- name: Configure GitLab
+  ansible.builtin.import_tasks: configure.yml
+  tags: [configure, idm, registry]
+
+- name: Validate GitLab and bootstrap administrators from IdM
+  ansible.builtin.import_tasks: admin_bootstrap.yml
+  tags: [idm_admins]

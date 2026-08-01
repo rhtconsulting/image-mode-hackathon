@@ -1,0 +1,80 @@
+---
+# PHASE 11 | Validate public endpoints
+###########################################################################
+
+- name: PHASE 11 | Wait for GitLab HTTPS endpoint
+  ansible.builtin.command:
+    argv:
+      - curl
+      - --silent
+      - --show-error
+      - --location
+      - --output
+      - /dev/null
+      - --write-out
+      - "%{http_code}"
+      - --connect-timeout
+      - "10"
+      - --max-time
+      - "30"
+      - "{{ gitlab_health_url }}"
+  register: gitlab_https_health
+  retries: "{{ gitlab_readiness_retries }}"
+  delay: "{{ gitlab_readiness_delay }}"
+  until:
+    - gitlab_https_health.rc == 0
+    - gitlab_https_health.stdout | trim in ["200", "302"]
+  changed_when: false
+
+- name: PHASE 11 | Verify certificate presented by GitLab
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    openssl s_client \
+      -connect {{ gitlab_public_tls_fqdn | quote }}:443 \
+      -servername {{ gitlab_public_tls_fqdn | quote }} \
+      -verify_return_error \
+      </dev/null 2>&1 |
+    grep -q "Verify return code: 0"
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: PHASE 11 | Wait for GitLab registry HTTPS endpoint
+  ansible.builtin.command:
+    argv:
+      - curl
+      - --silent
+      - --show-error
+      - --output
+      - /dev/null
+      - --write-out
+      - "%{http_code}"
+      - --connect-timeout
+      - "10"
+      - --max-time
+      - "30"
+      - "https://{{ gitlab_fqdn }}:{{ gitlab_registry_effective_port }}/v2/"
+  register: gitlab_registry_health
+  retries: 30
+  delay: 10
+  until:
+    - gitlab_registry_health.rc == 0
+    - gitlab_registry_health.stdout | trim in ["200", "401"]
+  changed_when: false
+
+###########################################################################
+# PHASE 12 | Report
+###########################################################################
+
+- name: PHASE 12 | Display deployment result
+  ansible.builtin.debug:
+    msg:
+      - "GitLab URL: {{ gitlab_external_url }}"
+      - "GitLab registry: {{ gitlab_registry_external_url }}"
+      - "ACM certificate: {{ gitlab_acm_certificate_arn }}"
+      - "Staged certificate: {{ gitlab_tls_fullchain_path }}"
+      - "Installed certificate: {{ gitlab_ssl_certificate_path }}"
+      - "LDAP server: {{ gitlab_ldap_host }}:{{ gitlab_ldap_port }}"
+      - "LDAP administrator group: {{ gitlab_ldap_admin_group_cn }}"
+      - "Other matching IdM users receive standard GitLab accounts."

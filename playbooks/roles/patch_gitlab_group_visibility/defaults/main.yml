@@ -1,0 +1,55 @@
+---
+###############################################################################
+# GitLab group visibility role defaults
+###############################################################################
+
+###############################################################################
+# GitLab command paths
+###############################################################################
+
+gitlab_group_visibility_rails_runner_path: /opt/gitlab/bin/gitlab-rails
+
+###############################################################################
+# Target GitLab group and project
+###############################################################################
+
+# Complete GitLab group namespace path.
+gitlab_group_visibility_group_path: image-mode
+
+# Complete GitLab project path, including the parent group.
+gitlab_group_visibility_project_path: >-
+  {{ gitlab_group_visibility_group_path }}/sample-rhel9-web
+
+###############################################################################
+# Visibility settings
+###############################################################################
+
+# Supported values: private, internal, public.
+gitlab_group_visibility_level: public
+
+# Repair a missing namespace_settings record that causes the group settings
+# page to fail with an ActiveSupport::DelegationError.
+gitlab_group_visibility_repair_namespace_settings: true
+
+# Remove the desired visibility level from GitLab's restricted visibility
+# levels when required.
+gitlab_group_visibility_manage_restricted_levels: true
+
+# Make the selected visibility the default for newly created groups.
+gitlab_group_visibility_manage_default_group_visibility: true
+
+###############################################################################
+# Optional propagation controls
+###############################################################################
+
+# These are retained for future expansion. The current task directly updates
+# only the configured group and project.
+gitlab_group_visibility_make_existing_projects_public: false
+gitlab_group_visibility_make_existing_subgroups_public: false
+
+###############################################################################
+# Optional operational controls
+###############################################################################
+
+gitlab_group_visibility_create_backup: false
+gitlab_group_visibility_restart_puma: false

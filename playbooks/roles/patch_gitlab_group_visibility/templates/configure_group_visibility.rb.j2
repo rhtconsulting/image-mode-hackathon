@@ -1,0 +1,212 @@
+###############################################################################
+# Managed by Ansible
+#
+# Repair GitLab namespace settings and configure group visibility.
+###############################################################################
+
+group_path = {{ gitlab_group_visibility_group_path | to_json }}
+desired_visibility_name = {{ gitlab_group_visibility_level | to_json }}
+
+repair_namespace_settings = {{ gitlab_group_visibility_repair_namespace_settings | bool | lower }}
+manage_restricted_levels = {{ gitlab_group_visibility_manage_restricted_levels | bool | lower }}
+manage_default_group_visibility = {{ gitlab_group_visibility_manage_default_group_visibility | bool | lower }}
+make_existing_projects_public = {{ gitlab_group_visibility_make_existing_projects_public | bool | lower }}
+make_existing_subgroups_public = {{ gitlab_group_visibility_make_existing_subgroups_public | bool | lower }}
+
+visibility_levels = {
+  "private" => Gitlab::VisibilityLevel::PRIVATE,
+  "internal" => Gitlab::VisibilityLevel::INTERNAL,
+  "public" => Gitlab::VisibilityLevel::PUBLIC
+}.freeze
+
+unless visibility_levels.key?(desired_visibility_name)
+  abort(
+    "Unsupported visibility level #{desired_visibility_name.inspect}. " \
+    "Supported values are: #{visibility_levels.keys.join(', ')}"
+  )
+end
+
+desired_visibility_level = visibility_levels.fetch(desired_visibility_name)
+changed_items = []
+
+group = Group.find_by_full_path(group_path)
+
+unless group
+  abort("GitLab group #{group_path.inspect} was not found")
+end
+
+puts "GITLAB_GROUP_ID=#{group.id}"
+puts "GITLAB_GROUP_PATH=#{group.full_path}"
+puts "GITLAB_GROUP_CURRENT_VISIBILITY=#{group.visibility}"
+
+if group.namespace_settings.nil?
+  unless repair_namespace_settings
+    abort(
+      "Group #{group.full_path.inspect} is missing namespace_settings and " \
+      "repair is disabled"
+    )
+  end
+
+  namespace_settings = NamespaceSetting.create!(namespace_id: group.id)
+  changed_items << "namespace_settings_created"
+
+  puts(
+    "Created namespace_settings record #{namespace_settings.id} " \
+    "for group #{group.full_path}"
+  )
+else
+  puts(
+    "namespace_settings record #{group.namespace_settings.id} already exists " \
+    "for group #{group.full_path}"
+  )
+end
+
+group.reload
+
+unless group.namespace_settings
+  abort(
+    "namespace_settings is still missing for group #{group.full_path.inspect}"
+  )
+end
+
+application_settings = ApplicationSetting.current
+abort("GitLab ApplicationSetting.current returned nil") unless application_settings
+
+restricted_levels =
+  Array(application_settings.restricted_visibility_levels).map(&:to_i)
+
+if restricted_levels.include?(desired_visibility_level)
+  unless manage_restricted_levels
+    abort(
+      "The desired visibility #{desired_visibility_name.inspect} is " \
+      "restricted at the GitLab instance level"
+    )
+  end
+
+  application_settings.update!(
+    restricted_visibility_levels:
+      restricted_levels.reject { |level| level == desired_visibility_level }
+  )
+
+  changed_items << "restricted_visibility_levels_updated"
+
+  puts(
+    "Removed #{desired_visibility_name} from the instance restricted " \
+    "visibility levels"
+  )
+else
+  puts(
+    "#{desired_visibility_name} is not restricted at the GitLab instance level"
+  )
+end
+
+if manage_default_group_visibility
+  if application_settings.default_group_visibility.to_i !=
+      desired_visibility_level
+    application_settings.update!(
+      default_group_visibility: desired_visibility_level
+    )
+
+    changed_items << "default_group_visibility_updated"
+
+    puts(
+      "Changed the default visibility for newly created groups to " \
+      "#{desired_visibility_name}"
+    )
+  else
+    puts(
+      "Default visibility for newly created groups is already " \
+      "#{desired_visibility_name}"
+    )
+  end
+end
+
+if group.visibility_level.to_i != desired_visibility_level
+  old_visibility = group.visibility
+  group.update!(visibility_level: desired_visibility_level)
+  changed_items << "group_visibility_updated"
+
+  puts(
+    "Changed group #{group.full_path} visibility from " \
+    "#{old_visibility} to #{desired_visibility_name}"
+  )
+else
+  puts(
+    "Group #{group.full_path} visibility is already #{desired_visibility_name}"
+  )
+end
+
+if make_existing_subgroups_public
+  group.descendants.find_each do |subgroup|
+    if subgroup.namespace_settings.nil?
+      NamespaceSetting.create!(namespace_id: subgroup.id)
+      changed_items <<
+        "subgroup_namespace_settings_created:#{subgroup.full_path}"
+      puts "Created namespace_settings for subgroup #{subgroup.full_path}"
+    end
+
+    next if subgroup.visibility_level.to_i == desired_visibility_level
+
+    subgroup.update!(visibility_level: desired_visibility_level)
+    changed_items << "subgroup_visibility_updated:#{subgroup.full_path}"
+    puts(
+      "Changed subgroup #{subgroup.full_path} visibility to " \
+      "#{desired_visibility_name}"
+    )
+  end
+end
+
+if make_existing_projects_public
+  namespace_ids = group.self_and_descendants.select(:id)
+
+  Project.where(namespace_id: namespace_ids).find_each do |project|
+    next if project.visibility_level.to_i == desired_visibility_level
+
+    project.update!(visibility_level: desired_visibility_level)
+    changed_items << "project_visibility_updated:#{project.full_path}"
+    puts(
+      "Changed project #{project.full_path} visibility to " \
+      "#{desired_visibility_name}"
+    )
+  end
+end
+
+group.reload
+application_settings.reload
+
+unless group.namespace_settings
+  abort(
+    "Verification failed: group #{group.full_path.inspect} does not have " \
+    "namespace_settings"
+  )
+end
+
+unless group.visibility_level.to_i == desired_visibility_level
+  abort(
+    "Verification failed: group #{group.full_path.inspect} visibility is " \
+    "#{group.visibility.inspect}, expected #{desired_visibility_name.inspect}"
+  )
+end
+
+final_restricted_levels =
+  Array(application_settings.restricted_visibility_levels).map(&:to_i)
+
+if final_restricted_levels.include?(desired_visibility_level)
+  abort(
+    "Verification failed: #{desired_visibility_name.inspect} remains " \
+    "restricted at the instance level"
+  )
+end
+
+if manage_default_group_visibility &&
+    application_settings.default_group_visibility.to_i != desired_visibility_level
+  abort(
+    "Verification failed: default group visibility was not changed to " \
+    "#{desired_visibility_name.inspect}"
+  )
+end
+
+puts "GITLAB_GROUP_FINAL_VISIBILITY=#{group.visibility}"
+puts "GITLAB_NAMESPACE_SETTINGS_ID=#{group.namespace_settings.id}"
+puts "GITLAB_CHANGES=#{changed_items.join(',')}"
+puts changed_items.empty? ? "ANSIBLE_CHANGED=false" : "ANSIBLE_CHANGED=true"

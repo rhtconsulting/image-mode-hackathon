@@ -1,0 +1,12 @@
+---
+- name: Bootstrap GitLab developers from IdM
+  ansible.builtin.import_tasks: developer_bootstrap.yml
+  tags: [idm_developers]
+
+- name: Configure project protected-branch access
+  ansible.builtin.import_tasks: protected_branch.yml
+  tags: [protected_branch]
+
+- name: Verify the completed GitLab deployment
+  ansible.builtin.import_tasks: verify.yml
+  tags: [verify]

@@ -1,0 +1,193 @@
+---
+###############################################################################
+# Repair GitLab group settings and configure visibility
+#
+# Uses ansible.builtin.raw so Ansible does not stage a Python module remotely.
+# The Ruby code is encoded on the controller, decoded on the GitLab host, and
+# passed directly to GitLab Rails runner through standard input.
+###############################################################################
+
+- name: GITLAB GROUP | Repair settings and make group and project public
+  ansible.builtin.raw: >-
+    printf '%s'
+    '{{ gitlab_group_visibility_ruby_script | b64encode }}'
+    |
+    /usr/bin/base64 --decode
+    |
+    {{ gitlab_group_visibility_rails_runner_path }} runner -
+  vars:
+    gitlab_group_visibility_ruby_script: |
+      group_path = {{ gitlab_group_visibility_group_path | to_json }}
+      project_path = {{ gitlab_group_visibility_project_path | to_json }}
+      public_level = Gitlab::VisibilityLevel::PUBLIC
+      changes = []
+
+      group = Group.find_by_full_path(group_path)
+
+      unless group
+        abort("GitLab group #{group_path.inspect} was not found")
+      end
+
+      if group.namespace_settings.nil?
+        NamespaceSetting.create!(namespace_id: group.id)
+        group.reload
+        changes << "namespace_settings_created"
+
+        puts(
+          "Created namespace_settings for GitLab group #{group.full_path}"
+        )
+      else
+        puts(
+          "namespace_settings already exists for GitLab group #{group.full_path}"
+        )
+      end
+
+      application_settings = ApplicationSetting.current
+
+      unless application_settings
+        abort("GitLab ApplicationSetting.current returned nil")
+      end
+
+      restricted_levels =
+        Array(
+          application_settings.restricted_visibility_levels
+        ).map(&:to_i)
+
+      if restricted_levels.include?(public_level)
+        application_settings.update!(
+          restricted_visibility_levels:
+            restricted_levels.reject do |level|
+              level == public_level
+            end
+        )
+
+        application_settings.reload
+        changes << "public_visibility_unrestricted"
+
+        puts("Removed public from restricted visibility levels")
+      else
+        puts("Public visibility is not restricted at the instance level")
+      end
+
+      if application_settings.default_group_visibility.to_i != public_level
+        application_settings.update!(
+          default_group_visibility: public_level
+        )
+
+        application_settings.reload
+        changes << "default_group_visibility_public"
+
+        puts("Set the default group visibility to public")
+      else
+        puts("Default group visibility is already public")
+      end
+
+      if group.visibility_level.to_i != public_level
+        group.update!(
+          visibility_level: public_level
+        )
+
+        group.reload
+        changes << "group_visibility_public"
+
+        puts(
+          "Set GitLab group #{group.full_path} visibility to public"
+        )
+      else
+        puts(
+          "GitLab group #{group.full_path} is already public"
+        )
+      end
+
+      project = Project.find_by_full_path(project_path)
+
+      unless project
+        abort("GitLab project #{project_path.inspect} was not found")
+      end
+
+      if project.visibility_level.to_i != public_level
+        project.update!(
+          visibility_level: public_level
+        )
+
+        project.reload
+        changes << "project_visibility_public"
+
+        puts(
+          "Set GitLab project #{project.full_path} visibility to public"
+        )
+      else
+        puts(
+          "GitLab project #{project.full_path} is already public"
+        )
+      end
+
+      group.reload
+      project.reload
+      application_settings.reload
+
+      if group.namespace_settings.nil?
+        abort(
+          "Verification failed: namespace_settings is missing for " \
+          "#{group.full_path}"
+        )
+      end
+
+      unless group.visibility_level.to_i == public_level
+        abort(
+          "Verification failed: group #{group.full_path} visibility is " \
+          "#{group.visibility.inspect}, expected public"
+        )
+      end
+
+      unless project.visibility_level.to_i == public_level
+        abort(
+          "Verification failed: project #{project.full_path} visibility is " \
+          "#{project.visibility.inspect}, expected public"
+        )
+      end
+
+      final_restricted_levels =
+        Array(
+          application_settings.restricted_visibility_levels
+        ).map(&:to_i)
+
+      if final_restricted_levels.include?(public_level)
+        abort(
+          "Verification failed: public visibility remains restricted"
+        )
+      end
+
+      unless application_settings.default_group_visibility.to_i == public_level
+        abort(
+          "Verification failed: default group visibility is not public"
+        )
+      end
+
+      puts "GITLAB_GROUP_PATH=#{group.full_path}"
+      puts "GITLAB_GROUP_VISIBILITY=#{group.visibility}"
+      puts(
+        "GITLAB_NAMESPACE_SETTINGS_ID=#{group.namespace_settings.id}"
+      )
+      puts "GITLAB_PROJECT_PATH=#{project.full_path}"
+      puts "GITLAB_PROJECT_VISIBILITY=#{project.visibility}"
+      puts(
+        "GITLAB_DEFAULT_GROUP_VISIBILITY=" \
+        "#{application_settings.default_group_visibility}"
+      )
+      puts "GITLAB_CHANGES=#{changes.join(",")}"
+
+      if changes.empty?
+        puts "ANSIBLE_CHANGED=false"
+      else
+        puts "ANSIBLE_CHANGED=true"
+      end
+  register: gitlab_group_visibility_result
+  changed_when: >-
+    'ANSIBLE_CHANGED=true' in gitlab_group_visibility_result.stdout
+  failed_when:
+    - gitlab_group_visibility_result.rc != 0
+
+- name: GITLAB GROUP | Display configuration result
+  ansible.builtin.debug:
+    var: gitlab_group_visibility_result.stdout_lines

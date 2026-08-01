@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: gitlab_group_visibility
+  author: Image Mode Lab
+  description: >-
+    Repairs missing GitLab namespace settings and configures group visibility
+    on a self-managed Omnibus GitLab instance.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+        - "10"
+
+dependencies: []

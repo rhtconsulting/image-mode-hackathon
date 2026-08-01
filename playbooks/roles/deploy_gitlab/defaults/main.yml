@@ -1,0 +1,267 @@
+---
+###########################################################################
+# GitLab identity
+###########################################################################
+
+gitlab_fqdn: >-
+  {{
+    gitlab_hostname
+    | default(public_tls_fqdn, true)
+    | default(inventory_hostname, true)
+  }}
+
+gitlab_public_tls_fqdn: >-
+  {{
+    public_tls_fqdn
+    | default(gitlab_fqdn, true)
+  }}
+
+gitlab_external_url: "https://{{ gitlab_fqdn }}"
+
+gitlab_registry_enabled: true
+
+gitlab_registry_external_url: >-
+  https://{{ gitlab_fqdn }}:{{ gitlab_registry_effective_port }}
+
+###########################################################################
+# GitLab package
+###########################################################################
+
+gitlab_package_name: "gitlab-ee"
+gitlab_package_state: "present"
+
+gitlab_repository_script_url: >-
+  https://packages.gitlab.com/install/repositories/gitlab/gitlab-ee/script.rpm.sh
+
+gitlab_repository_script_path: >-
+  /var/tmp/gitlab-ee-repository.sh
+
+# Use the Terraform/AAP value when supplied; otherwise default to 5050.
+gitlab_registry_effective_port: >-
+  {{
+    gitlab_registry_port
+    | default(5050, true)
+    | int
+  }}
+
+###########################################################################
+# AWS Secrets Manager
+###########################################################################
+
+gitlab_root_password_secret_name: >-
+  {{ secret_prefix }}/gitlab/root_password
+
+gitlab_idm_admin_password_secret_name: >-
+  {{ secret_prefix }}/idm/admin_password
+
+###########################################################################
+# ACM public certificate
+###########################################################################
+
+gitlab_acm_certificate_arn: >-
+  {{
+    acm_certificate_arn
+    | default('', true)
+  }}
+
+gitlab_acm_certificate_minimum_validity_seconds: 1209600
+gitlab_acm_export_passphrase_bytes: 48
+gitlab_force_public_tls_install: false
+
+###########################################################################
+# ACM certificate staging
+###########################################################################
+
+gitlab_tls_root: "/opt/gitlab/certs"
+gitlab_tls_directory: "{{ gitlab_tls_root }}"
+
+gitlab_tls_certificate_path: >-
+  {{ gitlab_tls_directory }}/{{ gitlab_public_tls_fqdn }}.crt
+
+gitlab_tls_chain_path: >-
+  {{ gitlab_tls_directory }}/{{ gitlab_public_tls_fqdn }}-chain.crt
+
+gitlab_tls_fullchain_path: >-
+  {{ gitlab_tls_directory }}/{{ gitlab_public_tls_fqdn }}-fullchain.crt
+
+gitlab_tls_encrypted_private_key_path: >-
+  {{ gitlab_tls_directory }}/{{ gitlab_public_tls_fqdn }}-encrypted.key
+
+gitlab_tls_private_key_path: >-
+  {{ gitlab_tls_directory }}/{{ gitlab_public_tls_fqdn }}.key
+
+gitlab_tls_export_json_path: >-
+  {{ gitlab_tls_directory }}/acm-export.json
+
+gitlab_tls_passphrase_path: >-
+  {{ gitlab_tls_directory }}/.acm-export-passphrase
+
+gitlab_tls_backup_directory: >-
+  {{ gitlab_tls_directory }}/backup
+
+###########################################################################
+# GitLab certificate installation
+###########################################################################
+
+gitlab_ssl_directory: "/etc/gitlab/ssl"
+
+gitlab_ssl_certificate_path: >-
+  {{ gitlab_ssl_directory }}/{{ gitlab_public_tls_fqdn }}.crt
+
+gitlab_ssl_private_key_path: >-
+  {{ gitlab_ssl_directory }}/{{ gitlab_public_tls_fqdn }}.key
+
+###########################################################################
+# Red Hat IdM LDAP
+###########################################################################
+
+gitlab_ldap_label: "Red Hat IdM"
+gitlab_ldap_host: "{{ idm_server_fqdn }}"
+gitlab_ldap_port: 636
+gitlab_ldap_encryption: "simple_tls"
+gitlab_ldap_verify_certificates: true
+gitlab_ldap_timeout: 10
+
+gitlab_idm_base_dn: >-
+  {{
+    idm_domain_name
+    | lower
+    | split('.')
+    | map('regex_replace', '^', 'dc=')
+    | join(',')
+  }}
+
+gitlab_ldap_user_base: >-
+  cn=users,cn=accounts,{{ gitlab_idm_base_dn }}
+
+gitlab_ldap_group_base: >-
+  cn=groups,cn=accounts,{{ gitlab_idm_base_dn }}
+
+# Lab implementation. A dedicated read-only LDAP bind account is preferable
+# for production.
+gitlab_ldap_bind_dn: >-
+  uid=admin,cn=users,cn=accounts,{{ gitlab_idm_base_dn }}
+
+# GitLab expects the CN, not the complete group DN.
+gitlab_ldap_admin_group_cn: "idm-admins"
+
+# Every normal IdM person entry may authenticate.
+gitlab_ldap_user_filter: "(objectClass=person)"
+
+gitlab_ldap_lowercase_usernames: true
+gitlab_ldap_allow_username_or_email_login: true
+gitlab_ldap_block_auto_created_users: false
+
+
+# Complete DN for the IdM group whose members should become GitLab
+# instance administrators.
+gitlab_ldap_admin_group_dn: >-
+  cn={{ gitlab_ldap_admin_group_cn }},{{ gitlab_ldap_group_base }}
+
+###########################################################################
+# GitLab administrator bootstrap from IdM
+###########################################################################
+
+# This is an Ansible-managed alternative to licensed LDAP Group Sync.
+gitlab_idm_admin_bootstrap_enabled: true
+
+# When true, fail the playbook if an IdM administrator has not yet signed
+# into GitLab and therefore does not yet have a GitLab account.
+#
+# Leave false for initial deployment. After each IdM admin signs in once,
+# rerun the playbook to promote the account.
+gitlab_idm_admin_require_existing_gitlab_accounts: false
+
+# Remove GitLab administrator access from existing LDAP users who are no
+# longer members of the configured IdM administrator group.
+#
+# This intentionally excludes the local GitLab root account.
+gitlab_idm_admin_reconcile_removals: true
+
+# LDAP provider generated from the ldap_servers key named "main".
+gitlab_ldap_provider: "ldapmain"
+
+
+gitlab_idm_ca_source_path: "/etc/ipa/ca.crt"
+gitlab_trusted_certificates_directory: "/etc/gitlab/trusted-certs"
+gitlab_idm_ca_gitlab_path: "/etc/gitlab/trusted-certs/red-hat-idm-ca.crt"
+
+###########################################################################
+# Normal GitLab user defaults
+###########################################################################
+
+gitlab_default_projects_limit: 10
+gitlab_default_can_create_group: false
+
+###########################################################################
+# Firewall and readiness
+###########################################################################
+
+gitlab_firewall_services:
+  - ssh
+  - http
+  - https
+
+
+# External UI check. GitLab recommends the sign-in endpoint when checking
+# effective application availability through the public web interface.
+gitlab_health_url: "https://{{ gitlab_fqdn }}/users/sign_in"
+
+# Internal readiness probe. --resolve sends the request through localhost
+# while preserving the correct TLS hostname and Host header.
+gitlab_internal_readiness_url: >-
+
+  https://{{ gitlab_fqdn }}/-/readiness
+
+gitlab_readiness_retries: 60
+gitlab_readiness_delay: 20
+
+###############################################################################
+# GitLab IdM developer bootstrap
+#
+# Merge this section into roles/deploy_gitlab/defaults/main.yml. It assumes
+# gitlab_ldap_user_base, gitlab_ldap_group_base, and gitlab_ldap_provider are
+# already defined by the role's Red Hat IdM LDAP defaults.
+###############################################################################
+
+# Pre-create eligible IdM users and their LDAP identities so Git-over-HTTPS
+# works before the first Web UI login.
+gitlab_idm_developer_bootstrap_enabled: true
+
+# IdM's default group for ordinary users.
+gitlab_idm_developer_group_cn: "ipausers"
+
+gitlab_idm_developer_group_dn: >-
+  cn={{ gitlab_idm_developer_group_cn }},{{ gitlab_ldap_group_base }}
+
+# Query person accounts that have the attributes GitLab requires. Whitespace
+# is removed from this expression before it is passed to ldapsearch.
+gitlab_idm_developer_user_filter: >-
+  (&
+    (objectClass=posixAccount)
+    (uid=*)
+    (mail=*)
+    (memberOf={{ gitlab_idm_developer_group_dn }})
+  )
+
+# Grant access at the parent group so all projects beneath it inherit access.
+gitlab_idm_developer_group_path: "image-mode"
+
+# Informational path retained for role reporting and downstream checks.
+gitlab_idm_developer_project_path: >-
+  {{ gitlab_idm_developer_group_path }}/sample-rhel9-web
+
+# Phase 10 handles IdM administrators. Do not alter their group access here.
+gitlab_idm_developer_exclude_administrators: true
+
+# Never reduce Maintainer or Owner access to Developer.
+gitlab_idm_developer_preserve_higher_access: true
+
+# Upgrade Guest or Reporter memberships to Developer.
+gitlab_idm_developer_promote_lower_access: true
+
+# Continuously discover IdM users created after the deployment. GitLab's
+# built-in LDAP user sync only updates existing LDAP-linked users; it does not
+# create new GitLab accounts. A one-minute interval bounds first-push delay
+# without requiring another Ansible run.
+gitlab_idm_developer_sync_interval: "1min"

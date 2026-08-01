@@ -1,0 +1,26 @@
+---
+# PHASE 8 | Install GitLab
+###########################################################################
+
+- name: PHASE 8 | Start GitLab EE package installation
+  ansible.builtin.dnf:
+    name: "{{ gitlab_package_name }}"
+    state: "{{ gitlab_package_state }}"
+  environment:
+    EXTERNAL_URL: "{{ gitlab_external_url }}"
+    GITLAB_ROOT_PASSWORD: "{{ gitlab_initial_root_password }}"
+  async: 3600
+  poll: 0
+  register: gitlab_package_install_job
+  no_log: true
+
+- name: PHASE 8 | Wait for GitLab EE package installation
+  ansible.builtin.async_status:
+    jid: "{{ gitlab_package_install_job.ansible_job_id }}"
+  register: gitlab_package_install
+  until: gitlab_package_install.finished
+  retries: 180
+  delay: 20
+  no_log: true
+
+###########################################################################

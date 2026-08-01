@@ -1,0 +1,69 @@
+---
+# PHASE 7 | Configure GitLab package repository
+###########################################################################
+
+- name: PHASE 7 | Download official GitLab repository installer
+  ansible.builtin.command:
+    argv:
+      - curl
+      - --fail
+      - --silent
+      - --show-error
+      - --location
+      - --retry
+      - "5"
+      - --retry-delay
+      - "5"
+      - --retry-all-errors
+      - --connect-timeout
+      - "20"
+      - --max-time
+      - "300"
+      - --output
+      - "{{ gitlab_repository_script_path }}"
+      - "{{ gitlab_repository_script_url }}"
+  register: gitlab_repository_script_download
+  changed_when: true
+
+- name: PHASE 7 | Set GitLab repository installer permissions
+  ansible.builtin.file:
+    path: "{{ gitlab_repository_script_path }}"
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: PHASE 7 | Validate GitLab repository installer
+  ansible.builtin.command:
+    argv:
+      - /bin/bash
+      - -n
+      - "{{ gitlab_repository_script_path }}"
+  changed_when: false
+
+- name: PHASE 7 | Check whether GitLab repository is configured
+  ansible.builtin.stat:
+    path: /etc/yum.repos.d/gitlab_gitlab-ee.repo
+  register: gitlab_repository_file
+
+- name: PHASE 7 | Configure GitLab package repository
+  ansible.builtin.command:
+    argv:
+      - "{{ gitlab_repository_script_path }}"
+  when: not gitlab_repository_file.stat.exists
+  changed_when: true
+
+- name: PHASE 7 | Verify GitLab repository file was created
+  ansible.builtin.stat:
+    path: /etc/yum.repos.d/gitlab_gitlab-ee.repo
+  register: gitlab_repository_file_after_configuration
+
+- name: PHASE 7 | Assert GitLab repository is configured
+  ansible.builtin.assert:
+    that:
+      - gitlab_repository_file_after_configuration.stat.exists
+      - gitlab_repository_file_after_configuration.stat.isreg
+    fail_msg: >-
+      The GitLab repository installer completed, but
+      /etc/yum.repos.d/gitlab_gitlab-ee.repo was not created.
+
+###########################################################################

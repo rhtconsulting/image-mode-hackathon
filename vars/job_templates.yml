@@ -32,6 +32,7 @@ controller_templates:
       - "Image Mode Red Hat Registry Credential"
       - "Image Mode Quay Registry Credential"
       - "Image Mode AMI SSH Public Key Credential"
+      - "Image Mode IdM Non-Admin Credential"
 
     job_type: "run"
     verbosity: 1

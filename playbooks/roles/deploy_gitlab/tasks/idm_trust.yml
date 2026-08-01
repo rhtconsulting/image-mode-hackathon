@@ -1,0 +1,136 @@
+---
+# PHASE 3 | Trust and validate Red Hat IdM LDAPS
+###########################################################################
+
+- name: PHASE 3 | Inspect IdM CA certificate
+  ansible.builtin.stat:
+    path: /etc/ipa/ca.crt
+  register: gitlab_idm_ca
+
+- name: PHASE 3 | Require the GitLab host to be enrolled in IdM
+  ansible.builtin.assert:
+    that:
+      - gitlab_idm_ca.stat.exists
+      - gitlab_idm_ca.stat.isreg
+    fail_msg: >-
+      /etc/ipa/ca.crt was not found. Enroll the GitLab EC2 host into IdM
+      before running this playbook.
+
+- name: PHASE 3 | Install IdM CA into system trust
+  ansible.builtin.copy:
+    src: /etc/ipa/ca.crt
+    dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  register: gitlab_idm_ca_install
+
+- name: PHASE 3 | Refresh system CA trust
+  ansible.builtin.command:
+    argv:
+      - update-ca-trust
+      - extract
+  when: gitlab_idm_ca_install.changed
+  changed_when: true
+
+- name: PHASE 3 | Verify IdM LDAPS certificate
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    timeout 20 openssl s_client \
+      -connect {{ gitlab_ldap_host | quote }}:{{ gitlab_ldap_port }} \
+      -servername {{ gitlab_ldap_host | quote }} \
+      -CAfile /etc/pki/tls/certs/ca-bundle.crt \
+      -verify_return_error \
+      </dev/null 2>&1 |
+    grep -q "Verify return code: 0"
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: PHASE 3 | Validate generated LDAP distinguished names
+  ansible.builtin.assert:
+    that:
+      - gitlab_idm_base_dn is match('^dc=[^,]+(?:,dc=[^,]+)+$')
+      - gitlab_ldap_bind_dn is match(
+        '^uid=[^,]+,cn=users,cn=accounts,dc=[^,]+(?:,dc=[^,]+)+$'
+        )
+      - gitlab_ldap_group_base is match(
+        '^cn=groups,cn=accounts,dc=[^,]+(?:,dc=[^,]+)+$'
+        )
+      - "'\\\\1' not in gitlab_idm_base_dn"
+      - "'\\\\1' not in gitlab_ldap_bind_dn"
+      - "'\\\\1' not in gitlab_ldap_group_base"
+    fail_msg: >-
+      Invalid LDAP distinguished names were generated from
+      idm_domain_name={{ idm_domain_name }}. Generated base DN:
+      {{ gitlab_idm_base_dn }}.
+
+- name: PHASE 3 | Create temporary LDAP bind-password file
+  ansible.builtin.tempfile:
+    state: file
+    path: /run
+    prefix: gitlab-ldap-bind-
+  register: gitlab_ldap_bind_password_file
+  no_log: true
+
+- name: PHASE 3 | Store LDAP bind password securely
+  ansible.builtin.copy:
+    content: "{{ gitlab_ldap_bind_password }}"
+    dest: "{{ gitlab_ldap_bind_password_file.path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: PHASE 3 | Verify IdM administrator group exists
+  block:
+    - name: PHASE 3 | Query IdM administrator group
+      ansible.builtin.command:
+        argv:
+          - ldapsearch
+          - -LLL
+          - -x
+          - -H
+          - "ldaps://{{ gitlab_ldap_host }}:{{ gitlab_ldap_port }}"
+          - -D
+          - "{{ gitlab_ldap_bind_dn }}"
+          - -y
+          - "{{ gitlab_ldap_bind_password_file.path }}"
+          - -b
+          - "{{ gitlab_ldap_group_base }}"
+          - -s
+          - sub
+          - "(cn={{ gitlab_ldap_admin_group_cn }})"
+          - dn
+          - cn
+      register: gitlab_idm_admin_group_lookup
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 3 | Assert IdM administrator group exists
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              'cn=' ~ gitlab_ldap_admin_group_cn | lower
+            )
+            in
+            (
+              gitlab_idm_admin_group_lookup.stdout | lower
+            )
+        fail_msg: >-
+          IdM group {{ gitlab_ldap_admin_group_cn }} was not found under
+          {{ gitlab_ldap_group_base }}.
+  always:
+    - name: PHASE 3 | Remove temporary LDAP bind-password file
+      ansible.builtin.file:
+        path: "{{ gitlab_ldap_bind_password_file.path }}"
+        state: absent
+      when:
+        - gitlab_ldap_bind_password_file is defined
+        - gitlab_ldap_bind_password_file.path is defined
+      no_log: true
+
+ ###########################################################################

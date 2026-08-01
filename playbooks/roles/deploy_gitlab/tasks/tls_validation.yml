@@ -1,0 +1,73 @@
+---
+# PHASE 5 | Validate the exported certificate and private key
+###########################################################################
+
+- name: PHASE 5 | Validate certificate hostname
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ gitlab_tls_certificate_path }}"
+      - -noout
+      - -checkhost
+      - "{{ gitlab_public_tls_fqdn }}"
+  changed_when: false
+
+- name: PHASE 5 | Validate minimum certificate lifetime
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ gitlab_tls_certificate_path }}"
+      - -checkend
+      - "{{ gitlab_acm_certificate_minimum_validity_seconds | string }}"
+      - -noout
+  changed_when: false
+
+- name: PHASE 5 | Read certificate public-key digest
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    openssl x509 \
+      -in {{ gitlab_tls_certificate_path | quote }} \
+      -pubkey \
+      -noout |
+    openssl pkey \
+      -pubin \
+      -outform DER |
+    openssl sha256
+  args:
+    executable: /bin/bash
+  register: gitlab_certificate_public_key_digest
+  changed_when: false
+
+- name: PHASE 5 | Read private-key public-key digest
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    openssl pkey \
+      -in {{ gitlab_tls_private_key_path | quote }} \
+      -pubout \
+      -outform DER |
+    openssl sha256
+  args:
+    executable: /bin/bash
+  register: gitlab_private_key_public_key_digest
+  changed_when: false
+  no_log: true
+
+- name: PHASE 5 | Assert certificate and private key match
+  ansible.builtin.assert:
+    that:
+      - >-
+        gitlab_certificate_public_key_digest.stdout | trim
+        ==
+        gitlab_private_key_public_key_digest.stdout | trim
+    fail_msg: >-
+      The private key exported from ACM does not match the GitLab
+      certificate.
+  no_log: true
+
+###########################################################################

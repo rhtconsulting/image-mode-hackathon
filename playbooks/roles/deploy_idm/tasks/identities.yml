@@ -6,85 +6,52 @@
   changed_when: false
   no_log: true
 
-- name: Verify the IdM administrative credential cache
-  ansible.builtin.command:
-    argv: [klist, -s]
-  changed_when: false
-
-- name: Build normalized IdM user records
+- name: Build ordinary user records
   ansible.builtin.set_fact:
     idm_managed_users: >-
-      {{
-        (idm_managed_users | default([]))
-        + [{
-          'uid': item.key,
-          'first_name': item.value.first_name | default(item.key),
-          'last_name': item.value.last_name | default('User'),
-          'groups': (item.value.groups | default([])) + ['ipausers'],
-          'admin': false
-        }]
-      }}
+      {{ (idm_managed_users | default([])) + [{
+        'uid': item.key,
+        'first_name': item.value.first_name | default(item.key),
+        'last_name': item.value.last_name | default('User'),
+        'groups': item.value.groups | default([]),
+        'admin': false
+      }] }}
   loop: "{{ lab_users | default({}) | dict2items }}"
-  loop_control:
-    label: "{{ item.key }}"
 
-- name: Add normalized administrative user records
+- name: Build administrator user records
   ansible.builtin.set_fact:
     idm_managed_users: >-
-      {{
-        (idm_managed_users | default([]))
-        + [{
-          'uid': item,
-          'first_name': item,
-          'last_name': 'User',
-          'groups': [idm_admin_group],
-          'admin': true
-        }]
-      }}
+      {{ (idm_managed_users | default([])) + [{
+        'uid': item, 'first_name': item, 'last_name': 'User',
+        'groups': [idm_admin_group], 'admin': true
+      }] }}
   loop: "{{ idm_users | default([]) }}"
-  loop_control:
-    label: "{{ item }}"
 
-- name: Validate managed identity data
+- name: Validate unique managed user IDs
   ansible.builtin.assert:
     that:
       - idm_managed_users | default([]) | length > 0
       - >-
-        (idm_managed_users | map(attribute='uid') | list | unique | length)
-        == (idm_managed_users | length)
-    fail_msg: >-
-      At least one user is required and each UID must occur only once across
-      lab_users and idm_users.
+        idm_managed_users | map(attribute='uid') | unique | length
+        == idm_managed_users | length
 
-- name: Build requested IdM group list
+- name: Build supplemental group list
   ansible.builtin.set_fact:
     idm_managed_groups: >-
-      {{
-        idm_managed_users
-        | map(attribute='groups')
-        | flatten
-        | reject('equalto', 'ipausers')
-        | reject('equalto', 'admins')
-        | unique
-        | list
-      }}
+      {{ idm_managed_users | map(attribute='groups') | flatten | unique | list }}
 
-- name: Ensure managed IdM groups exist
+- name: Ensure supplemental groups exist
   ansible.builtin.command:
-    argv:
-      - ipa
-      - group-add
-      - "{{ item }}"
-      - "--desc=Ansible-managed IdM group"
+    argv: [ipa, group-add, "{{ item }}", "--desc=Ansible-managed IdM group"]
   register: idm_group_create
   changed_when: idm_group_create.rc == 0
   failed_when:
     - idm_group_create.rc != 0
-    - "'already exists' not in (idm_group_create.stderr | default(''))"
     - "'already exists' not in (idm_group_create.stdout | default(''))"
+    - "'already exists' not in (idm_group_create.stderr | default(''))"
   loop: "{{ idm_managed_groups }}"
 
-- name: Ensure managed IdM users exist
+- name: Ensure managed users exist
   ansible.builtin.command:
     argv:
       - ipa
@@ -96,13 +63,13 @@
   changed_when: idm_user_create.rc == 0
   failed_when:
     - idm_user_create.rc != 0
-    - "'already exists' not in (idm_user_create.stderr | default(''))"
     - "'already exists' not in (idm_user_create.stdout | default(''))"
+    - "'already exists' not in (idm_user_create.stderr | default(''))"
   loop: "{{ idm_managed_users }}"
   loop_control:
     label: "{{ item.uid }}"
 
-- name: Set the initial password on newly created users
+- name: Set initial passwords only for newly created users
   ansible.builtin.command:
     argv: [ipa, passwd, "{{ item.item.uid }}"]
     stdin: |
@@ -111,76 +78,90 @@
   no_log: true
   changed_when: true
   loop: "{{ idm_user_create.results | default([]) }}"
-  loop_control:
-    label: "{{ item.item.uid }}"
   when: item.rc == 0
 
-- name: Ensure users belong to their requested groups
+- name: Ensure supplemental group memberships
   ansible.builtin.command:
-    argv:
-      - ipa
-      - group-add-member
-      - "{{ item.1 }}"
-      - "--users={{ item.0.uid }}"
+    argv: [ipa, group-add-member, "{{ item.1 }}", "--users={{ item.0.uid }}"]
   register: idm_membership_update
   changed_when: >-
-    'Number of members added 1'
-    in (idm_membership_update.stdout | default(''))
-  failed_when: idm_membership_update.rc != 0
+    'Number of members added 1' in (idm_membership_update.stdout | default(''))
+  failed_when:
+    - idm_membership_update.rc != 0
+    - >-
+      'already a member'
+      not in (idm_membership_update.stdout | default('') | lower)
+    - >-
+      'already a member'
+      not in (idm_membership_update.stderr | default('') | lower)
   loop: "{{ idm_managed_users | subelements('groups') }}"
   loop_control:
     label: "{{ item.0.uid }} -> {{ item.1 }}"
 
-- name: Add the delegated admin group to built-in admins
+# user-add automatically places every account in FreeIPA's default ipausers
+# group. Verify it instead of calling group-add-member, which returns rc=1 when
+# that automatic membership already exists.
+- name: Read the built-in ipausers membership
+  ansible.builtin.command:
+    argv: [ipa, group-show, ipausers, --all, --raw]
+  register: idm_ipausers_group
+  changed_when: false
+
+- name: Verify ordinary users are members of ipausers
+  ansible.builtin.assert:
+    that:
+      - >-
+        ('member_user: ' ~ item.uid)
+        in (idm_ipausers_group.stdout | default(''))
+    fail_msg: "{{ item.uid }} is not a member of ipausers."
+  loop: "{{ idm_managed_users | rejectattr('admin') | list }}"
+  loop_control:
+    label: "{{ item.uid }}"
+
+- name: Nest delegated administrators in built-in admins
   ansible.builtin.command:
     argv: [ipa, group-add-member, admins, "--groups={{ idm_admin_group }}"]
   register: idm_console_admin_add
   changed_when: >-
     'Number of members added 1' in (idm_console_admin_add.stdout | default(''))
-  failed_when: idm_console_admin_add.rc != 0
+  failed_when:
+    - idm_console_admin_add.rc != 0
+    - >-
+      'already a member'
+      not in (idm_console_admin_add.stdout | default('') | lower)
+    - >-
+      'already a member'
+      not in (idm_console_admin_add.stderr | default('') | lower)
 
 - name: Ensure the administrator sudo rule exists
   ansible.builtin.command:
-    argv:
-      - ipa
-      - sudorule-add
-      - "{{ idm_sudo_rule }}"
-      - "--desc=Allow {{ idm_admin_group }} sudo access on all hosts"
-  register: idm_sudo_rule_add
-  changed_when: idm_sudo_rule_add.rc == 0
+    argv: [ipa, sudorule-add, "{{ idm_sudo_rule }}"]
+  register: idm_sudo_create
+  changed_when: idm_sudo_create.rc == 0
   failed_when:
-    - idm_sudo_rule_add.rc != 0
-    - "'already exists' not in (idm_sudo_rule_add.stderr | default(''))"
-    - "'already exists' not in (idm_sudo_rule_add.stdout | default(''))"
+    - idm_sudo_create.rc != 0
+    - "'already exists' not in (idm_sudo_create.stdout | default(''))"
+    - "'already exists' not in (idm_sudo_create.stderr | default(''))"
 
-- name: Configure the administrator sudo rule categories
+- name: Configure the administrator sudo rule
   ansible.builtin.command:
     argv: [ipa, sudorule-mod, "{{ idm_sudo_rule }}", --hostcat=all, --cmdcat=all]
-  register: idm_sudo_categories
-  changed_when: >-
-    'Modified Sudo Rule' in (idm_sudo_categories.stdout | default(''))
+  register: idm_sudo_modify
+  changed_when: "'Modified Sudo Rule' in (idm_sudo_modify.stdout | default(''))"
   failed_when:
-    - idm_sudo_categories.rc != 0
+    - idm_sudo_modify.rc != 0
     - >-
       'no modifications to be performed'
-      not in (idm_sudo_categories.stderr | default(''))
+      not in (idm_sudo_modify.stderr | default('') | lower)
 
-- name: Attach the administrator group to the sudo rule
+- name: Attach delegated administrators to the sudo rule
   ansible.builtin.command:
-    argv:
-      - ipa
-      - sudorule-add-user
-      - "{{ idm_sudo_rule }}"
-      - "--groups={{ idm_admin_group }}"
-  register: idm_sudo_group_add
+    argv: [ipa, sudorule-add-user, "{{ idm_sudo_rule }}", "--groups={{ idm_admin_group }}"]
+  register: idm_sudo_member
   changed_when: >-
-    'Number of members added 1' in (idm_sudo_group_add.stdout | default(''))
-  failed_when: idm_sudo_group_add.rc != 0
+    'Number of members added 1' in (idm_sudo_member.stdout | default(''))
+  failed_when:
+    - idm_sudo_member.rc != 0
+    - "'already a member' not in (idm_sudo_member.stdout | default('') | lower)"
+    - "'already a member' not in (idm_sudo_member.stderr | default('') | lower)"
 
-- name: Verify every managed user exists
-  ansible.builtin.command:
-    argv: [ipa, user-show, "{{ item.uid }}"]
-  changed_when: false
-  loop: "{{ idm_managed_users }}"
-  loop_control:
-    label: "{{ item.uid }}"

@@ -52,6 +52,9 @@ quay_default_org: image-mode
 quay_default_team: members
 quay_default_team_role: member
 
+quay_writer_team: writers
+quay_writer_team_role: creator
+
 quay_owner_team: owners
 quay_owner_team_role: admin
 
@@ -135,7 +138,8 @@ quay_admin_users: "{{ idm_users | default([]) | unique }}"
 # Use authoritative IdM groups directly. This avoids copying a static list of
 # users into Quay-specific groups and automatically scales as admins add users.
 quay_idm_owner_group: idm-admins
-quay_idm_writer_group: ipausers
+quay_idm_member_group: ipausers
+quay_idm_writer_group: "quay-{{ quay_default_org }}-writers"
 
 # Relative group DNs.
 #
@@ -143,6 +147,9 @@ quay_idm_writer_group: ipausers
 # Quay resolves them relative to LDAP_BASE_DN.
 quay_idm_owner_group_relative_dn: >-
   cn={{ quay_idm_owner_group }},{{ idm_group_container_relative_dn }}
+
+quay_idm_member_group_relative_dn: >-
+  cn={{ quay_idm_member_group }},{{ idm_group_container_relative_dn }}
 
 quay_idm_writer_group_relative_dn: >-
   cn={{ quay_idm_writer_group }},{{ idm_group_container_relative_dn }}
@@ -153,6 +160,9 @@ quay_idm_writer_group_relative_dn: >-
 # filters that compare against the user's full memberOf attribute.
 quay_idm_owner_group_dn: >-
   {{ quay_idm_owner_group_relative_dn }},{{ idm_base_dn }}
+
+quay_idm_member_group_dn: >-
+  {{ quay_idm_member_group_relative_dn }},{{ idm_base_dn }}
 
 quay_idm_writer_group_dn: >-
   {{ quay_idm_writer_group_relative_dn }},{{ idm_base_dn }}
@@ -175,9 +185,9 @@ quay_registry_ldap_email: image-mode-builder@example.com
 quay_registry_ldap_secret_name: "{{ secret_prefix }}/quay/ldap_users/{{ quay_registry_ldap_username }}"
   
 
-# FreeIPA automatically makes the dedicated registry account an ipausers
-# member when the account is created.
-quay_writer_users: []
+# Keep push permission narrower than general organization visibility.
+quay_writer_users:
+  - "{{ quay_registry_ldap_username }}"
 
 
 ###########################################################################
@@ -200,16 +210,23 @@ quay_team_syncs:
 
   - team: "{{ quay_default_team }}"
     role: "{{ quay_default_team_role }}"
-    idm_group: "{{ quay_idm_writer_group }}"
+    idm_group: "{{ quay_idm_member_group }}"
 
     # Passed to:
     # POST /api/v1/organization/<org>/team/<team>/syncing
-    group_dn: "{{ quay_idm_writer_group_relative_dn }}"
+    group_dn: "{{ quay_idm_member_group_relative_dn }}"
 
     # Used only for direct LDAP validation and diagnostics.
-    full_group_dn: "{{ quay_idm_writer_group_dn }}"
+    full_group_dn: "{{ quay_idm_member_group_dn }}"
 
     users: []
+
+  - team: "{{ quay_writer_team }}"
+    role: "{{ quay_writer_team_role }}"
+    idm_group: "{{ quay_idm_writer_group }}"
+    group_dn: "{{ quay_idm_writer_group_relative_dn }}"
+    full_group_dn: "{{ quay_idm_writer_group_dn }}"
+    users: "{{ quay_writer_users }}"
 
 ###########################################################################
 # AWS Secrets Manager paths

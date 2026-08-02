@@ -69,10 +69,12 @@
       - "IdM base DN: {{ idm_base_dn }}"
       - "IdM user container: {{ idm_user_container_dn }}"
       - "IdM owner group: {{ quay_idm_owner_group_dn }}"
+      - "IdM member group: {{ quay_idm_member_group_dn }}"
       - "IdM writer group: {{ quay_idm_writer_group_dn }}"
       - "Organization: {{ quay_default_org }}"
       - "Owner team: {{ quay_owner_team }}"
-      - "Writer team: {{ quay_default_team }}"
+      - "Member team: {{ quay_default_team }}"
+      - "Writer team: {{ quay_writer_team }}"
       - >-
         PostgreSQL data is retained at
         {{ quay_root }}/postgres with UID/GID 26.
@@ -94,7 +96,7 @@
       - >-
         The dedicated Quay LDAP user belongs to the
         {{ quay_idm_writer_group }} IdM group, which synchronizes to the
-        {{ quay_default_team }} Quay team.
+        {{ quay_writer_team }} Quay team.
 
 - name: Show running containers
   ansible.builtin.command:

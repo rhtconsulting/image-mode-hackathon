@@ -1,0 +1,123 @@
+---
+###########################################################################
+# IdM identity settings
+###########################################################################
+
+idm_short_name: "{{ inventory_hostname_short }}"
+
+idm_parent_domain: "{{ parent_domain_name }}"
+idm_domain: "{{ idm_domain_name }}"
+idm_realm: "{{ idm_realm_name }}"
+idm_fqdn: "{{ idm_server_fqdn }}"
+
+idm_forward_policy: only
+
+###########################################################################
+# IdM authorization settings
+###########################################################################
+
+idm_admin_group: idm-admins
+idm_sudo_rule: allow_idm_admins_all
+
+###########################################################################
+# AWS Secrets Manager settings
+###########################################################################
+
+idm_admin_password_secret_name: >-
+  {{ secret_prefix }}/idm/admin_password
+
+idm_dm_password_secret_name: >-
+  {{ secret_prefix }}/idm/directory_manager_password
+
+idm_default_user_password_secret_name: >-
+  {{ secret_prefix }}/idm/default_user_password
+
+
+###########################################################################
+# Public TLS certificate settings
+###########################################################################
+
+idm_public_tls_fqdn: >-
+  {{
+    public_tls_fqdn
+    | default(idm_fqdn, true)
+  }}
+
+idm_acm_certificate_arn: >-
+  {{
+    acm_certificate_arn
+    | default('', true)
+  }}
+
+idm_tls_root: /opt/certs
+idm_tls_directory: "{{ idm_tls_root }}/idm"
+
+idm_tls_certificate_path: >-
+  {{ idm_tls_directory }}/{{ idm_public_tls_fqdn }}.crt
+
+idm_tls_chain_path: >-
+  {{ idm_tls_directory }}/{{ idm_public_tls_fqdn }}-chain.crt
+
+idm_tls_fullchain_path: >-
+  {{ idm_tls_directory }}/{{ idm_public_tls_fqdn }}-fullchain.crt
+
+idm_tls_private_key_path: >-
+  {{ idm_tls_directory }}/{{ idm_public_tls_fqdn }}.key
+
+idm_tls_backup_directory: >-
+  {{ idm_tls_directory }}/backup
+
+idm_tls_local_staging_prefix: idm-acm-tls-
+
+# Regenerate and reinstall the certificate even when the currently
+# installed Apache certificate already matches the ACM certificate.
+idm_force_public_tls_install: false
+  
+
+idm_tls_chain_parts_directory: "{{ idm_tls_directory }}/chain-parts"
+
+idm_current_http_certificate_path: "{{ idm_tls_directory }}/current-http.crt"
+
+idm_acm_certificate_minimum_validity_seconds: 1209600
+
+###########################################################################
+# IdM installer controls
+###########################################################################
+
+# Maximum amount of time allowed for ipa-server-install.
+idm_install_timeout_seconds: 3600
+
+# Ansible reports installer polling status at this interval.
+idm_install_poll_seconds: 30
+
+idm_install_log: /var/log/ipaserver-install.log
+idm_install_wrapper_log: /var/log/ansible-idm-install.log
+
+idm_install_diagnostics_log: >-
+  /var/log/ansible-idm-install-diagnostics.log
+
+###########################################################################
+# Minimum resource requirements
+###########################################################################
+
+idm_minimum_memory_mb: 1800
+idm_minimum_root_disk_mb: 4096
+
+###########################################################################
+# Firewall ports
+###########################################################################
+
+required_tcp_ports:
+  - 53
+  - 80
+  - 88
+  - 389
+  - 443
+  - 464
+  - 636
+
+required_udp_ports:
+  - 53
+  - 88
+  - 123
+  - 464

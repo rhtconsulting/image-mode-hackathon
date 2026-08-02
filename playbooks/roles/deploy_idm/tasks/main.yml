@@ -1,0 +1,29 @@
+---
+- name: Validate inputs and load secrets
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [always, idm_preflight]
+
+- name: Prepare the operating system
+  ansible.builtin.import_tasks: platform.yml
+  tags: [idm_platform]
+
+- name: Install and verify the IdM server
+  ansible.builtin.import_tasks: install.yml
+  tags: [idm_install]
+
+- name: Configure IdM DNS
+  ansible.builtin.import_tasks: dns.yml
+  tags: [idm_dns]
+
+- name: Reconcile IdM identities and authorization
+  ansible.builtin.import_tasks: identities.yml
+  tags: [idm_identities]
+
+- name: Install the public web certificate
+  ansible.builtin.import_tasks: tls.yml
+  tags: [idm_tls]
+
+- name: Run final validation
+  ansible.builtin.import_tasks: validate.yml
+  tags: [idm_validate]
+

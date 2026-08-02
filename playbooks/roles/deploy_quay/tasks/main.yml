@@ -1,0 +1,45 @@
+---
+- name: Validate inputs and load secrets
+  ansible.builtin.import_tasks: secrets.yml
+  tags: [always, quay_secrets]
+
+- name: Prepare the Quay host
+  ansible.builtin.import_tasks: platform.yml
+  tags: [quay_platform]
+
+- name: Handle an existing installation
+  ansible.builtin.import_tasks: existing_installation.yml
+  tags: [quay_install]
+
+- name: Prepare persistent storage
+  ansible.builtin.import_tasks: storage.yml
+  tags: [quay_install]
+
+- name: Install public TLS material
+  ansible.builtin.import_tasks: tls.yml
+  tags: [quay_tls]
+
+- name: Start database services
+  ansible.builtin.import_tasks: database.yml
+  tags: [quay_install]
+
+- name: Prepare IdM integration
+  ansible.builtin.import_tasks: idm.yml
+  tags: [quay_idm]
+
+- name: Bootstrap Quay and its organization
+  ansible.builtin.import_tasks: bootstrap.yml
+  tags: [quay_bootstrap]
+
+- name: Enable LDAP authentication
+  ansible.builtin.import_tasks: ldap.yml
+  tags: [quay_ldap]
+
+- name: Configure persistent services
+  ansible.builtin.import_tasks: systemd.yml
+  tags: [quay_systemd]
+
+- name: Reconcile organization access
+  ansible.builtin.import_tasks: access.yml
+  tags: [quay_access]
+

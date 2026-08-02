@@ -1,0 +1,158 @@
+---
+# Detect an existing Quay installation
+###########################################################################
+
+- name: Check for an existing Quay configuration
+  ansible.builtin.stat:
+    path: "{{ quay_root }}/config/config.yaml"
+  register: quay_existing_config
+
+- name: Check for an existing Quay PostgreSQL database
+  ansible.builtin.stat:
+    path: "{{ quay_root }}/postgres"
+  register: quay_existing_postgres
+
+- name: Check for existing Quay registry storage
+  ansible.builtin.stat:
+    path: "{{ quay_root }}/storage"
+  register: quay_existing_storage
+
+- name: Inspect existing Quay pod
+  ansible.builtin.command:
+    argv:
+      - podman
+      - pod
+      - exists
+      - quay-pod
+  register: quay_existing_pod
+  changed_when: false
+  failed_when: false
+
+- name: Determine whether Quay is already installed
+  ansible.builtin.set_fact:
+    quay_existing_installation: >-
+      {{
+        quay_existing_config.stat.exists
+        or quay_existing_postgres.stat.exists
+        or quay_existing_storage.stat.exists
+        or quay_existing_pod.rc == 0
+      }}
+
+- name: Display existing Quay installation status
+  ansible.builtin.debug:
+    msg: >-
+      Existing Quay installation detected. The deployment will be
+      completely removed and rebuilt because
+      quay_rebuild_existing_installation is enabled.
+  when:
+    - quay_existing_installation | bool
+    - quay_rebuild_existing_installation | bool
+
+- name: Refuse to continue when an existing installation cannot be rebuilt
+  ansible.builtin.fail:
+    msg: >-
+      An existing Quay installation was detected beneath
+      {{ quay_root }}, but quay_rebuild_existing_installation is false.
+      Enable quay_rebuild_existing_installation or remove the existing
+      deployment manually.
+  when:
+    - quay_existing_installation | bool
+    - not quay_rebuild_existing_installation | bool
+
+
+
+###########################################################################
+# Destroy an existing Quay installation
+###########################################################################
+
+- name: Stop existing Quay registry container
+  containers.podman.podman_container:
+    name: quay-registry
+    state: stopped
+  failed_when: false
+  when:
+    - quay_existing_installation | bool
+    - quay_rebuild_existing_installation | bool
+
+- name: Remove existing Quay registry container
+  containers.podman.podman_container:
+    name: quay-registry
+    state: absent
+  failed_when: false
+  when:
+    - quay_existing_installation | bool
+    - quay_rebuild_existing_installation | bool
+
+- name: Remove existing PostgreSQL container
+  containers.podman.podman_container:
+    name: quay-postgres
+    state: absent
+  failed_when: false
+  when:
+    - quay_existing_installation | bool
+    - quay_rebuild_existing_installation | bool
+
+- name: Remove existing Redis container
+  containers.podman.podman_container:
+    name: quay-redis
+    state: absent
+  failed_when: false
+  when:
+    - quay_existing_installation | bool
+    - quay_rebuild_existing_installation | bool
+
+- name: Remove existing Quay pod
+  containers.podman.podman_pod:
+    name: quay-pod
+    state: absent
+  failed_when: false
+  when:
+    - quay_existing_installation | bool
+    - quay_rebuild_existing_installation | bool
+
+- name: Remove existing generated Quay systemd units
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}"
+    state: absent
+  loop:
+    - pod-quay-pod.service
+    - container-quay-postgres.service
+    - container-quay-redis.service
+    - container-quay-registry.service
+  when:
+    - quay_existing_installation | bool
+    - quay_rebuild_existing_installation | bool
+
+- name: Reload systemd after removing Quay units
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when:
+    - quay_existing_installation | bool
+    - quay_rebuild_existing_installation | bool
+
+- name: Remove all persistent Quay installation data
+  ansible.builtin.file:
+    path: "{{ quay_root }}"
+    state: absent
+  when:
+    - quay_existing_installation | bool
+    - quay_rebuild_existing_installation | bool
+
+- name: Verify existing Quay installation directory was removed
+  ansible.builtin.stat:
+    path: "{{ quay_root }}"
+  register: quay_removed_root
+  when:
+    - quay_existing_installation | bool
+    - quay_rebuild_existing_installation | bool
+
+- name: Assert existing Quay installation was removed
+  ansible.builtin.assert:
+    that:
+      - not quay_removed_root.stat.exists
+    fail_msg: >-
+      The existing Quay installation directory {{ quay_root }}
+      could not be completely removed.
+  when:
+    - quay_existing_installation | bool
+    - quay_rebuild_existing_installation | bool

@@ -1,0 +1,243 @@
+---
+redhat_registry_authfile: /root/.config/containers/auth.json
+
+quay_root: /opt/quay
+quay_http_port: 80
+quay_https_port: 443
+
+quay_image: registry.redhat.io/quay/quay-rhel8:v3.13
+postgres_image: registry.redhat.io/rhel8/postgresql-13:latest
+redis_image: registry.redhat.io/rhel8/redis-6:latest
+
+# Quay runs as a non-root user inside the quay-rhel8 image.
+# Configuration files containing secrets remain inaccessible to
+# unprivileged host users while remaining readable by Quay.
+quay_container_uid: "1001"
+quay_container_gid: "0"
+
+quay_db_name: quay
+quay_db_user: quay
+
+###########################################################################
+# Public Quay TLS certificate
+###########################################################################
+
+quay_public_tls_fqdn: >-
+  {{
+    public_tls_fqdn
+    | default(quay_hostname, true)
+  }}
+
+quay_acm_certificate_arn: >-
+  {{
+    acm_certificate_arn
+    | default('', true)
+  }}
+
+# All persistent Quay TLS material remains beneath /opt/quay.
+quay_tls_root: "{{ quay_root }}"
+quay_tls_directory: "{{ quay_tls_root }}/certs"
+
+quay_tls_certificate_path: "{{ quay_root }}/config/ssl.cert"
+quay_tls_private_key_path: "{{ quay_root }}/config/ssl.key"
+quay_tls_leaf_certificate_path: "{{ quay_tls_directory }}/quay-leaf.crt"
+quay_tls_chain_path: "{{ quay_tls_directory }}/quay-chain.crt"
+
+quay_tls_local_staging_prefix: "quay-acm-tls-"
+
+# Require the certificate to remain valid for at least 14 days.
+quay_tls_minimum_validity_seconds: 1209600
+
+quay_default_org: image-mode
+quay_default_team: members
+quay_default_team_role: member
+
+quay_writer_team: writers
+quay_writer_team_role: creator
+
+quay_owner_team: owners
+quay_owner_team_role: admin
+
+quay_superuser_email: quayadmin@example.com
+quay_hostname: "{{ inventory_hostname }}"
+
+redhat_registry_host: registry.redhat.io
+
+###############################################################################
+# Existing deployment handling
+###############################################################################
+
+# When true, an existing Quay installation is destroyed and recreated.
+#
+# This removes:
+#   - PostgreSQL data
+#   - Redis data
+#   - Quay configuration
+#   - Registry repositories and image layers
+#   - Cached bootstrap tokens
+#   - Installed Quay TLS files
+#
+# IdM users, IdM groups, and AWS Secrets Manager secrets are preserved.
+quay_rebuild_existing_installation: true
+
+
+###########################################################################
+# IdM LDAP directory structure
+###########################################################################
+
+idm_base_dn: "dc={{ idm_domain_name.split('.') | join(',dc=') }}"
+
+# Relative container DNs beneath idm_base_dn.
+idm_user_container_relative_dn: "cn=users,cn=accounts"
+idm_group_container_relative_dn: "cn=groups,cn=accounts"
+
+# Full container DNs used for direct LDAP operations.
+idm_user_container_dn: >-
+  {{ idm_user_container_relative_dn }},{{ idm_base_dn }}
+
+idm_group_container_dn: >-
+  {{ idm_group_container_relative_dn }},{{ idm_base_dn }}
+
+###########################################################################
+# Quay LDAP authentication
+###########################################################################
+
+quay_ldap_uri: "ldaps://{{ idm_server_fqdn }}:636"
+
+quay_ldap_ca_remote_path: /etc/ipa/ca.crt
+quay_ldap_ca_host_path: "{{ quay_root }}/config/extra_ca_certs/idm-ca.crt"
+
+# Quay appends this base DN when resolving relative LDAP paths.
+quay_ldap_base_dn: "{{ idm_base_dn }}"
+
+quay_ldap_user_rdn:
+  - cn=users
+  - cn=accounts
+
+quay_ldap_uid_attr: uid
+quay_ldap_email_attr: mail
+
+# Full bind DN required for LDAP authentication.
+quay_ldap_bind_dn: "uid=admin,{{ idm_user_container_dn }}"
+
+quay_ldap_user_filter: "(&(objectClass=person)(uid=*))"
+
+# How frequently Quay considers synchronized LDAP team membership stale.
+quay_ldap_team_sync_stale_time: 60m
+
+###########################################################################
+# Quay users
+###########################################################################
+
+quay_admin_users: "{{ idm_users | default([]) | unique }}"
+
+###########################################################################
+# IdM groups used by Quay
+###########################################################################
+
+# Use authoritative IdM groups directly. This avoids copying a static list of
+# users into Quay-specific groups and automatically scales as admins add users.
+quay_idm_owner_group: idm-admins
+quay_idm_member_group: ipausers
+quay_idm_writer_group: "quay-{{ quay_default_org }}-writers"
+
+# Relative group DNs.
+#
+# These values are passed to the Quay team synchronization API because
+# Quay resolves them relative to LDAP_BASE_DN.
+quay_idm_owner_group_relative_dn: >-
+  cn={{ quay_idm_owner_group }},{{ idm_group_container_relative_dn }}
+
+quay_idm_member_group_relative_dn: >-
+  cn={{ quay_idm_member_group }},{{ idm_group_container_relative_dn }}
+
+quay_idm_writer_group_relative_dn: >-
+  cn={{ quay_idm_writer_group }},{{ idm_group_container_relative_dn }}
+
+# Full group DNs.
+#
+# These values are used for IdM operations, ldapsearch validation, and
+# filters that compare against the user's full memberOf attribute.
+quay_idm_owner_group_dn: >-
+  {{ quay_idm_owner_group_relative_dn }},{{ idm_base_dn }}
+
+quay_idm_member_group_dn: >-
+  {{ quay_idm_member_group_relative_dn }},{{ idm_base_dn }}
+
+quay_idm_writer_group_dn: >-
+  {{ quay_idm_writer_group_relative_dn }},{{ idm_base_dn }}
+
+# The memberOf attribute contains a complete LDAP DN, so this filter must
+# use the full owner-group DN rather than the relative API value.
+quay_ldap_superuser_filter: >-
+  (memberOf={{ quay_idm_owner_group_dn }})
+
+###########################################################################
+# Dedicated IdM LDAP account for Quay registry access
+###########################################################################
+
+quay_registry_ldap_username: image-mode-builder
+quay_registry_ldap_first_name: Image
+quay_registry_ldap_last_name: Mode Builder
+quay_registry_ldap_email: image-mode-builder@example.com
+
+# Stores a JSON object containing both username and password.
+quay_registry_ldap_secret_name: "{{ secret_prefix }}/quay/ldap_users/{{ quay_registry_ldap_username }}"
+  
+
+# Keep push permission narrower than general organization visibility.
+quay_writer_users:
+  - "{{ quay_registry_ldap_username }}"
+
+
+###########################################################################
+# Quay team-to-IdM synchronization mappings
+###########################################################################
+
+quay_team_syncs:
+  - team: "{{ quay_owner_team }}"
+    role: "{{ quay_owner_team_role }}"
+    idm_group: "{{ quay_idm_owner_group }}"
+
+    # Passed to:
+    # POST /api/v1/organization/<org>/team/<team>/syncing
+    group_dn: "{{ quay_idm_owner_group_relative_dn }}"
+
+    # Used only for direct LDAP validation and diagnostics.
+    full_group_dn: "{{ quay_idm_owner_group_dn }}"
+
+    users: []
+
+  - team: "{{ quay_default_team }}"
+    role: "{{ quay_default_team_role }}"
+    idm_group: "{{ quay_idm_member_group }}"
+
+    # Passed to:
+    # POST /api/v1/organization/<org>/team/<team>/syncing
+    group_dn: "{{ quay_idm_member_group_relative_dn }}"
+
+    # Used only for direct LDAP validation and diagnostics.
+    full_group_dn: "{{ quay_idm_member_group_dn }}"
+
+    users: []
+
+  - team: "{{ quay_writer_team }}"
+    role: "{{ quay_writer_team_role }}"
+    idm_group: "{{ quay_idm_writer_group }}"
+    group_dn: "{{ quay_idm_writer_group_relative_dn }}"
+    full_group_dn: "{{ quay_idm_writer_group_dn }}"
+    users: "{{ quay_writer_users }}"
+
+###########################################################################
+# AWS Secrets Manager paths
+###########################################################################
+
+required_secret_paths:
+  redhat_registry_username: redhat/registry_username
+  redhat_registry_password: redhat/registry_password
+  quay_superuser: quay/superuser
+  quay_db_password: quay/db_password
+  quay_secret_key: quay/secret_key
+  quay_database_secret_key: quay/database_secret_key
+  quay_superuser_password: quay/superuser_password
+  idm_admin_password: idm/admin_password

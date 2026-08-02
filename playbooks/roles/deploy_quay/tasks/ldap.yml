@@ -1,0 +1,201 @@
+---
+
+- name: Stop Quay before enabling LDAP authentication
+  containers.podman.podman_container:
+    name: quay-registry
+    state: stopped
+
+- name: Write final Quay LDAP configuration
+  ansible.builtin.copy:
+    dest: "{{ quay_root }}/config/config.yaml"
+    owner: "{{ quay_container_uid }}"
+    group: "{{ quay_container_gid }}"
+    mode: "0640"
+    content: |
+      SERVER_HOSTNAME: "{{ quay_hostname }}"
+      PREFERRED_URL_SCHEME: "https"
+      SETUP_COMPLETE: true
+
+      AUTHENTICATION_TYPE: "LDAP"
+      FEATURE_MAILING: false
+      FEATURE_USER_CREATION: true
+      FEATURE_USER_INITIALIZE: false
+      FEATURE_REQUIRE_EMAIL_VERIFICATION: false
+
+      FEATURE_TEAM_SYNCING: true
+      TEAM_RESYNC_STALE_TIME: "{{ quay_ldap_team_sync_stale_time }}"
+      FEATURE_NONSUPERUSER_TEAM_SYNCING_SETUP: true
+
+      DATABASE_SECRET_KEY: "{{ quay_database_secret_key }}"
+      SECRET_KEY: "{{ quay_secret_key }}"
+
+      DB_URI: "postgresql://{{ quay_db_user }}:{{ quay_db_password | urlencode }}@127.0.0.1:5432/{{ quay_db_name }}"
+
+      BUILDLOGS_REDIS:
+        host: "127.0.0.1"
+        port: 6379
+
+      USER_EVENTS_REDIS:
+        host: "127.0.0.1"
+        port: 6379
+
+      DISTRIBUTED_STORAGE_CONFIG:
+        default:
+          - LocalStorage
+          - storage_path: /datastorage/registry
+
+      DISTRIBUTED_STORAGE_DEFAULT_LOCATIONS:
+        - default
+
+      DISTRIBUTED_STORAGE_PREFERENCE:
+        - default
+
+      LDAP_URI: "{{ quay_ldap_uri }}"
+
+      LDAP_BASE_DN:
+        - "{{ quay_ldap_base_dn }}"
+
+      LDAP_ADMIN_DN: "{{ quay_ldap_bind_dn }}"
+      LDAP_ADMIN_PASSWD: "{{ idm_admin_password }}"
+
+      LDAP_USER_RDN:
+      {% for rdn in quay_ldap_user_rdn %}
+        - "{{ rdn }}"
+      {% endfor %}
+
+      LDAP_UID_ATTR: "{{ quay_ldap_uid_attr }}"
+      LDAP_EMAIL_ATTR: "{{ quay_ldap_email_attr }}"
+      LDAP_USER_FILTER: "{{ quay_ldap_user_filter }}"
+      LDAP_SUPERUSER_FILTER: "{{ quay_ldap_superuser_filter }}"
+      LDAP_TIMEOUT: 15
+      LDAP_NETWORK_TIMEOUT: 15
+
+          # Human administrator privileges are derived exclusively from the
+          # LDAP_SUPERUSER_FILTER, which targets the IdM idm-admins group.
+  no_log: true
+
+- name: Restore SELinux labels after writing LDAP configuration
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - -RFv
+      - "{{ quay_root }}/config"
+  register: quay_ldap_restorecon
+  changed_when: quay_ldap_restorecon.stdout | length > 0
+
+- name: Verify Quay image can read the final LDAP configuration
+  ansible.builtin.command:
+    argv:
+      - podman
+      - run
+      - --rm
+      - --entrypoint
+      - /bin/sh
+      - --volume
+      - "{{ quay_root }}/config:/conf/stack:z"
+      - "{{ quay_image }}"
+      - -c
+      - >-
+        test -r /conf/stack/config.yaml;
+        test -r /conf/stack/ssl.cert;
+        test -r /conf/stack/ssl.key;
+        test -r /conf/stack/extra_ca_certs/idm-ca.crt;
+        echo ldap-configuration-readable
+  register: quay_ldap_config_read_test
+  changed_when: false
+  failed_when:
+    - quay_ldap_config_read_test.rc != 0
+    - >-
+      'ldap-configuration-readable'
+      not in quay_ldap_config_read_test.stdout
+
+- name: Start Quay registry with LDAP authentication
+  containers.podman.podman_container:
+    name: quay-registry
+    pod: quay-pod
+    image: "{{ quay_image }}"
+    authfile: "{{ redhat_registry_authfile }}"
+    state: started
+    recreate: true
+    restart_policy: always
+    volume:
+      - "{{ quay_root }}/config:/conf/stack:z"
+      - "{{ quay_root }}/storage:/datastorage:z"
+
+- name: Wait for Quay HTTPS after LDAP switch
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -kfsS
+      - --connect-timeout
+      - "5"
+      - --max-time
+      - "15"
+      - "https://127.0.0.1:{{ quay_https_port }}/"
+  register: quay_ldap_https_check
+  retries: 60
+  delay: 5
+  until: quay_ldap_https_check.rc == 0
+  changed_when: false
+  failed_when: false
+
+- name: Read Quay logs when LDAP startup fails
+  ansible.builtin.command:
+    argv:
+      - podman
+      - logs
+      - --tail
+      - "300"
+      - quay-registry
+  register: quay_ldap_logs
+  changed_when: false
+  failed_when: false
+  when: quay_ldap_https_check.rc != 0
+
+- name: Display Quay LDAP stdout
+  ansible.builtin.debug:
+    var: quay_ldap_logs.stdout_lines
+  when:
+    - quay_ldap_https_check.rc != 0
+    - quay_ldap_logs.stdout_lines | default([]) | length > 0
+
+- name: Display Quay LDAP stderr
+  ansible.builtin.debug:
+    var: quay_ldap_logs.stderr_lines
+  when:
+    - quay_ldap_https_check.rc != 0
+    - quay_ldap_logs.stderr_lines | default([]) | length > 0
+
+- name: Inspect Quay container after LDAP startup failure
+  ansible.builtin.command:
+    argv:
+      - podman
+      - inspect
+      - quay-registry
+      - --format
+      - >-
+        Status={{ '{{' }}.State.Status{{ '}}' }}
+        Running={{ '{{' }}.State.Running{{ '}}' }}
+        ExitCode={{ '{{' }}.State.ExitCode{{ '}}' }}
+        Error={{ '{{' }}.State.Error{{ '}}' }}
+        RestartCount={{ '{{' }}.RestartCount{{ '}}' }}
+  register: quay_ldap_inspect
+  changed_when: false
+  failed_when: false
+  when: quay_ldap_https_check.rc != 0
+
+- name: Display Quay LDAP container state
+  ansible.builtin.debug:
+    var: quay_ldap_inspect.stdout_lines
+  when: quay_ldap_https_check.rc != 0
+
+- name: Fail when Quay does not start with LDAP
+  ansible.builtin.fail:
+    msg: >-
+      Quay did not respond after switching to IdM LDAP authentication.
+      Review the displayed Quay logs and container state.
+  when: quay_ldap_https_check.rc != 0
+
+
+
+###########################################################################

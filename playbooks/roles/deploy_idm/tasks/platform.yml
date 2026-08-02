@@ -1,0 +1,274 @@
+---
+###########################################################################
+# Install operating-system prerequisites
+###########################################################################
+
+- name: Ensure required IdM packages are installed
+  ansible.builtin.dnf:
+    name:
+      - bind-utils
+      - ca-certificates
+      - chrony
+      - firewalld
+      - ipa-server
+      - ipa-server-dns
+      - NetworkManager
+      - openssl
+      - python3-libselinux
+    state: present
+
+###########################################################################
+# Configure hostname
+###########################################################################
+
+- name: Set persistent IdM hostname
+  ansible.builtin.hostname:
+    name: "{{ idm_fqdn }}"
+
+- name: Preserve hostname across cloud-init runs
+  ansible.builtin.copy:
+    dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+    content: |
+      preserve_hostname: true
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Remove myhostname from NSS hosts lookup
+  ansible.builtin.replace:
+    path: /etc/nsswitch.conf
+    regexp: '^(hosts:\s+.*)\s+myhostname(\s*.*)$'
+    replace: '\1\2'
+    backup: true
+
+- name: Ensure IdM hostname resolves to its private AWS address
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED IDM HOSTS"
+    block: |
+      {{ idm_private_ip }} {{ idm_fqdn }} {{ idm_short_name }}
+    owner: root
+    group: root
+    mode: "0644"
+
+###########################################################################
+# Configure IPv6 loopback
+###########################################################################
+
+- name: Ensure IPv6 is enabled
+  ansible.posix.sysctl:
+    name: "{{ item }}"
+    value: "0"
+    sysctl_file: /etc/sysctl.d/99-idm-ipv6.conf
+    state: present
+    reload: true
+  loop:
+    - net.ipv6.conf.lo.disable_ipv6
+    - net.ipv6.conf.all.disable_ipv6
+    - net.ipv6.conf.default.disable_ipv6
+
+- name: Check whether IPv6 loopback address exists
+  ansible.builtin.command:
+    argv:
+      - ip
+      - -6
+      - address
+      - show
+      - dev
+      - lo
+  register: idm_ipv6_loopback_status
+  changed_when: false
+
+- name: Add IPv6 loopback address when missing
+  ansible.builtin.command:
+    argv:
+      - ip
+      - -6
+      - address
+      - add
+      - "::1/128"
+      - dev
+      - lo
+  when: "'inet6 ::1/128' not in idm_ipv6_loopback_status.stdout"
+
+###########################################################################
+# Configure time synchronization
+###########################################################################
+
+- name: Enable and start chronyd
+  ansible.builtin.service:
+    name: chronyd
+    state: started
+    enabled: true
+
+- name: Wait for chronyd to report tracking information
+  ansible.builtin.command:
+    argv:
+      - chronyc
+      - tracking
+  register: idm_chrony_tracking
+  changed_when: false
+  retries: 10
+  delay: 3
+  until: idm_chrony_tracking.rc == 0
+
+###########################################################################
+# Configure firewall
+###########################################################################
+
+- name: Enable and start firewalld
+  ansible.builtin.service:
+    name: firewalld
+    state: started
+    enabled: true
+
+- name: Open IdM TCP ports
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ required_tcp_ports }}"
+
+- name: Open IdM UDP ports
+  ansible.posix.firewalld:
+    port: "{{ item }}/udp"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ required_udp_ports }}"
+
+###########################################################################
+# Configure pre-install DNS
+#
+# Do not configure 127.0.0.1 as DNS until IdM named is operational.
+###########################################################################
+
+- name: Configure AWS resolver as pre-install DNS server
+  community.general.nmcli:
+    conn_name: "{{ idm_nm_connection }}"
+    dns4:
+      - "{{ aws_dns_resolver }}"
+    dns4_ignore_auto: true
+    state: present
+  register: idm_preinstall_nmcli_dns
+
+- name: Reapply NetworkManager connection after pre-install DNS change
+  ansible.builtin.command:
+    argv:
+      - nmcli
+      - device
+      - reapply
+      - "{{ idm_network_interface }}"
+  register: idm_preinstall_nmcli_reapply
+  changed_when: idm_preinstall_nmcli_reapply.rc == 0
+  when: idm_preinstall_nmcli_dns.changed
+
+- name: Wait for resolver configuration to settle
+  ansible.builtin.pause:
+    seconds: 3
+  when: idm_preinstall_nmcli_dns.changed
+
+###########################################################################
+# Preflight validation
+###########################################################################
+
+- name: Verify configured fully qualified hostname
+  ansible.builtin.command:
+    argv:
+      - hostname
+      - --fqdn
+  register: idm_hostname_check
+  changed_when: false
+  failed_when: >-
+    idm_hostname_check.rc != 0
+    or idm_hostname_check.stdout | trim != idm_fqdn
+
+- name: Verify IdM hostname resolves locally to private address
+  ansible.builtin.command:
+    argv:
+      - getent
+      - ahostsv4
+      - "{{ idm_fqdn }}"
+  register: idm_hostname_resolution
+  changed_when: false
+  failed_when: >-
+    idm_hostname_resolution.rc != 0
+    or idm_private_ip not in idm_hostname_resolution.stdout
+
+- name: Verify AWS DNS resolver answers UDP queries
+  ansible.builtin.command:
+    argv:
+      - dig
+      - "+time=3"
+      - "+tries=1"
+      - "+short"
+      - "@{{ aws_dns_resolver }}"
+      - amazon.com
+      - A
+  register: idm_aws_dns_udp_test
+  changed_when: false
+  retries: 3
+  delay: 3
+  until:
+    - idm_aws_dns_udp_test.rc == 0
+    - idm_aws_dns_udp_test.stdout_lines | length > 0
+
+- name: Verify AWS DNS resolver answers TCP queries
+  ansible.builtin.command:
+    argv:
+      - dig
+      - "+tcp"
+      - "+time=3"
+      - "+tries=1"
+      - "+short"
+      - "@{{ aws_dns_resolver }}"
+      - amazon.com
+      - A
+  register: idm_aws_dns_tcp_test
+  changed_when: false
+  retries: 3
+  delay: 3
+  until:
+    - idm_aws_dns_tcp_test.rc == 0
+    - idm_aws_dns_tcp_test.stdout_lines | length > 0
+
+- name: Gather available root filesystem space
+  ansible.builtin.command:
+    argv:
+      - df
+      - --output=avail
+      - --block-size=1M
+      - /
+  register: idm_root_disk_available
+  changed_when: false
+
+- name: Set available root disk fact
+  ansible.builtin.set_fact:
+    idm_root_disk_available_mb: >-
+      {{ idm_root_disk_available.stdout_lines[-1] | trim | int }}
+
+- name: Validate available memory and disk space
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.memtotal_mb | int >= idm_minimum_memory_mb
+      - idm_root_disk_available_mb | int >= idm_minimum_root_disk_mb
+    fail_msg: >-
+      IdM resource validation failed. Required:
+      memory={{ idm_minimum_memory_mb }} MB,
+      root_disk={{ idm_minimum_root_disk_mb }} MB.
+      Detected:
+      memory={{ ansible_facts.memtotal_mb }} MB,
+      root_disk={{ idm_root_disk_available_mb }} MB.
+
+- name: Display IdM preflight summary
+  ansible.builtin.debug:
+    msg:
+      - "IdM preflight checks passed."
+      - "Hostname: {{ idm_fqdn }}"
+      - "Private IP: {{ idm_private_ip }}"
+      - "Network interface: {{ idm_network_interface }}"
+      - "NetworkManager connection: {{ idm_nm_connection }}"
+      - "AWS DNS resolver: {{ aws_dns_resolver }}"
+      - "Memory: {{ ansible_facts.memtotal_mb }} MB"
+      - "Free root disk: {{ idm_root_disk_available_mb }} MB"

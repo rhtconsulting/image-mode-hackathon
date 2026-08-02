@@ -1,0 +1,364 @@
+---
+# Quay bootstrap configuration
+###########################################################################
+
+- name: Write bootstrap Quay configuration
+  ansible.builtin.copy:
+    dest: "{{ quay_root }}/config/config.yaml"
+    owner: "{{ quay_container_uid }}"
+    group: "{{ quay_container_gid }}"
+    mode: "0640"
+    content: |
+      SERVER_HOSTNAME: "{{ quay_hostname }}"
+      PREFERRED_URL_SCHEME: "https"
+      SETUP_COMPLETE: true
+
+      AUTHENTICATION_TYPE: "Database"
+      FEATURE_MAILING: false
+      FEATURE_USER_CREATION: true
+      FEATURE_USER_INITIALIZE: true
+      FEATURE_REQUIRE_EMAIL_VERIFICATION: false
+
+      DATABASE_SECRET_KEY: "{{ quay_database_secret_key }}"
+      SECRET_KEY: "{{ quay_secret_key }}"
+
+      DB_URI: "postgresql://{{ quay_db_user }}:{{ quay_db_password | urlencode }}@127.0.0.1:5432/{{ quay_db_name }}"
+
+      BUILDLOGS_REDIS:
+        host: "127.0.0.1"
+        port: 6379
+
+      USER_EVENTS_REDIS:
+        host: "127.0.0.1"
+        port: 6379
+
+      DISTRIBUTED_STORAGE_CONFIG:
+        default:
+          - LocalStorage
+          - storage_path: /datastorage/registry
+
+      DISTRIBUTED_STORAGE_DEFAULT_LOCATIONS:
+        - default
+
+      DISTRIBUTED_STORAGE_PREFERENCE:
+        - default
+
+      SUPER_USERS:
+        - "{{ quay_superuser }}"
+  no_log: true
+
+- name: Restore SELinux labels after writing bootstrap configuration
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - -RFv
+      - "{{ quay_root }}/config"
+  register: quay_bootstrap_restorecon
+  changed_when: quay_bootstrap_restorecon.stdout | length > 0
+
+- name: Inspect bootstrap Quay configuration
+  ansible.builtin.stat:
+    path: "{{ quay_root }}/config/config.yaml"
+  register: quay_bootstrap_config_stat
+
+- name: Assert bootstrap configuration has container-readable permissions
+  ansible.builtin.assert:
+    that:
+      - quay_bootstrap_config_stat.stat.exists
+      - quay_bootstrap_config_stat.stat.isreg
+      - quay_bootstrap_config_stat.stat.uid | int ==
+        quay_container_uid | int
+      - quay_bootstrap_config_stat.stat.gid | int ==
+        quay_container_gid | int
+      - quay_bootstrap_config_stat.stat.mode == "0640"
+    fail_msg: >-
+      {{ quay_root }}/config/config.yaml must be owned by
+      UID {{ quay_container_uid }}, GID {{ quay_container_gid }},
+      and have mode 0640.
+
+- name: Verify Quay image can read the mounted configuration and TLS files
+  ansible.builtin.command:
+    argv:
+      - podman
+      - run
+      - --rm
+      - --entrypoint
+      - /bin/sh
+      - --volume
+      - "{{ quay_root }}/config:/conf/stack:z"
+      - "{{ quay_image }}"
+      - -c
+      - >-
+        id;
+        test -r /conf/stack/config.yaml;
+        test -r /conf/stack/ssl.cert;
+        test -r /conf/stack/ssl.key;
+        test -r /conf/stack/extra_ca_certs/idm-ca.crt;
+        echo configuration-readable
+  register: quay_config_read_test
+  changed_when: false
+  failed_when:
+    - quay_config_read_test.rc != 0
+    - "'configuration-readable' not in quay_config_read_test.stdout"
+
+- name: Run Quay registry in bootstrap mode
+  containers.podman.podman_container:
+    name: quay-registry
+    pod: quay-pod
+    image: "{{ quay_image }}"
+    authfile: "{{ redhat_registry_authfile }}"
+    state: started
+    recreate: true
+    restart_policy: always
+    volume:
+      - "{{ quay_root }}/config:/conf/stack:z"
+      - "{{ quay_root }}/storage:/datastorage:z"
+
+- name: Wait for Quay HTTPS in bootstrap mode
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -kfsS
+      - --connect-timeout
+      - "5"
+      - --max-time
+      - "15"
+      - "https://127.0.0.1:{{ quay_https_port }}/"
+  register: quay_bootstrap_https_check
+  retries: 60
+  delay: 5
+  until: quay_bootstrap_https_check.rc == 0
+  changed_when: false
+  failed_when: false
+
+- name: Read Quay bootstrap logs after startup failure
+  ansible.builtin.command:
+    argv:
+      - podman
+      - logs
+      - --tail
+      - "300"
+      - quay-registry
+  register: quay_bootstrap_logs
+  changed_when: false
+  failed_when: false
+  when: quay_bootstrap_https_check.rc != 0
+
+- name: Display Quay bootstrap stdout
+  ansible.builtin.debug:
+    var: quay_bootstrap_logs.stdout_lines
+  when:
+    - quay_bootstrap_https_check.rc != 0
+    - quay_bootstrap_logs.stdout_lines | default([]) | length > 0
+
+- name: Display Quay bootstrap stderr
+  ansible.builtin.debug:
+    var: quay_bootstrap_logs.stderr_lines
+  when:
+    - quay_bootstrap_https_check.rc != 0
+    - quay_bootstrap_logs.stderr_lines | default([]) | length > 0
+
+- name: Inspect Quay bootstrap container state
+  ansible.builtin.command:
+    argv:
+      - podman
+      - inspect
+      - quay-registry
+      - --format
+      - >-
+        Status={{ '{{' }}.State.Status{{ '}}' }}
+        Running={{ '{{' }}.State.Running{{ '}}' }}
+        ExitCode={{ '{{' }}.State.ExitCode{{ '}}' }}
+        Error={{ '{{' }}.State.Error{{ '}}' }}
+        RestartCount={{ '{{' }}.RestartCount{{ '}}' }}
+  register: quay_bootstrap_inspect
+  changed_when: false
+  failed_when: false
+  when: quay_bootstrap_https_check.rc != 0
+
+- name: Display Quay bootstrap container state
+  ansible.builtin.debug:
+    var: quay_bootstrap_inspect.stdout_lines
+  when: quay_bootstrap_https_check.rc != 0
+
+- name: Inspect Quay configuration mount after startup failure
+  ansible.builtin.command:
+    argv:
+      - podman
+      - inspect
+      - quay-registry
+      - --format
+      - "{{ '{{' }}json .Mounts{{ '}}' }}"
+  register: quay_bootstrap_mounts
+  changed_when: false
+  failed_when: false
+  when: quay_bootstrap_https_check.rc != 0
+
+- name: Display Quay bootstrap mounts
+  ansible.builtin.debug:
+    var: quay_bootstrap_mounts.stdout
+  when: quay_bootstrap_https_check.rc != 0
+
+- name: Fail when Quay bootstrap startup fails
+  ansible.builtin.fail:
+    msg: >-
+      Quay did not respond in Database-authentication bootstrap mode.
+      The configuration readability test passed, but the Quay process
+      did not become healthy. Review the displayed Quay logs,
+      container state, and mounts.
+  when: quay_bootstrap_https_check.rc != 0
+
+- name: Initialize the Quay bootstrap administrator
+  ansible.builtin.uri:
+    url: >-
+      https://127.0.0.1:{{ quay_https_port }}/api/v1/user/initialize
+    method: POST
+    validate_certs: false
+    body_format: json
+    body:
+      username: "{{ quay_superuser }}"
+      password: "{{ quay_superuser_password }}"
+      email: "{{ quay_superuser_email }}"
+      access_token: true
+    status_code:
+      - 200
+      - 201
+    return_content: true
+  register: quay_init_user
+  no_log: true
+
+- name: Capture newly generated Quay bootstrap API token
+  ansible.builtin.set_fact:
+    quay_api_token: >-
+      {{
+        quay_init_user.json.access_token
+        | default('')
+        | string
+        | trim
+      }}
+  no_log: true
+
+- name: Assert Quay administrator initialization succeeded
+  ansible.builtin.assert:
+    that:
+      - quay_init_user.status | int in [200, 201]
+      - quay_api_token | length > 0
+    fail_msg: >-
+      The clean Quay database did not return a new bootstrap API token.
+      The /api/v1/user/initialize request returned HTTP
+      {{ quay_init_user.status | default('unknown') }}.
+  no_log: true
+
+
+- name: Verify that the bootstrap administrator exists and mark email as verified
+  ansible.builtin.command:
+    argv:
+      - podman
+      - exec
+      - -i
+      - quay-postgres
+      - psql
+      - -U
+      - "{{ quay_db_user }}"
+      - -d
+      - "{{ quay_db_name }}"
+      - -v
+      - ON_ERROR_STOP=1
+      - -v
+      - "quay_username={{ quay_superuser }}"
+      - -X
+      - --no-psqlrc
+      - -t
+      - -A
+    stdin: |
+      UPDATE public."user"
+      SET verified = true
+      WHERE username = :'quay_username';
+
+      SELECT CASE
+        WHEN EXISTS (
+          SELECT 1
+          FROM public."user"
+          WHERE username = :'quay_username'
+            AND verified = true
+        )
+        THEN 'BOOTSTRAP_ADMIN_VERIFIED'
+        ELSE 'BOOTSTRAP_ADMIN_NOT_FOUND'
+      END;
+  register: quay_verify_bootstrap_admin
+  changed_when: "'UPDATE 1' in quay_verify_bootstrap_admin.stdout"
+  failed_when: >
+    quay_verify_bootstrap_admin.rc != 0
+    or
+    'BOOTSTRAP_ADMIN_VERIFIED' not in quay_verify_bootstrap_admin.stdout
+  no_log: true
+
+- name: Ensure the Quay organization exists
+  ansible.builtin.uri:
+    url: >-
+      https://127.0.0.1:{{ quay_https_port }}/api/v1/organization/
+    method: POST
+    validate_certs: false
+    headers:
+      Authorization: "Bearer {{ quay_api_token }}"
+    body_format: json
+    body:
+      name: "{{ quay_default_org }}"
+      email: "{{ quay_default_org }}@example.com"
+    status_code:
+      - 200
+      - 201
+      - 400
+  register: quay_create_org
+  no_log: true
+  failed_when: >
+    quay_create_org.status == 400
+    and (
+      quay_create_org.json.error_message | default('')
+      is not search('already|exists')
+    )
+
+- name: Ensure owner and writer teams exist
+  ansible.builtin.uri:
+    url: >-
+      https://127.0.0.1:{{ quay_https_port
+      }}/api/v1/organization/{{ quay_default_org
+      }}/team/{{ item.team }}
+    method: PUT
+    validate_certs: false
+    headers:
+      Authorization: "Bearer {{ quay_api_token }}"
+    body_format: json
+    body:
+      role: "{{ item.role }}"
+    status_code:
+      - 200
+      - 201
+      - 400
+  loop: "{{ quay_team_syncs }}"
+  register: quay_create_teams
+  no_log: false
+
+- name: Add bootstrap administrator to the owners team
+  ansible.builtin.uri:
+    url: >-
+      https://127.0.0.1:{{ quay_https_port
+      }}/api/v1/organization/{{ quay_default_org
+      }}/team/{{ quay_owner_team
+      }}/members/{{ quay_superuser }}
+    method: PUT
+    validate_certs: false
+    headers:
+      Authorization: "Bearer {{ quay_api_token }}"
+    status_code:
+      - 200
+      - 201
+      - 204
+      - 400
+  register: quay_add_bootstrap_owner
+  no_log: true
+  failed_when: false
+
+###########################################################################
+# Final LDAP configuration
+###########################################################################

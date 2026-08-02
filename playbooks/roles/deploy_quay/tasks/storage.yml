@@ -1,0 +1,85 @@
+---
+- name: Create Quay root directory
+  ansible.builtin.file:
+    path: "{{ quay_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create container-readable Quay configuration directory
+  ansible.builtin.file:
+    path: "{{ quay_root }}/config"
+    state: directory
+    owner: "{{ quay_container_uid }}"
+    group: "{{ quay_container_gid }}"
+    mode: "0750"
+
+- name: Create container-readable Quay CA directory
+  ansible.builtin.file:
+    path: "{{ quay_root }}/config/extra_ca_certs"
+    state: directory
+    owner: "{{ quay_container_uid }}"
+    group: "{{ quay_container_gid }}"
+    mode: "0750"
+
+- name: Create Quay storage directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0777"
+  loop:
+    - "{{ quay_root }}/storage"
+    - "{{ quay_root }}/storage/registry"
+
+- name: Create PostgreSQL data directory
+  ansible.builtin.file:
+    path: "{{ quay_root }}/postgres"
+    state: directory
+    owner: "26"
+    group: "26"
+    mode: "0700"
+
+- name: Create Redis data directory
+  ansible.builtin.file:
+    path: "{{ quay_root }}/redis"
+    state: directory
+    owner: root
+    group: root
+    mode: "0777"
+
+- name: Define persistent SELinux labels
+  ansible.builtin.command:
+    argv:
+      - semanage
+      - fcontext
+      - -a
+      - -t
+      - container_file_t
+      - "{{ item }}"
+  loop:
+    - "{{ quay_root }}/config(/.*)?"
+    - "{{ quay_root }}/storage(/.*)?"
+    - "{{ quay_root }}/postgres(/.*)?"
+    - "{{ quay_root }}/redis(/.*)?"
+  register: quay_semanage_result
+  changed_when: quay_semanage_result.rc == 0
+  failed_when: >
+    quay_semanage_result.rc != 0
+    and 'already defined' not in
+        quay_semanage_result.stderr | default('')
+
+- name: Restore SELinux labels on Quay directories
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - -RFv
+      - "{{ quay_root }}"
+  register: quay_restorecon
+  changed_when: quay_restorecon.stdout | length > 0
+
+###########################################################################
+# Export and install the public ACM TLS certificate
+###########################################################################

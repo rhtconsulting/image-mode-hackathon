@@ -1,0 +1,102 @@
+---
+- name: Create and start Quay pod
+  containers.podman.podman_pod:
+    name: quay-pod
+    state: started
+    publish:
+      - "{{ quay_http_port }}:8080"
+      - "{{ quay_https_port }}:8443"
+
+- name: Run PostgreSQL container
+  containers.podman.podman_container:
+    name: quay-postgres
+    pod: quay-pod
+    image: "{{ postgres_image }}"
+    authfile: "{{ redhat_registry_authfile }}"
+    state: started
+    recreate: true
+    restart_policy: always
+    env:
+      POSTGRESQL_USER: "{{ quay_db_user }}"
+      POSTGRESQL_PASSWORD: "{{ quay_db_password }}"
+      POSTGRESQL_DATABASE: "{{ quay_db_name }}"
+    volume:
+      - "{{ quay_root }}/postgres:/var/lib/pgsql/data:Z"
+  no_log: true
+
+- name: Run Redis container
+  containers.podman.podman_container:
+    name: quay-redis
+    pod: quay-pod
+    image: "{{ redis_image }}"
+    authfile: "{{ redhat_registry_authfile }}"
+    state: started
+    recreate: true
+    restart_policy: always
+    command:
+      - redis-server
+      - --save
+      - "60"
+      - "1"
+      - --loglevel
+      - warning
+    volume:
+      - "{{ quay_root }}/redis:/data:Z"
+
+- name: Wait for PostgreSQL container to become ready
+  ansible.builtin.command:
+    argv:
+      - podman
+      - exec
+      - quay-postgres
+      - pg_isready
+      - -h
+      - 127.0.0.1
+      - -p
+      - "5432"
+      - -U
+      - "{{ quay_db_user }}"
+      - -d
+      - "{{ quay_db_name }}"
+  register: postgres_ready
+  retries: 30
+  delay: 5
+  until: postgres_ready.rc == 0
+  changed_when: false
+
+- name: Enable required PostgreSQL pg_trgm extension for Quay
+  ansible.builtin.command:
+    argv:
+      - podman
+      - exec
+      - quay-postgres
+      - psql
+      - -U
+      - "{{ quay_db_user }}"
+      - -d
+      - "{{ quay_db_name }}"
+      - -v
+      - ON_ERROR_STOP=1
+      - -c
+      - CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
+  register: pg_trgm_result
+  changed_when: "'CREATE EXTENSION' in pg_trgm_result.stdout"
+
+- name: Verify PostgreSQL pg_trgm extension exists
+  ansible.builtin.command:
+    argv:
+      - podman
+      - exec
+      - quay-postgres
+      - psql
+      - -U
+      - "{{ quay_db_user }}"
+      - -d
+      - "{{ quay_db_name }}"
+      - -tAc
+      - >-
+        SELECT extname FROM pg_extension
+        WHERE extname = 'pg_trgm';
+  register: pg_trgm_verify
+  changed_when: false
+  failed_when: pg_trgm_verify.stdout | trim != "pg_trgm"

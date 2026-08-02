@@ -1,0 +1,162 @@
+---
+# Configure Quay pod startup through systemd
+###########################################################################
+
+- name: Create temporary directory for generated Quay systemd units
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: quay-systemd-
+  register: quay_systemd_generation_directory
+
+- name: Generate systemd units for the complete Quay pod
+  ansible.builtin.command:
+    argv:
+      - podman
+      - generate
+      - systemd
+      - --files
+      - --name
+      - --restart-policy=always
+      - quay-pod
+  args:
+    chdir: "{{ quay_systemd_generation_directory.path }}"
+  register: quay_systemd_generate
+  changed_when: true
+
+- name: Find generated Quay systemd units
+  ansible.builtin.find:
+    paths: "{{ quay_systemd_generation_directory.path }}"
+    patterns: "*.service"
+    file_type: file
+  register: quay_generated_systemd_units
+
+- name: Validate generated Quay systemd units
+  ansible.builtin.assert:
+    that:
+      - quay_generated_systemd_units.matched | int >= 4
+      - >-
+        (
+          quay_generated_systemd_units.files
+          | map(attribute='path')
+          | map('basename')
+          | list
+        )
+        is contains('pod-quay-pod.service')
+      - >-
+        (
+          quay_generated_systemd_units.files
+          | map(attribute='path')
+          | map('basename')
+          | list
+        )
+        is contains('container-quay-postgres.service')
+      - >-
+        (
+          quay_generated_systemd_units.files
+          | map(attribute='path')
+          | map('basename')
+          | list
+        )
+        is contains('container-quay-redis.service')
+      - >-
+        (
+          quay_generated_systemd_units.files
+          | map(attribute='path')
+          | map('basename')
+          | list
+        )
+        is contains('container-quay-registry.service')
+    fail_msg: >-
+      Podman did not generate the expected systemd units for quay-pod.
+
+- name: Install generated Quay systemd units
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "/etc/systemd/system/{{ item.path | basename }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ quay_generated_systemd_units.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  register: quay_systemd_units_installed
+
+- name: Reload systemd after installing Quay units
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and start the Quay pod systemd service
+  ansible.builtin.systemd:
+    name: pod-quay-pod.service
+    enabled: true
+    state: started
+
+- name: Verify Quay pod service is enabled
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - pod-quay-pod.service
+  register: quay_pod_service_enabled
+  changed_when: false
+  failed_when: quay_pod_service_enabled.stdout | trim != "enabled"
+
+- name: Verify Quay pod service is active
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - pod-quay-pod.service
+  register: quay_pod_service_active
+  changed_when: false
+  failed_when: quay_pod_service_active.stdout | trim != "active"
+
+- name: Verify all Quay containers are running under systemd
+  ansible.builtin.command:
+    argv:
+      - podman
+      - inspect
+      - "{{ item }}"
+      - --format
+      - "{{ '{{' }}.State.Running{{ '}}' }}"
+  loop:
+    - quay-postgres
+    - quay-redis
+    - quay-registry
+  register: quay_systemd_container_states
+  changed_when: false
+  failed_when: false
+
+- name: Assert all Quay containers are running
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim == "true"
+    fail_msg: >-
+      Quay container {{ item.item }} is not running after enabling
+      pod-quay-pod.service.
+  loop: "{{ quay_systemd_container_states.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Verify Quay HTTPS after enabling systemd startup
+  ansible.builtin.command:
+    argv:
+      - curl
+      - -kfsS
+      - --connect-timeout
+      - "5"
+      - --max-time
+      - "15"
+      - "https://127.0.0.1:{{ quay_https_port }}/"
+  register: quay_systemd_https_check
+  retries: 30
+  delay: 5
+  until: quay_systemd_https_check.rc == 0
+  changed_when: false
+
+- name: Remove temporary Quay systemd generation directory
+  ansible.builtin.file:
+    path: "{{ quay_systemd_generation_directory.path }}"
+    state: absent

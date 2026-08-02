@@ -1,0 +1,229 @@
+---
+- name: Read the IdM CA certificate from the IdM server
+  ansible.builtin.slurp:
+    src: "{{ quay_ldap_ca_remote_path }}"
+  delegate_to: "{{ groups['idm'][0] }}"
+  become: true
+  register: quay_idm_ca
+  changed_when: false
+
+- name: Install the IdM CA certificate for Quay
+  ansible.builtin.copy:
+    dest: "{{ quay_ldap_ca_host_path }}"
+    owner: "{{ quay_container_uid }}"
+    group: "{{ quay_container_gid }}"
+    mode: "0644"
+    content: "{{ quay_idm_ca.content | b64decode }}"
+  register: quay_idm_ca_copy
+
+- name: Install the IdM CA into the RHEL trust store
+  ansible.builtin.copy:
+    dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ quay_idm_ca.content | b64decode }}"
+  register: quay_system_ca_copy
+
+- name: Refresh the RHEL CA trust store
+  ansible.builtin.command:
+    argv:
+      - update-ca-trust
+  changed_when: quay_system_ca_copy.changed
+
+- name: Verify IdM LDAP bind and dynamic user search over LDAPS
+  ansible.builtin.command:
+    argv:
+      - ldapsearch
+      - -x
+      - -H
+      - "{{ quay_ldap_uri }}"
+      - -D
+      - "{{ quay_ldap_bind_dn }}"
+      - -w
+      - "{{ idm_admin_password }}"
+      - -b
+      - "{{ idm_user_container_dn }}"
+      - "{{ quay_ldap_user_filter }}"
+      - dn
+      - uid
+      - mail
+  changed_when: false
+  no_log: true
+
+- name: Obtain IdM administrator Kerberos ticket
+  ansible.builtin.shell: |
+    set -euo pipefail
+    printf '%s\n' {{ idm_admin_password | quote }} | kinit admin
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ groups['idm'][0] }}"
+  become: true
+  changed_when: false
+  no_log: true
+  environment:
+    KRB5CCNAME: /tmp/krb5cc_quay_admin
+
+###########################################################################
+# Dedicated IdM LDAP account for Quay registry access
+###########################################################################
+
+- name: Check whether dedicated Quay LDAP user exists in IdM
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - user-show
+      - "{{ quay_registry_ldap_username }}"
+      - --all
+      - --raw
+  delegate_to: "{{ groups['idm'][0] }}"
+  become: true
+  register: quay_registry_idm_user_check
+  changed_when: false
+  failed_when: false
+  environment:
+    KRB5CCNAME: /tmp/krb5cc_quay_admin
+
+- name: Create dedicated Quay LDAP user in IdM
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - user-add
+      - "{{ quay_registry_ldap_username }}"
+      - "--first={{ quay_registry_ldap_first_name }}"
+      - "--last={{ quay_registry_ldap_last_name }}"
+      - "--email={{ quay_registry_ldap_email }}"
+      - --password
+    stdin: |
+      {{ quay_registry_ldap_password }}
+      {{ quay_registry_ldap_password }}
+  delegate_to: "{{ groups['idm'][0] }}"
+  become: true
+  register: quay_registry_idm_user_create
+  changed_when: quay_registry_idm_user_create.rc == 0
+  failed_when: quay_registry_idm_user_create.rc != 0
+  when: quay_registry_idm_user_check.rc != 0
+  no_log: true
+  environment:
+    KRB5CCNAME: /tmp/krb5cc_quay_admin
+
+- name: Ensure dedicated Quay LDAP user is enabled
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - user-enable
+      - "{{ quay_registry_ldap_username }}"
+  delegate_to: "{{ groups['idm'][0] }}"
+  become: true
+  register: quay_registry_idm_user_enable
+  changed_when: >-
+    'Enabled user account' in
+    quay_registry_idm_user_enable.stdout | default('')
+  failed_when: >
+    quay_registry_idm_user_enable.rc != 0
+    and
+    'already enabled' not in
+    quay_registry_idm_user_enable.stderr | default('')
+  environment:
+    KRB5CCNAME: /tmp/krb5cc_quay_admin
+
+- name: Verify dedicated Quay LDAP user exists
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - user-show
+      - "{{ quay_registry_ldap_username }}"
+      - --all
+      - --raw
+  delegate_to: "{{ groups['idm'][0] }}"
+  become: true
+  register: quay_registry_idm_user_verify
+  changed_when: false
+  failed_when: quay_registry_idm_user_verify.rc != 0
+  environment:
+    KRB5CCNAME: /tmp/krb5cc_quay_admin
+
+- name: Ensure IdM groups exist for Quay synchronization
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - group-add
+      - "{{ item.idm_group }}"
+      - >-
+        --desc=Quay {{ quay_default_org }}
+        {{ item.team }} synchronized team
+  loop: "{{ quay_team_syncs }}"
+  delegate_to: "{{ groups['idm'][0] }}"
+  become: true
+  register: idm_group_add
+  changed_when: idm_group_add.rc == 0
+  failed_when: >
+    idm_group_add.rc != 0
+    and 'already exists' not in
+        idm_group_add.stderr | default('')
+  environment:
+    KRB5CCNAME: /tmp/krb5cc_quay_admin
+
+- name: Add IdM users to Quay synchronization groups
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - group-add-member
+      - "{{ item.0.idm_group }}"
+      - "--users={{ item.1 }}"
+  loop: "{{ quay_team_syncs | subelements('users') }}"
+  delegate_to: "{{ groups['idm'][0] }}"
+  become: true
+  register: idm_group_member_add
+  changed_when: >-
+    'Number of members added 1' in idm_group_member_add.stdout
+  failed_when: >
+    idm_group_member_add.rc != 0
+    and 'Number of members added 0' not in
+        idm_group_member_add.stdout | default('')
+  environment:
+    KRB5CCNAME: /tmp/krb5cc_quay_admin
+
+- name: Verify dedicated Quay LDAP user belongs to IdM writers group
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - group-show
+      - "{{ quay_idm_writer_group }}"
+      - --all
+      - --raw
+  delegate_to: "{{ groups['idm'][0] }}"
+  become: true
+  register: quay_registry_writer_group_verify
+  changed_when: false
+  failed_when: >
+    quay_registry_writer_group_verify.rc != 0
+    or
+    quay_registry_ldap_username not in
+    quay_registry_writer_group_verify.stdout
+  environment:
+    KRB5CCNAME: /tmp/krb5cc_quay_admin
+
+
+- name: Verify IdM synchronization groups through LDAP
+  ansible.builtin.command:
+    argv:
+      - ldapsearch
+      - -x
+      - -H
+      - "{{ quay_ldap_uri }}"
+      - -D
+      - "{{ quay_ldap_bind_dn }}"
+      - -w
+      - "{{ idm_admin_password }}"
+      - -b
+      - "{{ item.full_group_dn }}"
+      - "(objectClass=*)"
+      - dn
+      - cn
+      - member
+  loop: "{{ quay_team_syncs }}"
+  changed_when: false
+  no_log: true
+
+###########################################################################

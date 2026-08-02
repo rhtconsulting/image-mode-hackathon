@@ -1,0 +1,108 @@
+---
+- name: Enable LDAP synchronization for Quay teams
+  ansible.builtin.uri:
+    url: >-
+      https://127.0.0.1:{{ quay_https_port
+      }}/api/v1/organization/{{ quay_default_org
+      }}/team/{{ item.team }}/syncing
+    method: POST
+    validate_certs: false
+    headers:
+      Authorization: "Bearer {{ quay_api_token }}"
+    body_format: json
+    body:
+      group_dn: "{{ item.group_dn }}"
+    status_code:
+      - 200
+      - 201
+      - 204
+      - 400
+  loop: "{{ quay_team_syncs }}"
+  register: quay_enable_team_sync
+  no_log: true
+  failed_when: >
+    quay_enable_team_sync.status == 400
+    and (
+      quay_enable_team_sync.json.error_message | default('')
+      is not search('already|exists|enabled')
+    )
+
+# - name: Read synchronized Quay team configuration
+#   ansible.builtin.uri:
+#     url: >-
+#       https://127.0.0.1:{{ quay_https_port
+#       }}/api/v1/organization/{{ quay_default_org
+#       }}/team/{{ item.team }}/permissions
+#     method: GET
+#     validate_certs: false
+#     headers:
+#       Authorization: "Bearer {{ quay_api_token }}"
+#       Accept: application/json
+#     status_code: 200
+#     return_content: true
+#   loop: "{{ quay_team_syncs }}"
+#   loop_control:
+#     label: "{{ item.team }}"
+#   register: quay_synced_teams
+#   changed_when: false
+#   no_log: false
+
+# - name: Show synchronized Quay team validation
+#   ansible.builtin.debug:
+#     msg:
+#       team: "{{ item.item.team }}"
+#       role: "{{ item.item.role }}"
+#       idm_group: "{{ item.item.idm_group }}"
+#       group_dn: "{{ item.item.group_dn }}"
+#       api_status: "{{ item.status }}"
+#       repository_permissions: >-
+#         {{ item.json.permissions | default([]) }}
+#   loop: "{{ quay_synced_teams.results }}"
+#   loop_control:
+#     label: "{{ item.item.team }}"
+
+- name: Display deployment result
+  ansible.builtin.debug:
+    msg:
+      - "Quay URL: https://{{ quay_hostname }}"
+      - "Authentication: IdM LDAP"
+      - "IdM base DN: {{ idm_base_dn }}"
+      - "IdM user container: {{ idm_user_container_dn }}"
+      - "IdM owner group: {{ quay_idm_owner_group_dn }}"
+      - "IdM writer group: {{ quay_idm_writer_group_dn }}"
+      - "Organization: {{ quay_default_org }}"
+      - "Owner team: {{ quay_owner_team }}"
+      - "Writer team: {{ quay_default_team }}"
+      - >-
+        PostgreSQL data is retained at
+        {{ quay_root }}/postgres with UID/GID 26.
+      - >-
+        Quay configuration is owned by container UID
+        {{ quay_container_uid }} with mode 0640.
+      - >-
+        LDAP users are created in Quay on their first successful
+        LDAP login.
+      - >-
+        IdM group synchronization controls Quay team membership,
+        and members of the IdM owner group become Quay superusers.
+      - >-
+        Dedicated Quay LDAP user:
+        {{ quay_registry_ldap_username }}
+      - >-
+        Dedicated Quay LDAP credential secret:
+        {{ quay_registry_ldap_secret_name }}
+      - >-
+        The dedicated Quay LDAP user belongs to the
+        {{ quay_idm_writer_group }} IdM group, which synchronizes to the
+        {{ quay_default_team }} Quay team.
+
+- name: Show running containers
+  ansible.builtin.command:
+    argv:
+      - podman
+      - ps
+  register: podman_ps
+  changed_when: false
+
+- name: Display running containers
+  ansible.builtin.debug:

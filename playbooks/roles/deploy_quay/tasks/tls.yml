@@ -1,0 +1,406 @@
+---
+- name: Create persistent Quay TLS directory
+  ansible.builtin.file:
+    path: "{{ quay_tls_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Create local ACM TLS staging directory
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: "{{ quay_tls_local_staging_prefix }}"
+  delegate_to: localhost
+  become: false
+  register: quay_tls_local_staging
+  no_log: true
+
+- name: Export and install Quay ACM certificate
+  block:
+    - name: Generate ACM export passphrase
+      ansible.builtin.set_fact:
+        quay_acm_export_passphrase: >-
+          {{
+            lookup(
+              'ansible.builtin.password',
+              '/dev/null',
+              length=64,
+              chars=['ascii_letters', 'digits']
+            )
+          }}
+      no_log: true
+
+    - name: Write local ACM export passphrase
+      ansible.builtin.copy:
+        content: "{{ quay_acm_export_passphrase }}"
+        dest: "{{ quay_tls_local_staging.path }}/passphrase"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Export Quay certificate from AWS ACM
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'aws',
+              'acm',
+              'export-certificate',
+              '--certificate-arn',
+              quay_acm_certificate_arn,
+              '--passphrase',
+              'fileb://'
+              ~ quay_tls_local_staging.path
+              ~ '/passphrase',
+              '--region',
+              aws_region,
+              '--output',
+              'json',
+              '--no-cli-pager'
+            ]
+            +
+            (
+              ['--profile', aws_profile]
+              if aws_profile | default('') | trim | length > 0
+              else []
+            )
+          }}
+      delegate_to: localhost
+      become: false
+      register: quay_acm_export_result
+      changed_when: false
+      no_log: true
+
+    - name: Parse exported ACM certificate data
+      ansible.builtin.set_fact:
+        quay_acm_exported_certificate: >-
+          {{
+            quay_acm_export_result.stdout
+            | from_json
+          }}
+      no_log: true
+
+    - name: Validate exported ACM material
+      ansible.builtin.assert:
+        that:
+          - >-
+            quay_acm_exported_certificate.Certificate
+            | default('')
+            | length > 0
+          - >-
+            quay_acm_exported_certificate.CertificateChain
+            | default('')
+            | length > 0
+          - >-
+            quay_acm_exported_certificate.PrivateKey
+            | default('')
+            | length > 0
+        fail_msg: >-
+          ACM did not return the Quay certificate, certificate chain,
+          and encrypted private key. Verify that the ACM certificate is
+          exportable.
+      no_log: true
+
+    - name: Write exported ACM leaf certificate locally
+      ansible.builtin.copy:
+        content: |
+          {{ quay_acm_exported_certificate.Certificate | trim }}
+        dest: "{{ quay_tls_local_staging.path }}/quay-leaf.crt"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Write exported ACM certificate chain locally
+      ansible.builtin.copy:
+        content: |
+          {{ quay_acm_exported_certificate.CertificateChain | trim }}
+        dest: "{{ quay_tls_local_staging.path }}/quay-chain.crt"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Write encrypted ACM private key locally
+      ansible.builtin.copy:
+        content: |
+          {{ quay_acm_exported_certificate.PrivateKey | trim }}
+        dest: "{{ quay_tls_local_staging.path }}/quay-encrypted.key"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Build Quay web server certificate chain
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        cat \
+          "{{ quay_tls_local_staging.path }}/quay-leaf.crt" \
+          "{{ quay_tls_local_staging.path }}/quay-chain.crt" \
+          > "{{ quay_tls_local_staging.path }}/ssl.cert"
+
+        chmod 0600 \
+          "{{ quay_tls_local_staging.path }}/ssl.cert"
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      no_log: true
+
+    - name: Validate Quay ACM certificate hostname
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ quay_tls_local_staging.path }}/quay-leaf.crt"
+          - -noout
+          - -checkhost
+          - "{{ quay_public_tls_fqdn }}"
+      delegate_to: localhost
+      become: false
+      register: quay_acm_hostname_check
+      changed_when: false
+      failed_when: quay_acm_hostname_check.rc != 0
+
+    - name: Validate Quay ACM certificate lifetime
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ quay_tls_local_staging.path }}/quay-leaf.crt"
+          - -noout
+          - -checkend
+          - "{{ quay_tls_minimum_validity_seconds | string }}"
+      delegate_to: localhost
+      become: false
+      register: quay_acm_validity_check
+      changed_when: false
+      failed_when: quay_acm_validity_check.rc != 0
+
+    - name: Install encrypted ACM private key temporarily
+      ansible.builtin.copy:
+        src: "{{ quay_tls_local_staging.path }}/quay-encrypted.key"
+        dest: "{{ quay_tls_private_key_path }}.encrypted"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Install temporary ACM export passphrase
+      ansible.builtin.copy:
+        content: "{{ quay_acm_export_passphrase }}"
+        dest: "{{ quay_tls_directory }}/.acm-passphrase"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Decrypt Quay ACM private key
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - pkey
+          - -in
+          - "{{ quay_tls_private_key_path }}.encrypted"
+          - -out
+          - "{{ quay_tls_private_key_path }}"
+          - -passin
+          - "file:{{ quay_tls_directory }}/.acm-passphrase"
+      register: quay_acm_private_key_decrypt
+      changed_when: quay_acm_private_key_decrypt.rc == 0
+      failed_when: quay_acm_private_key_decrypt.rc != 0
+      no_log: true
+
+    - name: Install Quay leaf certificate
+      ansible.builtin.copy:
+        src: "{{ quay_tls_local_staging.path }}/quay-leaf.crt"
+        dest: "{{ quay_tls_leaf_certificate_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install Quay certificate chain
+      ansible.builtin.copy:
+        src: "{{ quay_tls_local_staging.path }}/quay-chain.crt"
+        dest: "{{ quay_tls_chain_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install Quay web server certificate
+      ansible.builtin.copy:
+        src: "{{ quay_tls_local_staging.path }}/ssl.cert"
+        dest: "{{ quay_tls_certificate_path }}"
+        owner: "{{ quay_container_uid }}"
+        group: "{{ quay_container_gid }}"
+        mode: "0644"
+
+    - name: Secure Quay private key
+      ansible.builtin.file:
+        path: "{{ quay_tls_private_key_path }}"
+        state: file
+        owner: "{{ quay_container_uid }}"
+        group: "{{ quay_container_gid }}"
+        mode: "0640"
+
+    - name: Verify decrypted Quay private key
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - pkey
+          - -in
+          - "{{ quay_tls_private_key_path }}"
+          - -noout
+          - -check
+          - -passin
+          - "pass:"
+      register: quay_private_key_check
+      changed_when: false
+      failed_when: quay_private_key_check.rc != 0
+      no_log: true
+
+    - name: Read Quay certificate public key hash
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        openssl x509 \
+          -in "{{ quay_tls_leaf_certificate_path }}" \
+          -noout \
+          -pubkey |
+          openssl pkey \
+            -pubin \
+            -outform DER |
+          openssl dgst -sha256
+      args:
+        executable: /bin/bash
+      register: quay_certificate_public_key_hash
+      changed_when: false
+
+    - name: Read Quay private key public key hash
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        openssl pkey \
+          -in "{{ quay_tls_private_key_path }}" \
+          -pubout \
+          -outform DER |
+          openssl dgst -sha256
+      args:
+        executable: /bin/bash
+      register: quay_private_key_public_key_hash
+      changed_when: false
+      no_log: true
+
+    - name: Normalize Quay public key hashes
+      ansible.builtin.set_fact:
+        quay_certificate_public_key_sha256: >-
+          {{
+            quay_certificate_public_key_hash.stdout
+            | default('')
+            | regex_replace('^.*=', '')
+            | trim
+            | lower
+          }}
+        quay_private_key_public_key_sha256: >-
+          {{
+            quay_private_key_public_key_hash.stdout
+            | default('')
+            | regex_replace('^.*=', '')
+            | trim
+            | lower
+          }}
+      no_log: true
+
+    - name: Verify Quay certificate and private key match
+      ansible.builtin.assert:
+        that:
+          - quay_certificate_public_key_sha256 | length == 64
+          - quay_private_key_public_key_sha256 | length == 64
+          - >-
+            quay_certificate_public_key_sha256
+            ==
+            quay_private_key_public_key_sha256
+        fail_msg: >-
+          The exported Quay ACM certificate and decrypted private key
+          do not contain the same public key.
+      no_log: true
+
+    - name: Validate installed Quay certificate hostname
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - "{{ quay_tls_leaf_certificate_path }}"
+          - -noout
+          - -checkhost
+          - "{{ quay_public_tls_fqdn }}"
+      register: quay_installed_certificate_hostname_check
+      changed_when: false
+      failed_when: >-
+        quay_installed_certificate_hostname_check.rc != 0
+
+    - name: Restore SELinux labels on installed Quay TLS files
+      ansible.builtin.command:
+        argv:
+          - restorecon
+          - -RFv
+          - "{{ quay_root }}/config"
+          - "{{ quay_tls_directory }}"
+      register: quay_tls_restorecon
+      changed_when: quay_tls_restorecon.stdout | length > 0
+
+    - name: Verify Quay TLS files exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ quay_tls_certificate_path }}"
+        - "{{ quay_tls_private_key_path }}"
+        - "{{ quay_tls_leaf_certificate_path }}"
+        - "{{ quay_tls_chain_path }}"
+      register: quay_tls_file_stats
+
+    - name: Assert Quay TLS files were installed
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+        fail_msg: "Required Quay TLS file {{ item.item }} is missing."
+      loop: "{{ quay_tls_file_stats.results }}"
+
+  always:
+    - name: Remove local ACM TLS staging directory
+      ansible.builtin.file:
+        path: >-
+          {{
+            quay_tls_local_staging.path
+            | default('/nonexistent')
+          }}
+        state: absent
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Remove encrypted Quay ACM key
+      ansible.builtin.file:
+        path: "{{ quay_tls_private_key_path }}.encrypted"
+        state: absent
+      no_log: true
+
+    - name: Remove temporary Quay ACM passphrase
+      ansible.builtin.file:
+        path: "{{ quay_tls_directory }}/.acm-passphrase"
+        state: absent
+      no_log: true
+
+    - name: Clear Quay ACM export facts
+      ansible.builtin.set_fact:
+        quay_acm_export_passphrase: ""
+        quay_acm_exported_certificate: {}
+      no_log: true

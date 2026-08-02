@@ -1,0 +1,93 @@
+---
+- name: Validate required Quay variables
+  ansible.builtin.assert:
+    that:
+      - quay_hostname is defined
+      - quay_hostname | length > 0
+      - quay_root | length > 0
+      - quay_http_port is defined
+      - quay_https_port is defined
+      - quay_image | length > 0
+      - postgres_image | length > 0
+      - redis_image | length > 0
+      - quay_db_name | length > 0
+      - quay_db_user | length > 0
+      - quay_db_password | length > 0
+      - quay_secret_key | length > 0
+      - quay_database_secret_key | length > 0
+      - quay_superuser | length > 0
+      - quay_superuser_password | length > 0
+      - quay_superuser_email | length > 0
+      - redhat_registry_host | length > 0
+      - redhat_registry_username | length > 0
+      - redhat_registry_password | length > 0
+      - quay_default_org | length > 0
+      - quay_default_team | length > 0
+      - idm_admin_password | length > 0
+      - quay_admin_users | length > 0
+      - quay_registry_ldap_username | length > 0
+      - quay_registry_ldap_first_name | length > 0
+      - quay_registry_ldap_last_name | length > 0
+      - quay_registry_ldap_email | length > 0
+      - quay_registry_ldap_password | length >= 32
+      - quay_registry_ldap_secret_name | length > 0
+      - quay_writer_users | length > 0
+    fail_msg: >-
+      Missing required Quay, IdM, inventory, or AWS secret values.
+
+- name: Install required packages
+  ansible.builtin.dnf:
+    name:
+      - podman
+      - firewalld
+      - python3-pip
+      - python3-podman
+      - policycoreutils-python-utils
+      - openssl
+      - curl
+      - jq
+      - openldap-clients
+    state: present
+
+- name: Enable firewalld
+  ansible.builtin.service:
+    name: firewalld
+    state: started
+    enabled: true
+
+- name: Open Quay firewall ports
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop:
+    - "{{ quay_http_port }}"
+    - "{{ quay_https_port }}"
+
+- name: Create Podman authentication directory
+  ansible.builtin.file:
+    path: /root/.config/containers
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Login to Red Hat registry
+  containers.podman.podman_login:
+    registry: "{{ redhat_registry_host }}"
+    username: "{{ redhat_registry_username }}"
+    password: "{{ redhat_registry_password }}"
+    authfile: "{{ redhat_registry_authfile }}"
+  no_log: true
+
+- name: Pull required container images
+  containers.podman.podman_image:
+    name: "{{ item }}"
+    authfile: "{{ redhat_registry_authfile }}"
+    state: present
+  loop:
+    - "{{ quay_image }}"
+    - "{{ postgres_image }}"
+    - "{{ redis_image }}"
+###########################################################################

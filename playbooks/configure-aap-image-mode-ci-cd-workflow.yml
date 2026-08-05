@@ -1644,7 +1644,7 @@
           tags:
             - inventories
             - inventory_sources
-          no_log: true
+          no_log: false
 
         #######################################################################
         # Remove previous static hosts

@@ -96,6 +96,26 @@ RUN set -eux; \
     visudo -cf /etc/sudoers.d/90-ec2-user
 
 ###############################################################################
+# Permit Satellite-provisioned root password authentication
+#
+# The password itself is supplied at instance creation and is never embedded
+# in this image or its build history.
+###############################################################################
+
+RUN set -eux; \
+    mkdir -p /etc/ssh/sshd_config.d; \
+    printf '%s\n' \
+        'PermitRootLogin yes' \
+        'PasswordAuthentication yes' \
+        > /etc/ssh/sshd_config.d/00-image-mode-root-login.conf; \
+    chown root:root /etc/ssh/sshd_config.d/00-image-mode-root-login.conf; \
+    chmod 0600 /etc/ssh/sshd_config.d/00-image-mode-root-login.conf; \
+    grep -Fx 'PermitRootLogin yes' \
+        /etc/ssh/sshd_config.d/00-image-mode-root-login.conf; \
+    grep -Fx 'PasswordAuthentication yes' \
+        /etc/ssh/sshd_config.d/00-image-mode-root-login.conf
+
+###############################################################################
 # Add application content
 ###############################################################################
 

@@ -717,6 +717,21 @@
     create_satellite_hosts_on_aws_image_id: >-
       {{ create_satellite_hosts_on_aws_image_matches[0]['Id'] }}
 
+- name: PHASE 4 | Enable cloud-init user data for compute-resource image
+  ansible.builtin.command:
+    argv:
+      - hammer
+      - compute-resource
+      - image
+      - update
+      - --compute-resource-id
+      - "{{ create_satellite_hosts_on_aws_compute_resource_id }}"
+      - --id
+      - "{{ create_satellite_hosts_on_aws_image_id }}"
+      - --user-data
+      - "true"
+  changed_when: true
+
 ###############################################################################
 # PHASE 5 | Resolve AWS security groups
 ###############################################################################
@@ -1070,6 +1085,12 @@
 
       - --root-password
       - "{{ create_satellite_hosts_on_aws_root_password }}"
+
+      - --typed-parameters
+      - >-
+        name=kt_activation_keys,value={{
+          create_satellite_hosts_on_aws_activation_key
+        }},parameter_type=string
 
       - --managed
       - >-

@@ -13,6 +13,7 @@
     - ../vars/credential_types.yml
     - ../vars/credentials.yml
     - ../vars/inventories.yml
+    - ../vars/inventory_sources.yml
     - ../vars/execution_environments.yml
     - ../vars/projects.yml
     - ../vars/job_templates.yml
@@ -32,6 +33,9 @@
     image_builder_inventory_name: "Image Builders"
     development_inventory_name: "Image Mode Development"
     production_inventory_name: "Image Mode Production"
+    satellite_inventory_name: "Satellite Hosts"
+    satellite_inventory_source_name: "Satellite Hosts Source"
+    satellite_credential_name: "Image Mode Satellite Credential"
 
     ###########################################################################
     # Terraform inventory groups
@@ -85,6 +89,17 @@
 
     idm_admin_password_secret_name: >-
       {{ secret_prefix }}/idm/admin_password
+
+    satellite_admin_password_secret_name: >-
+      {{ secret_prefix }}/satellite/admin_password
+
+    satellite_admin_username: >-
+      {{
+        lookup('ansible.builtin.env', 'IMAGE_MODE_SATELLITE_USERNAME')
+        | default('', true)
+        | string
+        | trim
+      }}
 
     resolved_lab_ssh_private_key_secret_name: >-
       {{
@@ -228,11 +243,15 @@
           - groups['quay'] | length > 0
           - groups['image_builder'] is defined
           - groups['image_builder'] | length > 0
+          - groups['satellite'] is defined
+          - groups['satellite'] | length > 0
+          - satellite_admin_username | length > 0
         fail_msg: >-
           The Terraform-generated inventory must define secret_prefix,
           aws_region, aws_profile, the AWS IAM service-account credentials
           secret name, and nonempty [aap], [quay], and [image_builder]
-          groups.
+          groups. IMAGE_MODE_SATELLITE_USERNAME must also be supplied by the
+          CI/CD secret environment.
 
     - name: Normalize AWS configuration
       ansible.builtin.set_fact:
@@ -713,6 +732,62 @@
           '{{ quay_registry_ldap_secret_name | trim }}'.
       no_log: true
 
+
+    ###########################################################################
+    # Resolve Satellite endpoint and administrator credential
+    ###########################################################################
+
+    - name: Resolve primary Satellite endpoint
+      ansible.builtin.set_fact:
+        resolved_satellite_inventory_hostname: "{{ groups['satellite'][0] }}"
+        resolved_satellite_hostname: >-
+          {{
+            hostvars[groups['satellite'][0]].fqdn
+            | default(groups['satellite'][0], true)
+            | string
+            | trim
+          }}
+
+    - name: Read Satellite administrator password
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ satellite_admin_password_secret_name }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: satellite_admin_password_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Set Satellite inventory credential variables
+      ansible.builtin.set_fact:
+        satellite_url: "https://{{ resolved_satellite_hostname }}"
+        satellite_username: "{{ satellite_admin_username }}"
+        satellite_password: >-
+          {{ satellite_admin_password_secret_result.stdout | string | trim }}
+      no_log: true
+
+    - name: Validate Satellite inventory credential variables
+      ansible.builtin.assert:
+        that:
+          - resolved_satellite_hostname | length > 0
+          - satellite_username | length > 0
+          - satellite_password | length > 0
+          - satellite_password != 'None'
+        fail_msg: >-
+          The Satellite endpoint or administrator credential could not be
+          resolved. Supply IMAGE_MODE_SATELLITE_USERNAME and verify AWS
+          Secrets Manager secret {{ satellite_admin_password_secret_name }}.
+      no_log: true
 
     ###########################################################################
     # Read Terraform-generated SSH private key
@@ -1549,6 +1624,22 @@
             controller_validate_certs: false
           tags:
             - inventories
+
+        #######################################################################
+        # 5. Inventory sources
+        #######################################################################
+
+        - name: Configure AAP inventory sources
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_inventory_sources
+          vars:
+            controller_hostname: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            controller_validate_certs: false
+          tags:
+            - inventory_sources
+          no_log: true
 
         #######################################################################
         # Remove previous static hosts

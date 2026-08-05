@@ -66,6 +66,18 @@ RUN set -eux; \
     rm -rf /var/cache/dnf
 
 ###############################################################################
+# Allow the EC2 SSH user to elevate without an account password
+###############################################################################
+
+RUN set -eux; \
+    printf '%s\n' \
+        'ec2-user ALL=(ALL) NOPASSWD: ALL' \
+        > /etc/sudoers.d/90-ec2-user; \
+    chown root:root /etc/sudoers.d/90-ec2-user; \
+    chmod 0440 /etc/sudoers.d/90-ec2-user; \
+    visudo -cf /etc/sudoers.d/90-ec2-user
+
+###############################################################################
 # Add application content
 ###############################################################################
 

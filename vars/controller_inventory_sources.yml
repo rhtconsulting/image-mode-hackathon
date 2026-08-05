@@ -1,3 +1,4 @@
+---
 controller_inventory_sources:
   - name: Satellite Hosts Source
     description: Synchronize managed hosts from Red Hat Satellite 6

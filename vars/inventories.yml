@@ -30,3 +30,11 @@ controller_inventories:
     organization: "Image Mode Lab"
     variables:
       image_mode_environment: production
+
+  - name: Satellite Hosts
+    description: Hosts synchronized dynamically from Red Hat Satellite 6
+    organization: Image Mode Lab
+    variables:
+      satellite_url: "{{ satellite_url }}"
+      aws_region: "{{ aws_region }}"
+      secret_prefix: "{{ secret_prefix }}"

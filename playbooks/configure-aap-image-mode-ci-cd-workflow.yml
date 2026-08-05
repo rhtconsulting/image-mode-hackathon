@@ -1627,6 +1627,19 @@
         # 5. Inventory sources
         #######################################################################
 
+        - name: Remove incorrect blank Satellite Hosts Source inventory
+          ansible.controller.inventory:
+            name: "{{ satellite_inventory_source_name }}"
+            organization: "{{ aap_organization_name }}"
+            state: absent
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            validate_certs: false
+          tags:
+            - inventories
+            - inventory_sources
+
         - name: Ensure Satellite Hosts inventory exists
           ansible.controller.inventory:
             name: "{{ satellite_inventory_name }}"
@@ -1732,6 +1745,110 @@
             - inventories
             - inventory_sources
           no_log: true
+
+        - name: Resolve created Satellite inventory source ID
+          ansible.builtin.uri:
+            url: >-
+              {{
+                controller_host
+                ~ '/api/controller/v2/inventory_sources/?name='
+                ~ (satellite_inventory_source_name | urlencode)
+                ~ '&inventory='
+                ~ (satellite_inventory_lookup.json.results[0].id | string)
+              }}
+            method: GET
+            user: "{{ gateway_admin_username }}"
+            password: "{{ gateway_admin_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            status_code: 200
+            return_content: true
+          register: satellite_inventory_source_lookup
+          changed_when: false
+          no_log: true
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Validate created Satellite inventory source
+          ansible.builtin.assert:
+            that:
+              - satellite_inventory_source_lookup.json.count | int == 1
+              - satellite_inventory_source_lookup.json.results | length == 1
+            fail_msg: >-
+              The '{{ satellite_inventory_source_name }}' source was not
+              attached uniquely to the '{{ satellite_inventory_name }}'
+              inventory.
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Start initial Satellite inventory synchronization
+          ansible.builtin.uri:
+            url: >-
+              {{
+                controller_host
+                ~ '/api/controller/v2/inventory_sources/'
+                ~ (
+                  satellite_inventory_source_lookup.json.results[0].id
+                  | string
+                )
+                ~ '/update/'
+              }}
+            method: POST
+            user: "{{ gateway_admin_username }}"
+            password: "{{ gateway_admin_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            status_code:
+              - 201
+              - 202
+            return_content: true
+          register: satellite_inventory_sync_launch
+          changed_when: true
+          no_log: true
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Wait for initial Satellite inventory synchronization
+          ansible.builtin.uri:
+            url: >-
+              {{
+                controller_host
+                ~ satellite_inventory_sync_launch.json.url
+              }}
+            method: GET
+            user: "{{ gateway_admin_username }}"
+            password: "{{ gateway_admin_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            status_code: 200
+            return_content: true
+          register: satellite_inventory_sync_status
+          changed_when: false
+          until: >-
+            satellite_inventory_sync_status.json.status
+            in ['successful', 'failed', 'error', 'canceled']
+          retries: 120
+          delay: 5
+          no_log: true
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Validate initial Satellite inventory synchronization
+          ansible.builtin.assert:
+            that:
+              - satellite_inventory_sync_status.json.status == 'successful'
+            fail_msg: >-
+              Initial Satellite inventory synchronization finished with status
+              '{{ satellite_inventory_sync_status.json.status }}'. Review
+              inventory update job
+              {{ satellite_inventory_sync_status.json.id }} in AAP.
+          tags:
+            - inventories
+            - inventory_sources
 
         #######################################################################
         # Remove previous static hosts

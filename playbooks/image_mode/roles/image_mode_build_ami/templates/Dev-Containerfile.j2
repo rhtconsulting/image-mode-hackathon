@@ -1,0 +1,204 @@
+###############################################################################
+# Image Mode bootc container
+###############################################################################
+
+ARG IMAGE_MODE_BASE_IMAGE
+
+FROM ${IMAGE_MODE_BASE_IMAGE}
+
+###############################################################################
+# Build-stage arguments
+###############################################################################
+
+ARG IMAGE_MODE_BASE_IMAGE
+ARG IMAGE_MODE_RHEL_RELEASE
+
+###############################################################################
+# Validate required build arguments
+###############################################################################
+
+RUN set -eux; \
+    test -n "${IMAGE_MODE_BASE_IMAGE}"; \
+    test -n "${IMAGE_MODE_RHEL_RELEASE}"; \
+    printf 'Selected base image: %s\n' "${IMAGE_MODE_BASE_IMAGE}"; \
+    printf 'Selected RHEL release: %s\n' "${IMAGE_MODE_RHEL_RELEASE}"
+
+###############################################################################
+# Validate the selected RHEL bootc base image
+###############################################################################
+
+RUN set -eux; \
+    test -r /etc/os-release; \
+    . /etc/os-release; \
+    test "${ID}" = "rhel"; \
+    base_major="${VERSION_ID%%.*}"; \
+    selected_major="${IMAGE_MODE_RHEL_RELEASE%%.*}"; \
+    test "${base_major}" = "${selected_major}"; \
+    printf 'Building from %s %s\n' "${NAME}" "${VERSION_ID}"; \
+    printf 'Selected RHEL release: %s\n' "${IMAGE_MODE_RHEL_RELEASE}"
+
+###############################################################################
+# Configure DNF for the selected RHEL release
+###############################################################################
+
+RUN set -eux; \
+    mkdir -p /etc/dnf/vars; \
+    printf '%s\n' "${IMAGE_MODE_RHEL_RELEASE}" \
+        > /etc/dnf/vars/releasever
+
+###############################################################################
+# Install application, EC2 and Satellite client prerequisites
+#
+# These packages must be installed while building the image because /usr and
+# the RPM database are immutable after the resulting host boots.
+###############################################################################
+
+RUN set -eux; \
+    dnf -y clean all; \
+    rm -rf /var/cache/dnf; \
+    dnf \
+        --releasever="${IMAGE_MODE_RHEL_RELEASE}" \
+        -y install \
+        nginx \
+        cloud-init \
+        openssh-server \
+        chrony \
+        sudo \
+        curl \
+        ca-certificates \
+        python3 \
+        subscription-manager; \
+    dnf -y clean all; \
+    rm -rf /var/cache/dnf
+
+###############################################################################
+# Validate required host-management tools
+###############################################################################
+
+RUN set -eux; \
+    command -v bootc; \
+    command -v subscription-manager; \
+    command -v cloud-init; \
+    command -v curl; \
+    command -v python3; \
+    test -f /usr/lib/systemd/system/rhsmcertd.service
+
+###############################################################################
+# Allow the EC2 SSH user to elevate without an account password
+###############################################################################
+
+RUN set -eux; \
+    printf '%s\n' \
+        'ec2-user ALL=(ALL) NOPASSWD: ALL' \
+        > /etc/sudoers.d/90-ec2-user; \
+    chown root:root /etc/sudoers.d/90-ec2-user; \
+    chmod 0440 /etc/sudoers.d/90-ec2-user; \
+    visudo -cf /etc/sudoers.d/90-ec2-user
+
+###############################################################################
+# Add application content
+###############################################################################
+
+COPY files/index.html /usr/share/nginx/html/index.html
+
+###############################################################################
+# Configure EC2 cloud-init
+#
+# Satellite registration is supplied dynamically through EC2 user data.
+# Do not place activation keys, global-registration JWTs or credentials in
+# this image.
+###############################################################################
+
+RUN set -eux; \
+    mkdir -p /etc/cloud/cloud.cfg.d; \
+    printf '%s\n' \
+        'datasource_list: [ Ec2, None ]' \
+        > /etc/cloud/cloud.cfg.d/99-ec2-datasource.cfg
+
+###############################################################################
+# Prepare a persistent location for first-boot registration artifacts
+#
+# /etc remains writable and persists across bootc upgrades. A Satellite
+# provisioning template or cloud-init payload can place public CA material
+# or non-secret registration configuration here when the host is created.
+###############################################################################
+
+RUN set -eux; \
+    install \
+        -d \
+        -o root \
+        -g root \
+        -m 0700 \
+        /etc/image-mode-registration
+
+###############################################################################
+# Enable application, EC2 and Satellite reporting services
+###############################################################################
+
+RUN set -eux; \
+    systemctl enable nginx.service; \
+    systemctl enable sshd.service; \
+    systemctl enable chronyd.service; \
+    systemctl enable cloud-init-local.service; \
+    systemctl enable cloud-init.service; \
+    systemctl enable cloud-config.service; \
+    systemctl enable cloud-final.service; \
+    systemctl enable rhsmcertd.service
+
+###############################################################################
+# Record image metadata
+###############################################################################
+
+RUN set -eux; \
+    printf '%s\n' \
+        'IMAGE_NAME={{ image_mode_image_name }}' \
+        'IMAGE_VERSION={{ image_mode_image_tag }}' \
+        "RHEL_VERSION=${IMAGE_MODE_RHEL_RELEASE}" \
+        'APPLICATION={{ image_mode_application_name }}' \
+        'CONTAINER_IMAGE={{ image_mode_image_reference }}' \
+        "BASE_IMAGE=${IMAGE_MODE_BASE_IMAGE}" \
+        'SATELLITE_CLIENT=subscription-manager' \
+        'SATELLITE_REGISTRATION=first-boot' \
+        'SATELLITE_FACT_SERVICE=rhsmcertd' \
+        > /etc/image-mode-release
+
+###############################################################################
+# Expose metadata as OCI/container labels
+#
+# These labels allow Ansible to validate the image without executing it.
+###############################################################################
+
+LABEL containers.bootc="1" \
+      org.opencontainers.image.title="{{ image_mode_image_name }}" \
+      org.opencontainers.image.version="{{ image_mode_image_tag }}" \
+      com.redhat.image-mode.rhel-release="${IMAGE_MODE_RHEL_RELEASE}" \
+      com.redhat.image-mode.base-image="${IMAGE_MODE_BASE_IMAGE}" \
+      com.redhat.image-mode.application="{{ image_mode_application_name }}" \
+      com.redhat.image-mode.satellite-client="subscription-manager" \
+      com.redhat.image-mode.satellite-registration="first-boot"
+
+###############################################################################
+# Final validation
+###############################################################################
+
+RUN set -eux; \
+    test -x /usr/bin/bootc \
+        || test -x /usr/libexec/bootc; \
+    command -v subscription-manager; \
+    systemctl is-enabled rhsmcertd.service; \
+    systemctl is-enabled cloud-final.service; \
+    systemctl is-enabled nginx.service; \
+    systemctl is-enabled sshd.service
+
+###############################################################################
+# Exposed services
+###############################################################################
+
+EXPOSE 22
+EXPOSE 80
+
+###############################################################################
+# Default bootc command
+###############################################################################
+
+CMD ["/sbin/init"]

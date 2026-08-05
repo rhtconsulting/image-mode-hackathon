@@ -1593,6 +1593,9 @@
         - name: Configure AAP credentials
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_credentials
+            apply:
+              tags:
+                - credentials
           vars:
             controller_hostname: "{{ controller_host }}"
             controller_username: "{{ gateway_admin_username }}"
@@ -1609,6 +1612,9 @@
         - name: Configure AAP inventories
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_inventories
+            apply:
+              tags:
+                - inventories
           vars:
             controller_hostname: "{{ controller_host }}"
             controller_username: "{{ gateway_admin_username }}"
@@ -1620,6 +1626,26 @@
         #######################################################################
         # 5. Inventory sources
         #######################################################################
+
+        - name: Ensure Satellite Hosts inventory exists
+          ansible.controller.inventory:
+            name: "{{ satellite_inventory_name }}"
+            description: Hosts synchronized dynamically from Red Hat Satellite 6
+            organization: "{{ aap_organization_name }}"
+            variables:
+              satellite_url: "{{ satellite_url }}"
+              aws_region: "{{ aws_region }}"
+              secret_prefix: "{{ secret_prefix }}"
+            state: present
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            validate_certs: false
+          register: satellite_inventory_result
+          no_log: true
+          tags:
+            - inventories
+            - inventory_sources
 
         - name: Resolve Satellite Hosts inventory ID
           ansible.builtin.uri:
@@ -1675,7 +1701,10 @@
             fail_msg: >-
               Exactly one '{{ satellite_inventory_name }}' inventory and one
               '{{ satellite_credential_name }}' credential must exist before
-              the Satellite inventory source can be created.
+              the Satellite inventory source can be created. Inventory
+              matches: {{ satellite_inventory_lookup.json.count | int }};
+              credential matches:
+              {{ satellite_credential_lookup.json.count | int }}.
           tags:
             - inventories
             - inventory_sources

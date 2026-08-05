@@ -1621,15 +1621,28 @@
         # 5. Inventory sources
         #######################################################################
 
-        - name: Configure AAP inventory sources
-          ansible.builtin.include_role:
-            name: infra.aap_configuration.controller_inventory_sources
-          vars:
-            controller_hostname: "{{ controller_host }}"
+        - name: Create Satellite inventory source and attach its credential
+          ansible.controller.inventory_source:
+            name: "{{ satellite_inventory_source_name }}"
+            description: Synchronize managed hosts from Red Hat Satellite 6
+            inventory: "{{ satellite_inventory_name }}"
+            organization: "{{ aap_organization_name }}"
+            source: satellite6
+            credential: "{{ satellite_credential_name }}"
+            overwrite: true
+            overwrite_vars: true
+            update_on_launch: true
+            update_cache_timeout: 0
+            source_vars:
+              validate_certs: false
+            state: present
+            controller_host: "{{ controller_host }}"
             controller_username: "{{ gateway_admin_username }}"
             controller_password: "{{ gateway_admin_password }}"
-            controller_validate_certs: false
+            validate_certs: false
+          register: satellite_inventory_source_result
           tags:
+            - inventories
             - inventory_sources
           no_log: true
 

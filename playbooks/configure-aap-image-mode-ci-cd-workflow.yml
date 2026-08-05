@@ -1621,14 +1621,72 @@
         # 5. Inventory sources
         #######################################################################
 
+        - name: Resolve Satellite Hosts inventory ID
+          ansible.builtin.uri:
+            url: >-
+              {{
+                controller_host
+                ~ '/api/controller/v2/inventories/?name='
+                ~ (satellite_inventory_name | urlencode)
+              }}
+            method: GET
+            user: "{{ gateway_admin_username }}"
+            password: "{{ gateway_admin_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            status_code: 200
+            return_content: true
+          register: satellite_inventory_lookup
+          changed_when: false
+          no_log: true
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Resolve Image Mode Satellite credential ID
+          ansible.builtin.uri:
+            url: >-
+              {{
+                controller_host
+                ~ '/api/controller/v2/credentials/?name='
+                ~ (satellite_credential_name | urlencode)
+              }}
+            method: GET
+            user: "{{ gateway_admin_username }}"
+            password: "{{ gateway_admin_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            status_code: 200
+            return_content: true
+          register: satellite_credential_lookup
+          changed_when: false
+          no_log: true
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Validate Satellite inventory-source dependencies
+          ansible.builtin.assert:
+            that:
+              - satellite_inventory_lookup.json.count | int == 1
+              - satellite_inventory_lookup.json.results | length == 1
+              - satellite_credential_lookup.json.count | int == 1
+              - satellite_credential_lookup.json.results | length == 1
+            fail_msg: >-
+              Exactly one '{{ satellite_inventory_name }}' inventory and one
+              '{{ satellite_credential_name }}' credential must exist before
+              the Satellite inventory source can be created.
+          tags:
+            - inventories
+            - inventory_sources
+
         - name: Create Satellite inventory source and attach its credential
           ansible.controller.inventory_source:
             name: "{{ satellite_inventory_source_name }}"
             description: Synchronize managed hosts from Red Hat Satellite 6
-            inventory: "{{ satellite_inventory_name }}"
-            organization: "{{ aap_organization_name }}"
+            inventory: "{{ satellite_inventory_lookup.json.results[0].id }}"
             source: satellite6
-            credential: "{{ satellite_credential_name }}"
+            credential: "{{ satellite_credential_lookup.json.results[0].id }}"
             overwrite: true
             overwrite_vars: true
             update_on_launch: true
@@ -1644,7 +1702,7 @@
           tags:
             - inventories
             - inventory_sources
-          no_log: false
+          no_log: true
 
         #######################################################################
         # Remove previous static hosts

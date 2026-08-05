@@ -35,10 +35,10 @@ RUN set -eux; \
     selected_major="${IMAGE_MODE_RHEL_RELEASE%%.*}"; \
     test "${base_major}" = "${selected_major}"; \
     printf 'Building from %s %s\n' "${NAME}" "${VERSION_ID}"; \
-    printf 'Satellite release: %s\n' "${IMAGE_MODE_RHEL_RELEASE}"
+    printf 'Selected RHEL release: %s\n' "${IMAGE_MODE_RHEL_RELEASE}"
 
 ###############################################################################
-# Configure DNF for the Satellite-managed release
+# Configure DNF for the selected RHEL release
 ###############################################################################
 
 RUN set -eux; \
@@ -47,7 +47,10 @@ RUN set -eux; \
         > /etc/dnf/vars/releasever
 
 ###############################################################################
-# Install application and EC2 prerequisites
+# Install application, EC2 and Satellite client prerequisites
+#
+# These packages must be installed while building the image because /usr and
+# the RPM database are immutable after the resulting host boots.
 ###############################################################################
 
 RUN set -eux; \
@@ -61,9 +64,24 @@ RUN set -eux; \
         openssh-server \
         chrony \
         sudo \
-        curl; \
+        curl \
+        ca-certificates \
+        python3 \
+        subscription-manager; \
     dnf -y clean all; \
     rm -rf /var/cache/dnf
+
+###############################################################################
+# Validate required host-management tools
+###############################################################################
+
+RUN set -eux; \
+    command -v bootc; \
+    command -v subscription-manager; \
+    command -v cloud-init; \
+    command -v curl; \
+    command -v python3; \
+    test -f /usr/lib/systemd/system/rhsmcertd.service
 
 ###############################################################################
 # Allow the EC2 SSH user to elevate without an account password
@@ -85,6 +103,10 @@ COPY files/index.html /usr/share/nginx/html/index.html
 
 ###############################################################################
 # Configure EC2 cloud-init
+#
+# Satellite registration is supplied dynamically through EC2 user data.
+# Do not place activation keys, global-registration JWTs or credentials in
+# this image.
 ###############################################################################
 
 RUN set -eux; \
@@ -94,7 +116,23 @@ RUN set -eux; \
         > /etc/cloud/cloud.cfg.d/99-ec2-datasource.cfg
 
 ###############################################################################
-# Enable deployed services
+# Prepare a persistent location for first-boot registration artifacts
+#
+# /etc remains writable and persists across bootc upgrades. A Satellite
+# provisioning template or cloud-init payload can place public CA material
+# or non-secret registration configuration here when the host is created.
+###############################################################################
+
+RUN set -eux; \
+    install \
+        -d \
+        -o root \
+        -g root \
+        -m 0700 \
+        /etc/image-mode-registration
+
+###############################################################################
+# Enable application, EC2 and Satellite reporting services
 ###############################################################################
 
 RUN set -eux; \
@@ -104,7 +142,8 @@ RUN set -eux; \
     systemctl enable cloud-init-local.service; \
     systemctl enable cloud-init.service; \
     systemctl enable cloud-config.service; \
-    systemctl enable cloud-final.service
+    systemctl enable cloud-final.service; \
+    systemctl enable rhsmcertd.service
 
 ###############################################################################
 # Record image metadata
@@ -118,6 +157,9 @@ RUN set -eux; \
         'APPLICATION={{ image_mode_application_name }}' \
         'CONTAINER_IMAGE={{ image_mode_image_reference }}' \
         "BASE_IMAGE=${IMAGE_MODE_BASE_IMAGE}" \
+        'SATELLITE_CLIENT=subscription-manager' \
+        'SATELLITE_REGISTRATION=first-boot' \
+        'SATELLITE_FACT_SERVICE=rhsmcertd' \
         > /etc/image-mode-release
 
 ###############################################################################
@@ -131,16 +173,32 @@ LABEL containers.bootc="1" \
       org.opencontainers.image.version="{{ image_mode_image_tag }}" \
       com.redhat.image-mode.rhel-release="${IMAGE_MODE_RHEL_RELEASE}" \
       com.redhat.image-mode.base-image="${IMAGE_MODE_BASE_IMAGE}" \
-      com.redhat.image-mode.application="{{ image_mode_application_name }}"
+      com.redhat.image-mode.application="{{ image_mode_application_name }}" \
+      com.redhat.image-mode.satellite-client="subscription-manager" \
+      com.redhat.image-mode.satellite-registration="first-boot"
 
 ###############################################################################
-# Validate bootc support
+# Final validation
 ###############################################################################
 
-RUN test -x /usr/bin/bootc \
-    || test -x /usr/libexec/bootc
+RUN set -eux; \
+    test -x /usr/bin/bootc \
+        || test -x /usr/libexec/bootc; \
+    command -v subscription-manager; \
+    systemctl is-enabled rhsmcertd.service; \
+    systemctl is-enabled cloud-final.service; \
+    systemctl is-enabled nginx.service; \
+    systemctl is-enabled sshd.service
+
+###############################################################################
+# Exposed services
+###############################################################################
 
 EXPOSE 22
 EXPOSE 80
+
+###############################################################################
+# Default bootc command
+###############################################################################
 
 CMD ["/sbin/init"]

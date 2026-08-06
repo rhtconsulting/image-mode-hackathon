@@ -3,13 +3,12 @@
 # PHASE 4 | Enable repositories and resolve repository IDs
 ###############################################################################
 
-- name: PHASE 4 | Enable requested RHEL repositories
+- name: PHASE 4 | Enable requested RHEL repositories and resolve IDs
   ansible.builtin.shell:
     cmd: |
       set -euo pipefail
 
       repository_set_search='name="{{ item.1.repository_set_name }}"'
-      repository_search='content_label="{{ item.1.content_label }}"'
 
       repo_set_id="$(
         hammer --csv --no-headers repository-set list \
@@ -23,15 +22,44 @@
         exit 2
       fi
 
-      existing_id="$(
-        hammer --csv --no-headers repository list \
+      # A major and minor repository have the same content label. Resolve the
+      # concrete repository name from the repository set's architecture and
+      # release fields so a content-label-only search cannot select the wrong ID.
+      repository_name="$(
+        hammer --csv --no-headers repository-set available-repositories \
+          --id "${repo_set_id}" \
           --organization-label {{ satellite_organization_label | quote }} \
-          --search "${repository_search}" |
-        awk -F',' 'NR == 1 { gsub(/"/, "", $1); print $1 }'
+          --fields Name,Arch,Release |
+        awk -F',' \
+          -v wanted_arch={{ satellite_basearch | quote }} \
+          -v wanted_release={{ item.0.releasever | quote }} '
+            {
+              for (field = 1; field <= NF; field++) {
+                gsub(/^"|"$/, "", $field)
+              }
+              if ($2 == wanted_arch && $3 == wanted_release) {
+                print $1
+                exit
+              }
+            }
+          '
       )"
 
-      if [[ -n "${existing_id}" ]]; then
-        echo "ALREADY_ENABLED:${existing_id}"
+      if [[ -z "${repository_name}" ]]; then
+        echo "No available {{ satellite_basearch }} repository was found for release {{ item.0.releasever }} in {{ item.1.repository_set_name }}" >&2
+        exit 2
+      fi
+
+      resolve_repository_id() {
+        hammer --csv --no-headers repository list \
+          --organization-label {{ satellite_organization_label | quote }} \
+          --name "${repository_name}" |
+        awk -F',' 'NR == 1 { gsub(/"/, "", $1); print $1 }'
+      }
+
+      repository_id="$(resolve_repository_id)"
+      if [[ -n "${repository_id}" ]]; then
+        echo "ALREADY_ENABLED:${repository_id}"
         exit 0
       fi
 
@@ -46,63 +74,33 @@
       enable_rc=$?
       set -e
 
-      if [[ ${enable_rc} -eq 0 ]]; then
-        printf '%s\n' "${enable_output}"
-        echo "ENABLED"
-        exit 0
-      fi
-
-      if grep -qiE \
+      if [[ ${enable_rc} -ne 0 ]] && ! grep -qiE \
         '409[[:space:]]+Conflict|already[[:space:]]+enabled|already[[:space:]]+exists' \
         <<< "${enable_output}"; then
         printf '%s\n' "${enable_output}" >&2
-        echo "ALREADY_ENABLED_BY_SATELLITE"
-        exit 0
+        exit "${enable_rc}"
       fi
 
-      printf '%s\n' "${enable_output}" >&2
-      exit "${enable_rc}"
-    executable: /bin/bash
-  loop: "{{ satellite_rhel_repository_definitions | subelements('repositories') }}"
-  loop_control:
-    label: "RHEL {{ item.0.releasever }} | {{ item.1.repository_set_name }}"
-  register: satellite_content_bootstrap_repository_enable_results
-  changed_when: >-
-    'ENABLED' in satellite_content_bootstrap_repository_enable_results.stdout
-    and
-    'ALREADY_ENABLED' not in satellite_content_bootstrap_repository_enable_results.stdout
-  failed_when: satellite_content_bootstrap_repository_enable_results.rc != 0
-
-- name: PHASE 4 | Resolve enabled repository IDs
-  ansible.builtin.shell:
-    cmd: |
-      set -euo pipefail
-
-      repository_search='content_label="{{ item.1.content_label }}"'
-
-      repository_id="$(
-        hammer --csv --no-headers repository list \
-          --organization-label {{ satellite_organization_label | quote }} \
-          --search "${repository_search}" |
-        awk -F',' 'NR == 1 { gsub(/"/, "", $1); print $1 }'
-      )"
-
+      repository_id="$(resolve_repository_id)"
       if [[ -z "${repository_id}" ]]; then
-        echo "Unable to resolve enabled repository {{ item.1.content_label }}" >&2
+        printf '%s\n' "${enable_output}" >&2
+        echo "Repository was enabled but its ID could not be resolved: ${repository_name}" >&2
         exit 2
       fi
 
-      printf '%s\n' "${repository_id}"
+      printf '%s\n' "${enable_output}"
+      echo "ENABLED:${repository_id}"
     executable: /bin/bash
   loop: "{{ satellite_rhel_repository_definitions | subelements('repositories') }}"
   loop_control:
-    label: "{{ item.1.content_label }} | release {{ item.0.releasever }}"
-  register: satellite_content_bootstrap_enabled_repository_ids
-  changed_when: false
-  failed_when: >-
-    satellite_content_bootstrap_enabled_repository_ids.rc != 0
-    or
-    (satellite_content_bootstrap_enabled_repository_ids.stdout | trim | length) == 0
+    label: >-
+      RHEL {{ item.0.releasever }} | {{ item.1.repository_set_name }}
+  register: satellite_content_bootstrap_repository_enable_results
+  changed_when: >-
+    'ENABLED:' in satellite_content_bootstrap_repository_enable_results.stdout
+    and
+    'ALREADY_ENABLED:' not in satellite_content_bootstrap_repository_enable_results.stdout
+  failed_when: satellite_content_bootstrap_repository_enable_results.rc != 0
 
 - name: PHASE 4 | Build resolved repository metadata
   ansible.builtin.set_fact:
@@ -111,17 +109,24 @@
         satellite_content_bootstrap_resolved_repositories
         | default([])
         + [
-            {
-              'major': item.item.0.major,
-              'releasever': item.item.0.releasever,
-              'content_view': item.item.0.content_view,
-              'activation_key': item.item.0.activation_key,
-              'repository_set_name': item.item.1.repository_set_name,
-              'content_label': item.item.1.content_label,
-              'repository_id': item.stdout | trim | int
-            }
-          ]
+          {
+            'major': item.item.0.major,
+            'releasever': item.item.0.releasever,
+            'content_view': item.item.0.content_view,
+            'activation_key': item.item.0.activation_key,
+            'repository_set_name': item.item.1.repository_set_name,
+            'content_label': item.item.1.content_label,
+            'repository_id': (
+              item.stdout
+              | regex_search('(?:ALREADY_ENABLED|ENABLED):([0-9]+)', '\\1')
+              | first
+              | int
+            )
+          }
+        ]
       }}
-  loop: "{{ satellite_content_bootstrap_enabled_repository_ids.results }}"
+  loop: "{{ satellite_content_bootstrap_repository_enable_results.results }}"
   loop_control:
-    label: "{{ item.item.0.content_view }} <- {{ item.item.1.content_label }}"
+    label: >-
+      {{ item.item.0.content_view }} {{ item.item.0.releasever }}
+      <- {{ item.item.1.content_label }}

@@ -1086,11 +1086,11 @@
       - --root-password
       - "{{ create_satellite_hosts_on_aws_root_password }}"
 
-      - --typed-parameters
+      - --parameters
       - >-
-        name=kt_activation_keys,value={{
+        kt_activation_keys={{
           create_satellite_hosts_on_aws_activation_key
-        }},parameter_type=string
+        }}
 
       - --managed
       - >-

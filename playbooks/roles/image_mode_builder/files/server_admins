@@ -1,2 +1,1 @@
 %image-builder-users ALL=(ALL) NOPASSWD: ALL
-%idm-admins          ALL=(ALL) NOPASSWD: ALL

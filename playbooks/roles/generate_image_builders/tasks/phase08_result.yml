@@ -1,0 +1,37 @@
+---
+###############################################################################
+# PHASE 08
+#
+# Generate final workflow results.
+###############################################################################
+
+- name: PHASE 08 | Build generated host result list
+  ansible.builtin.set_fact:
+    image_builder_generated_hosts: >-
+      {{
+        image_builder_final_instance_info.instances
+        | map(attribute='tags')
+        | list
+      }}
+
+
+- name: PHASE 08 | Display generated Image Builder infrastructure
+  ansible.builtin.debug:
+    msg:
+      - "Hosts per RHEL generation: {{ generated_number_of_host_var }}"
+      - "RHEL generations: {{ image_builder_generations | length }}"
+      - "Desired total: {{ image_builder_desired_total_count }}"
+      - "Running managed instances: {{ image_builder_final_instance_info.instances | length }}"
+
+
+- name: PHASE 08 | Display generated instances
+  ansible.builtin.debug:
+    msg:
+      - "Name: {{ item.tags.Name | default('UNKNOWN') }}"
+      - "RHEL: {{ item.tags.RHELVersion | default('UNKNOWN') }}"
+      - "Instance ID: {{ item.instance_id }}"
+      - "Private IP: {{ item.private_ip_address | default('N/A') }}"
+      - "State: {{ item.state.name }}"
+  loop: "{{ image_builder_final_instance_info.instances }}"
+  loop_control:
+    label: "{{ item.tags.Name | default(item.instance_id) }}"

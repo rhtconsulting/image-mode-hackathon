@@ -1,0 +1,174 @@
+---
+###############################################################################
+# PHASE 05
+#
+# Reconcile desired Image Builder EC2 instances.
+#
+# Required facts resolved before this phase:
+#
+#   image_builder_domain_name
+#   image_builder_vpc_id
+#   image_builder_subnet_id
+#   image_builder_security_group_ids
+#   image_builder_key_name
+#   image_builder_desired_hosts
+#
+###############################################################################
+
+
+###############################################################################
+# Validate runtime-discovered infrastructure
+###############################################################################
+
+- name: PHASE 05 | Validate discovered EC2 configuration
+  ansible.builtin.assert:
+    that:
+      - image_builder_domain_name is defined
+      - image_builder_domain_name | length > 0
+
+      - image_builder_vpc_id is defined
+      - image_builder_vpc_id | length > 0
+
+      - image_builder_subnet_id is defined
+      - image_builder_subnet_id | length > 0
+
+      - image_builder_security_group_ids is defined
+      - image_builder_security_group_ids | length > 0
+
+      - image_builder_key_name is defined
+      - image_builder_key_name | length > 0
+
+      - image_builder_desired_hosts is defined
+      - image_builder_desired_hosts | length > 0
+
+    fail_msg: >-
+      PHASE 05 cannot provision Image Builder EC2 instances because one or
+      more required runtime-discovered values are missing.
+
+
+###############################################################################
+# Display provisioning plan
+###############################################################################
+
+- name: PHASE 05 | Display EC2 provisioning plan
+  ansible.builtin.debug:
+    msg:
+      - "AWS region: {{ image_builder_aws_region }}"
+      - "Lab domain: {{ image_builder_domain_name }}"
+      - "VPC: {{ image_builder_vpc_id }}"
+      - "Subnet: {{ image_builder_subnet_id }}"
+      - "Security groups: {{ image_builder_security_group_ids }}"
+      - "Key pair: {{ image_builder_key_name }}"
+      - "New EC2 instances: {{ image_builder_desired_hosts | length }}"
+
+
+###############################################################################
+# Provision desired Image Builder instances
+###############################################################################
+
+- name: PHASE 05 | Ensure Image Builder EC2 instances exist
+  amazon.aws.ec2_instance:
+
+    region: "{{ image_builder_aws_region }}"
+
+    name: "{{ item.name }}"
+
+    image_id: "{{ item.ami_id }}"
+
+    instance_type: "{{ image_builder_instance_type }}"
+
+    key_name: "{{ image_builder_key_name }}"
+
+    vpc_subnet_id: "{{ image_builder_subnet_id }}"
+
+    network_interfaces:
+
+      - assign_public_ip: "{{ image_builder_assign_public_ip }}"
+
+        groups: "{{ image_builder_security_group_ids }}"
+
+    volumes:
+
+      - device_name: "{{ image_builder_root_device_name }}"
+
+        ebs:
+
+          volume_size: "{{ image_builder_root_volume_size }}"
+
+          volume_type: "{{ image_builder_root_volume_type }}"
+
+          delete_on_termination: >-
+            {{ image_builder_delete_volumes_on_termination }}
+
+      - device_name: "{{ image_builder_data_device_name }}"
+
+        ebs:
+
+          volume_size: "{{ image_builder_data_volume_size }}"
+
+          volume_type: "{{ image_builder_data_volume_type }}"
+
+          delete_on_termination: >-
+            {{ image_builder_delete_volumes_on_termination }}
+
+    metadata_options:
+
+      http_endpoint: "{{ image_builder_metadata_http_endpoint }}"
+
+      http_tokens: "{{ image_builder_metadata_http_tokens }}"
+
+    tags:
+
+      Name: "{{ item.name }}"
+
+      Application: "{{ image_builder_common_tags.Application }}"
+
+      Component: "{{ image_builder_common_tags.Component }}"
+
+      ManagedBy: "{{ image_builder_common_tags.ManagedBy }}"
+
+      RHELVersion: "{{ item.rhel_major_version }}"
+
+      ImageBuilderGeneration: "{{ item.generation }}"
+
+      ImageBuilderTeam: "{{ item.team_id }}"
+
+      ImageBuilderDomain: "{{ image_builder_domain_name }}"
+
+    filters:
+
+      "tag:Name": "{{ item.name }}"
+
+      "tag:ManagedBy": "{{ image_builder_common_tags.ManagedBy }}"
+
+      "tag:Component": "{{ image_builder_common_tags.Component }}"
+
+    exact_count: 1
+
+    state: running
+
+    wait: true
+
+  loop: "{{ image_builder_desired_hosts }}"
+
+  loop_control:
+
+    label: >-
+      {{
+        item.short_name
+        | default(item.name)
+      }}
+
+  register: image_builder_provision_results
+
+
+###############################################################################
+# Display provisioning results
+###############################################################################
+
+- name: PHASE 05 | Display completed provisioning operations
+  ansible.builtin.debug:
+    msg: >-
+      EC2 provisioning reconciliation completed for
+      {{ image_builder_desired_hosts | length }}
+      desired Image Builder instances.

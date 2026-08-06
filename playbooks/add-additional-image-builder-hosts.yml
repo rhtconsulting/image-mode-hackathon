@@ -1,0 +1,12 @@
+---
+###############################################################################
+# Generate Image Mode Builder EC2 Instances
+###############################################################################
+
+- name: IMAGE MODE | Generate image builder infrastructure
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  roles:
+    - role: generate_image_builders

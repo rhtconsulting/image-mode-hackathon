@@ -14,9 +14,16 @@
       - --organization-label
       - "{{ satellite_organization_label }}"
       - --async
-  loop: "{{ satellite_content_bootstrap_resolved_repositories }}"
+  loop: >-
+    {{
+      satellite_content_bootstrap_resolved_repositories
+      | unique(attribute='repository_id')
+      | list
+    }}
   loop_control:
-    label: "Repository ID {{ item.repository_id }} | {{ item.content_label }}"
+    label: >-
+      RHEL {{ item.releasever }} | Repository ID {{ item.repository_id }}
+      | {{ item.content_label }}
   register: satellite_content_bootstrap_repository_sync_requests
   changed_when: true
   when: satellite_sync_repositories | bool
@@ -40,7 +47,9 @@
       (satellite_repository_sync_poll | int)
     }}
   delay: "{{ satellite_repository_sync_poll | int }}"
-  until: (satellite_content_bootstrap_active_sync_tasks.stdout | from_json | length) == 0
+  until: >-
+    (satellite_content_bootstrap_active_sync_tasks.stdout | from_json | length)
+    == 0
   when: satellite_sync_repositories | bool
 
 - name: PHASE 5 | Check for failed repository synchronization tasks
@@ -60,7 +69,9 @@
 - name: PHASE 5 | Fail when repository synchronization failed
   ansible.builtin.assert:
     that:
-      - (satellite_content_bootstrap_failed_sync_tasks.stdout | from_json | length) == 0
+      - >-
+        (satellite_content_bootstrap_failed_sync_tasks.stdout | from_json | length)
+        == 0
     fail_msg: >-
       One or more repository synchronization tasks failed. Review Monitor >
       Satellite Tasks or run hammer task list.

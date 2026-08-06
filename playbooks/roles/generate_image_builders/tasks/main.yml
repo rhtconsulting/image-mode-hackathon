@@ -1,0 +1,102 @@
+---
+###############################################################################
+# Image Builder Generation Workflow
+###############################################################################
+
+- name: PHASE 01 | Preflight validation
+  ansible.builtin.include_tasks:
+    file: phase01_preflight.yml
+    apply:
+      tags:
+        - image_builder
+        - phase01
+  tags:
+    - always
+    - image_builder
+    - phase01
+
+
+- name: PHASE 02 | Resolve AWS configuration
+  ansible.builtin.include_tasks:
+    file: phase02_resolve_aws.yml
+    apply:
+      tags:
+        - image_builder
+        - phase02
+  tags:
+    - image_builder
+    - phase02
+
+
+- name: PHASE 03 | Build desired host inventory
+  ansible.builtin.include_tasks:
+    file: phase03_build_inventory.yml
+    apply:
+      tags:
+        - image_builder
+        - phase03
+  tags:
+    - image_builder
+    - phase03
+
+
+- name: PHASE 04 | Discover existing EC2 instances
+  ansible.builtin.include_tasks:
+    file: phase04_discover_instances.yml
+    apply:
+      tags:
+        - image_builder
+        - phase04
+  tags:
+    - image_builder
+    - phase04
+
+
+- name: PHASE 05 | Reconcile EC2 instances
+  ansible.builtin.include_tasks:
+    file: phase05_reconcile_instances.yml
+    apply:
+      tags:
+        - image_builder
+        - phase05
+  tags:
+    - image_builder
+    - phase05
+
+
+- name: PHASE 06 | Validate generated instances
+  ansible.builtin.include_tasks:
+    file: phase06_validate_instances.yml
+    apply:
+      tags:
+        - image_builder
+        - phase06
+  tags:
+    - image_builder
+    - phase06
+
+
+- name: PHASE 07 | Configure DNS placeholder
+  ansible.builtin.include_tasks:
+    file: phase07_configure_dns.yml
+    apply:
+      tags:
+        - image_builder
+        - dns
+        - phase07
+  tags:
+    - image_builder
+    - dns
+    - phase07
+
+
+- name: PHASE 08 | Generate workflow result
+  ansible.builtin.include_tasks:
+    file: phase08_result.yml
+    apply:
+      tags:
+        - image_builder
+        - phase08
+  tags:
+    - image_builder
+    - phase08

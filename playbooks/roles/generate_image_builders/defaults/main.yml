@@ -1,0 +1,346 @@
+---
+###############################################################################
+# Image Builder Role Defaults
+#
+# This role adds additional RHEL Image Builder EC2 instances to an existing
+# Image Mode lab.
+#
+# Terraform has already provisioned the base lab before this role runs.
+# Terraform outputs are NOT assumed to be available.
+#
+# The existing AWS environment is therefore treated as the source of truth.
+#
+# Dynamic values discovered at runtime include:
+#
+#   - AWS account
+#   - Lab VPC
+#   - Lab domain
+#   - Image Builder subnet
+#   - Security groups
+#   - EC2 key pair
+#   - Existing Image Builder teams
+#   - Next available team identifier
+#
+###############################################################################
+
+
+###############################################################################
+# Requested Additional Capacity
+#
+# Number of ADDITIONAL Image Builder TEAMS to create.
+#
+# Each team receives one host for every configured RHEL generation.
+#
+# Example:
+#
+#   image_builder_additional_team_count: 2
+#
+# If no generated teams currently exist:
+#
+#   Team A
+#     image-builder-rhel9-a
+#     image-builder-rhel10-a
+#
+#   Team B
+#     image-builder-rhel9-b
+#     image-builder-rhel10-b
+#
+# Total new EC2 instances:
+#
+#   additional team count * number of configured RHEL generations
+#
+#   2 teams * 2 RHEL generations = 4 EC2 instances
+#
+# This variable should be exposed through the AAP Job Template survey.
+###############################################################################
+
+image_builder_additional_team_count: 1
+
+
+###############################################################################
+# AWS Region
+#
+# The custom AAP AWS credential injects:
+#
+#   AWS_REGION
+#   AWS_DEFAULT_REGION
+#   AWS_ACCESS_KEY_ID
+#   AWS_SECRET_ACCESS_KEY
+#
+# It also injects aws_region as an extra variable.
+#
+###############################################################################
+
+image_builder_aws_region: >-
+  {{
+    aws_region
+    | default(
+        lookup('env', 'AWS_REGION'),
+        true
+      )
+  }}
+
+
+###############################################################################
+# Existing Lab Anchor Discovery
+#
+# Terraform-generated domains change between lab deployments.
+#
+# Example:
+#
+#   idm-1.lab.sandbox2233.opentlc.com
+#
+# The IdM EC2 instance is therefore used as the anchor for discovering the
+# currently running lab.
+#
+# From that instance the role calculates:
+#
+#   FQDN:
+#     idm-1.lab.sandbox2233.opentlc.com
+#
+#   Domain:
+#     lab.sandbox2233.opentlc.com
+#
+#   VPC:
+#     Retrieved from the EC2 instance metadata returned by AWS.
+#
+###############################################################################
+
+image_builder_idm_anchor_pattern: "idm-1.*"
+
+
+###############################################################################
+# Dynamic Lab Values
+#
+# DO NOT define static defaults for these values.
+#
+# They are created with set_fact during the environment discovery phase.
+#
+# Expected runtime facts:
+#
+#   image_builder_idm_fqdn
+#   image_builder_domain_name
+#   image_builder_vpc_id
+#   image_builder_subnet_id
+#   image_builder_availability_zone
+#   image_builder_security_group_ids
+#   image_builder_key_name
+#
+###############################################################################
+
+
+###############################################################################
+# Network Discovery
+#
+# The subnet ID changes between Terraform deployments.
+#
+# The subnet CIDR is stable by lab convention.
+#
+# The role must:
+#
+#   1. Discover the VPC using the IdM anchor.
+#
+#   2. Search for 10.20.1.0/24 specifically inside that VPC.
+#
+# This avoids ambiguity when multiple labs/VPCs use the same address space.
+#
+###############################################################################
+
+image_builder_subnet_cidr: "10.20.1.0/24"
+
+
+###############################################################################
+# Existing Image Builder Discovery
+#
+# Existing Image Builder systems are inspected to determine which team
+# identifiers are already allocated.
+#
+# Examples:
+#
+#   image-builder-rhel9-a.<domain>
+#   image-builder-rhel10-a.<domain>
+#
+#   image-builder-rhel9-b.<domain>
+#   image-builder-rhel10-b.<domain>
+#
+###############################################################################
+
+image_builder_existing_host_pattern: "image-builder-*"
+
+
+###############################################################################
+# Team Naming
+#
+# Team identifiers are dynamically allocated.
+#
+# Example sequence:
+#
+#   a
+#   b
+#   c
+#   d
+#   ...
+#   z
+#
+# The discovery/build phases should determine which identifiers already exist
+# and allocate the next available team identifiers.
+#
+###############################################################################
+
+image_builder_team_identifiers:
+  - "a"
+  - "b"
+  - "c"
+  - "d"
+  - "e"
+  - "f"
+  - "g"
+  - "h"
+  - "i"
+  - "j"
+  - "k"
+  - "l"
+  - "m"
+  - "n"
+  - "o"
+  - "p"
+  - "q"
+  - "r"
+  - "s"
+  - "t"
+  - "u"
+  - "v"
+  - "w"
+  - "x"
+  - "y"
+  - "z"
+
+
+###############################################################################
+# EC2 Configuration
+###############################################################################
+
+image_builder_instance_type: "m6i.2xlarge"
+
+image_builder_assign_public_ip: false
+
+
+###############################################################################
+# Storage
+###############################################################################
+
+image_builder_root_device_name: "/dev/sda1"
+
+image_builder_root_volume_size: 120
+
+image_builder_root_volume_type: "gp3"
+
+image_builder_data_device_name: "/dev/sdb"
+
+image_builder_data_volume_size: 500
+
+image_builder_data_volume_type: "gp3"
+
+image_builder_delete_volumes_on_termination: true
+
+
+###############################################################################
+# EC2 Instance Metadata Service
+#
+# Require IMDSv2.
+###############################################################################
+
+image_builder_metadata_http_endpoint: "enabled"
+
+image_builder_metadata_http_tokens: "required"
+
+
+###############################################################################
+# Image Builder Generations
+#
+# The team identifier is NOT part of hostname_prefix.
+#
+# For example:
+#
+#   hostname_prefix:
+#     image-builder-rhel9
+#
+#   team:
+#     c
+#
+# becomes:
+#
+#   image-builder-rhel9-c
+#
+###############################################################################
+
+image_builder_generations:
+
+  - name: "rhel9"
+    rhel_major_version: "9"
+    hostname_prefix: "image-builder-rhel9"
+
+  - name: "rhel10"
+    rhel_major_version: "10"
+    hostname_prefix: "image-builder-rhel10"
+
+
+###############################################################################
+# AMI Discovery
+#
+# AMI IDs should not be entered by the lab administrator.
+#
+# A discovery phase should populate:
+#
+#   image_builder_rhel9_ami_id
+#   image_builder_rhel10_ami_id
+#
+# and subsequently build image_builder_generations_resolved or insert the
+# appropriate AMI ID into image_builder_desired_hosts.
+#
+###############################################################################
+
+
+###############################################################################
+# Common EC2 Tags
+#
+# Environment is deliberately excluded because the current environment/domain
+# is dynamic and should be calculated during discovery.
+#
+###############################################################################
+
+image_builder_common_tags:
+
+  Application: "Image Mode"
+
+  Component: "Image Builder"
+
+  ManagedBy: "Ansible"
+
+
+###############################################################################
+# Discovery Safety
+#
+# Never guess if AWS discovery is ambiguous.
+###############################################################################
+
+image_builder_require_unique_anchor: true
+
+image_builder_require_unique_subnet: true
+
+
+###############################################################################
+# Capacity Safety Limits
+#
+# These limits represent additional TEAM allocations, not individual EC2
+# instances.
+#
+# With two RHEL generations:
+#
+#   5 teams = 10 new EC2 instances
+#
+###############################################################################
+
+image_builder_minimum_additional_teams: 1
+
+image_builder_maximum_additional_teams: 10

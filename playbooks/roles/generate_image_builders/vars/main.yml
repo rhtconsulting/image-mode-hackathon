@@ -1,0 +1,7 @@
+---
+###############################################################################
+# Internal role variables
+###############################################################################
+
+image_builder_supported_minimum_count: 1
+image_builder_supported_maximum_count: 20

@@ -1,0 +1,150 @@
+---
+###############################################################################
+# PHASE 04
+#
+# Discover the existing AWS environment and managed Image Builder instances.
+###############################################################################
+
+###############################################################################
+# Discover existing managed Image Builder instances
+###############################################################################
+
+- name: PHASE 04 | Query existing managed Image Builder instances
+  amazon.aws.ec2_instance_info:
+    region: "{{ image_builder_aws_region }}"
+    filters:
+      "tag:ManagedBy": "{{ image_builder_common_tags.ManagedBy }}"
+      "tag:Component": "{{ image_builder_common_tags.Component }}"
+      instance-state-name:
+        - pending
+        - running
+        - stopping
+        - stopped
+  register: image_builder_existing_instance_info
+
+
+- name: PHASE 04 | Store existing instance count
+  ansible.builtin.set_fact:
+    image_builder_existing_instance_count: >-
+      {{
+        image_builder_existing_instance_info.instances
+        | length
+      }}
+
+
+###############################################################################
+# Discover lab anchor
+#
+# Prefer an existing IdM host because it belongs to the already-created
+# Terraform lab and gives us the correct VPC.
+###############################################################################
+
+- name: PHASE 04 | Discover IdM anchor instance
+  amazon.aws.ec2_instance_info:
+    region: "{{ image_builder_aws_region }}"
+    filters:
+      "tag:Name": "idm-1.*"
+      instance-state-name:
+        - running
+        - stopped
+  register: image_builder_idm_anchor_info
+
+
+- name: PHASE 04 | Validate IdM anchor discovery
+  ansible.builtin.assert:
+    that:
+      - image_builder_idm_anchor_info.instances | length == 1
+    fail_msg: >-
+      Expected exactly one IdM anchor instance matching idm-1.*,
+      but found
+      {{ image_builder_idm_anchor_info.instances | length }}.
+
+
+###############################################################################
+# Resolve lab VPC and domain
+###############################################################################
+
+- name: PHASE 04 | Resolve lab anchor facts
+  ansible.builtin.set_fact:
+    image_builder_idm_anchor: >-
+      {{
+        image_builder_idm_anchor_info.instances[0]
+      }}
+
+    image_builder_vpc_id: >-
+      {{
+        image_builder_idm_anchor_info.instances[0].vpc_id
+      }}
+
+    image_builder_idm_fqdn: >-
+      {{
+        image_builder_idm_anchor_info.instances[0].tags.Name
+      }}
+
+
+- name: PHASE 04 | Calculate lab domain
+  ansible.builtin.set_fact:
+    image_builder_domain_name: >-
+      {{
+        image_builder_idm_fqdn
+        | regex_replace('^idm-1\\.', '')
+      }}
+
+
+###############################################################################
+# Discover Image Builder subnet
+#
+# The CIDR is predictable, but the subnet ID is not.
+# Scope the CIDR lookup to the VPC discovered from the IdM anchor.
+###############################################################################
+
+- name: PHASE 04 | Discover Image Builder subnet
+  amazon.aws.ec2_vpc_subnet_info:
+    region: "{{ image_builder_aws_region }}"
+    filters:
+      vpc-id: "{{ image_builder_vpc_id }}"
+      cidr-block: "{{ image_builder_subnet_cidr }}"
+      state: available
+  register: image_builder_subnet_info
+
+
+- name: PHASE 04 | Validate Image Builder subnet discovery
+  ansible.builtin.assert:
+    that:
+      - image_builder_subnet_info.subnets | length == 1
+    fail_msg: >-
+      Expected exactly one subnet using CIDR
+      {{ image_builder_subnet_cidr }}
+      in VPC
+      {{ image_builder_vpc_id }},
+      but found
+      {{ image_builder_subnet_info.subnets | length }}.
+
+
+- name: PHASE 04 | Resolve Image Builder subnet
+  ansible.builtin.set_fact:
+    image_builder_subnet_id: >-
+      {{
+        image_builder_subnet_info.subnets[0].subnet_id
+      }}
+
+    image_builder_availability_zone: >-
+      {{
+        image_builder_subnet_info.subnets[0].availability_zone
+      }}
+
+
+###############################################################################
+# Results
+###############################################################################
+
+- name: PHASE 04 | Display discovered AWS environment
+  ansible.builtin.debug:
+    msg:
+      - "Existing managed Image Builders: {{ image_builder_existing_instance_count }}"
+      - "IdM anchor: {{ image_builder_idm_fqdn }}"
+      - "Lab domain: {{ image_builder_domain_name }}"
+      - "VPC: {{ image_builder_vpc_id }}"
+      - "Subnet CIDR: {{ image_builder_subnet_cidr }}"
+      - "Subnet ID: {{ image_builder_subnet_id }}"
+      - "Availability Zone: {{ image_builder_availability_zone }}"

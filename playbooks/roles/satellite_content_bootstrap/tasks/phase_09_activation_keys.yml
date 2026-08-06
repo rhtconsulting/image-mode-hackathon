@@ -15,11 +15,17 @@
       - "{{ satellite_organization_label }}"
       - --search
       - 'name="{{ item.activation_key }}"'
-  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop: >-
+    {{
+      satellite_rhel_repository_definitions
+      | unique(attribute='activation_key')
+      | list
+    }}
   loop_control:
     label: "{{ item.activation_key }}"
   register: satellite_content_bootstrap_activation_key_lookups
   changed_when: false
+  failed_when: satellite_content_bootstrap_activation_key_lookups.rc != 0
   when: satellite_manage_activation_keys | bool
 
 - name: PHASE 9 | Create missing activation keys
@@ -37,11 +43,16 @@
       - --content-view
       - "{{ item.item.content_view }}"
       - --unlimited-hosts
-  loop: "{{ satellite_content_bootstrap_activation_key_lookups.results | default([]) }}"
+  loop: >-
+    {{
+      satellite_content_bootstrap_activation_key_lookups.results
+      | default([])
+    }}
   loop_control:
     label: "{{ item.item.activation_key }}"
   register: satellite_content_bootstrap_activation_key_creations
   changed_when: satellite_content_bootstrap_activation_key_creations.rc == 0
+  failed_when: satellite_content_bootstrap_activation_key_creations.rc != 0
   when:
     - satellite_manage_activation_keys | bool
     - (item.stdout | from_json | length) == 0
@@ -60,11 +71,17 @@
       - "{{ satellite_lifecycle_environment }}"
       - --content-view
       - "{{ item.content_view }}"
-  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop: >-
+    {{
+      satellite_rhel_repository_definitions
+      | unique(attribute='activation_key')
+      | list
+    }}
   loop_control:
     label: "{{ item.activation_key }}"
   register: satellite_content_bootstrap_activation_key_updates
   changed_when: false
+  failed_when: satellite_content_bootstrap_activation_key_updates.rc != 0
   when: satellite_manage_activation_keys | bool
 
 - name: PHASE 9 | Enable repository overrides on activation keys
@@ -81,9 +98,15 @@
       - "{{ item.content_label }}"
       - --value
       - "1"
-  loop: "{{ satellite_content_bootstrap_resolved_repositories }}"
+  loop: >-
+    {{
+      satellite_content_bootstrap_resolved_repositories
+      | unique(attribute='content_label')
+      | list
+    }}
   loop_control:
     label: "{{ item.activation_key }} | {{ item.content_label }}"
   register: satellite_content_bootstrap_activation_key_overrides
   changed_when: false
+  failed_when: satellite_content_bootstrap_activation_key_overrides.rc != 0
   when: satellite_manage_activation_keys | bool

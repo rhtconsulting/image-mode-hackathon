@@ -1,0 +1,15 @@
+---
+###############################################################################
+# PHASE 07
+#
+# DNS integration placeholder.
+#
+# Future implementation can create IdM/FreeIPA A and PTR records using the
+# private IP addresses returned by AWS.
+###############################################################################
+
+- name: PHASE 07 | DNS configuration placeholder
+  ansible.builtin.debug:
+    msg: >-
+      DNS configuration is not yet enabled. This phase is reserved for
+      IdM/FreeIPA DNS A and PTR record creation.

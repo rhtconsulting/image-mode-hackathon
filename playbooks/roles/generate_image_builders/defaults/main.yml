@@ -1,0 +1,88 @@
+---
+###############################################################################
+# Image Builder Role Defaults
+###############################################################################
+
+###############################################################################
+# Requested capacity
+#
+# This controls the number of hosts PER operating system generation.
+#
+# Example:
+#
+#   generated_number_of_host_var: 2
+#
+# With RHEL 9 and RHEL 10 enabled, this results in 4 EC2 instances total.
+###############################################################################
+
+generated_number_of_host_var: 2
+
+
+###############################################################################
+# AWS
+#
+# aws_region is expected to be injected by the attached AAP custom AWS
+# credential type.
+###############################################################################
+
+image_builder_aws_region: "{{ aws_region | default(lookup('env', 'AWS_REGION'), true) }}"
+
+image_builder_instance_type: "m6i.2xlarge"
+
+image_builder_subnet_id: ""
+
+image_builder_security_group_ids: []
+
+image_builder_key_name: ""
+
+image_builder_assign_public_ip: false
+
+
+###############################################################################
+# Storage
+###############################################################################
+
+image_builder_root_volume_size: 120
+
+image_builder_data_volume_size: 500
+
+
+###############################################################################
+# DNS
+###############################################################################
+
+image_builder_domain_name: "lab.example.com"
+
+
+###############################################################################
+# Image Builder generations
+#
+# Add additional operating system generations here in the future.
+###############################################################################
+
+image_builder_generations:
+
+  - name: rhel9
+    rhel_major_version: "9"
+    hostname_prefix: "image-builder-rhel9-a"
+    ami_id: ""
+
+  - name: rhel10
+    rhel_major_version: "10"
+    hostname_prefix: "image-builder-rhel10-a"
+    ami_id: ""
+
+
+###############################################################################
+# Common EC2 tags
+###############################################################################
+
+image_builder_common_tags:
+
+  Environment: "Image Mode Lab"
+
+  Application: "Image Mode"
+
+  Component: "Image Builder"
+
+  ManagedBy: "Ansible"

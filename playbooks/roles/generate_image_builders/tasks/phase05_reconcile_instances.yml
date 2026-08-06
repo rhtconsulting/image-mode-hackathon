@@ -1,0 +1,60 @@
+---
+###############################################################################
+# PHASE 05
+#
+# Reconcile desired Image Builder EC2 instances.
+###############################################################################
+
+- name: PHASE 05 | Ensure Image Builder EC2 instances exist
+  amazon.aws.ec2_instance:
+    region: "{{ image_builder_aws_region }}"
+    name: "{{ item.name }}"
+    image_id: "{{ item.ami_id }}"
+    instance_type: "{{ image_builder_instance_type }}"
+    key_name: "{{ image_builder_key_name }}"
+    vpc_subnet_id: "{{ image_builder_subnet_id }}"
+
+    network_interfaces:
+      - assign_public_ip: "{{ image_builder_assign_public_ip }}"
+        groups: "{{ image_builder_security_group_ids }}"
+
+    volumes:
+      - device_name: /dev/sda1
+        ebs:
+          volume_size: "{{ image_builder_root_volume_size }}"
+          volume_type: gp3
+          delete_on_termination: true
+
+      - device_name: /dev/sdb
+        ebs:
+          volume_size: "{{ image_builder_data_volume_size }}"
+          volume_type: gp3
+          delete_on_termination: true
+
+    metadata_options:
+      http_endpoint: enabled
+      http_tokens: required
+
+    tags:
+      Name: "{{ item.name }}"
+      Environment: "{{ image_builder_common_tags.Environment }}"
+      Application: "{{ image_builder_common_tags.Application }}"
+      Component: "{{ image_builder_common_tags.Component }}"
+      ManagedBy: "{{ image_builder_common_tags.ManagedBy }}"
+      RHELVersion: "{{ item.rhel_major_version }}"
+      ImageBuilderGeneration: "{{ item.generation }}"
+      ImageBuilderNumber: "{{ item.host_number | string }}"
+
+    filters:
+      "tag:Name": "{{ item.name }}"
+      "tag:ManagedBy": "{{ image_builder_common_tags.ManagedBy }}"
+      "tag:Component": "{{ image_builder_common_tags.Component }}"
+
+    exact_count: 1
+    state: running
+    wait: true
+
+  loop: "{{ image_builder_desired_hosts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: image_builder_provision_results

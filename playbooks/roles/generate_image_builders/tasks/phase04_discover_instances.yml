@@ -1,0 +1,32 @@
+---
+###############################################################################
+# PHASE 04
+#
+# Discover existing managed Image Builder EC2 instances.
+###############################################################################
+
+- name: PHASE 04 | Query existing managed Image Builder instances
+  amazon.aws.ec2_instance_info:
+    region: "{{ image_builder_aws_region }}"
+    filters:
+      "tag:ManagedBy": "{{ image_builder_common_tags.ManagedBy }}"
+      "tag:Component": "{{ image_builder_common_tags.Component }}"
+      instance-state-name:
+        - pending
+        - running
+        - stopping
+        - stopped
+  register: image_builder_existing_instance_info
+
+
+- name: PHASE 04 | Store existing instance count
+  ansible.builtin.set_fact:
+    image_builder_existing_instance_count: >-
+      {{ image_builder_existing_instance_info.instances | length }}
+
+
+- name: PHASE 04 | Display existing managed instance count
+  ansible.builtin.debug:
+    msg: >-
+      Existing managed Image Builder instances:
+      {{ image_builder_existing_instance_count }}

@@ -1,0 +1,24 @@
+---
+###############################################################################
+# PHASE 02
+#
+# Resolve and validate AWS caller identity and regional configuration.
+###############################################################################
+
+- name: PHASE 02 | Query AWS caller identity
+  amazon.aws.aws_caller_info:
+  register: image_builder_aws_caller
+
+
+- name: PHASE 02 | Store AWS caller information
+  ansible.builtin.set_fact:
+    image_builder_aws_account_id: "{{ image_builder_aws_caller.account }}"
+    image_builder_aws_arn: "{{ image_builder_aws_caller.arn }}"
+
+
+- name: PHASE 02 | Display resolved AWS identity
+  ansible.builtin.debug:
+    msg:
+      - "AWS region: {{ image_builder_aws_region }}"
+      - "AWS account: {{ image_builder_aws_account_id }}"
+      - "AWS caller ARN: {{ image_builder_aws_arn }}"

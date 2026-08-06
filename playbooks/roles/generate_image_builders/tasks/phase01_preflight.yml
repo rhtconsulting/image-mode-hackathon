@@ -1,0 +1,75 @@
+---
+###############################################################################
+# PHASE 01
+#
+# Validate all inputs before modifying AWS.
+###############################################################################
+
+- name: PHASE 01 | Validate requested host count
+  ansible.builtin.assert:
+    that:
+      - generated_number_of_host_var is defined
+      - generated_number_of_host_var | int >= image_builder_supported_minimum_count
+      - generated_number_of_host_var | int <= image_builder_supported_maximum_count
+    fail_msg: >-
+      generated_number_of_host_var must contain a value between
+      {{ image_builder_supported_minimum_count }} and
+      {{ image_builder_supported_maximum_count }}.
+
+
+- name: PHASE 01 | Validate AWS region
+  ansible.builtin.assert:
+    that:
+      - image_builder_aws_region is defined
+      - image_builder_aws_region | length > 0
+    fail_msg: >-
+      AWS region was not supplied. Attach the AAP AWS credential or provide
+      aws_region/image_builder_aws_region.
+
+
+- name: PHASE 01 | Validate network configuration
+  ansible.builtin.assert:
+    that:
+      - image_builder_subnet_id | length > 0
+      - image_builder_security_group_ids | length > 0
+    fail_msg: >-
+      image_builder_subnet_id and image_builder_security_group_ids must be
+      configured.
+
+
+- name: PHASE 01 | Validate DNS domain
+  ansible.builtin.assert:
+    that:
+      - image_builder_domain_name | length > 0
+    fail_msg: >-
+      image_builder_domain_name must be configured.
+
+
+- name: PHASE 01 | Validate configured operating system generations
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.rhel_major_version is defined
+      - item.hostname_prefix is defined
+      - item.ami_id is defined
+      - item.ami_id | length > 0
+    fail_msg: >-
+      Invalid Image Builder generation configuration for
+      {{ item.name | default('UNKNOWN') }}.
+  loop: "{{ image_builder_generations }}"
+  loop_control:
+    label: "{{ item.name | default('UNKNOWN') }}"
+
+
+- name: PHASE 01 | Display requested infrastructure
+  ansible.builtin.debug:
+    msg:
+      - "Hosts per operating system: {{ generated_number_of_host_var }}"
+      - "Operating system generations: {{ image_builder_generations | length }}"
+      - >-
+        Total requested EC2 instances:
+        {{
+          (generated_number_of_host_var | int)
+          *
+          (image_builder_generations | length)
+        }}

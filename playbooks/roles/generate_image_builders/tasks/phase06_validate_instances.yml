@@ -1,0 +1,38 @@
+---
+###############################################################################
+# PHASE 06
+#
+# Query the resulting EC2 instances and ensure desired capacity exists.
+###############################################################################
+
+- name: PHASE 06 | Query running managed Image Builder instances
+  amazon.aws.ec2_instance_info:
+    region: "{{ image_builder_aws_region }}"
+    filters:
+      "tag:ManagedBy": "{{ image_builder_common_tags.ManagedBy }}"
+      "tag:Component": "{{ image_builder_common_tags.Component }}"
+      instance-state-name:
+        - running
+  register: image_builder_final_instance_info
+
+
+- name: PHASE 06 | Calculate desired total instance count
+  ansible.builtin.set_fact:
+    image_builder_desired_total_count: >-
+      {{
+        (generated_number_of_host_var | int)
+        *
+        (image_builder_generations | length)
+      }}
+
+
+- name: PHASE 06 | Validate desired capacity
+  ansible.builtin.assert:
+    that:
+      - image_builder_final_instance_info.instances | length >= image_builder_desired_total_count | int
+    fail_msg: >-
+      Desired capacity validation failed. Expected at least
+      {{ image_builder_desired_total_count }} running managed instances but
+      found {{ image_builder_final_instance_info.instances | length }}.
+    success_msg: >-
+      Desired Image Builder capacity is available.

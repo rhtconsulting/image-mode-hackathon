@@ -1,0 +1,66 @@
+---
+###############################################################################
+# PHASE 03
+#
+# Build the desired Image Builder host inventory.
+###############################################################################
+
+- name: PHASE 03 | Initialize desired host inventory
+  ansible.builtin.set_fact:
+    image_builder_desired_hosts: []
+
+
+- name: PHASE 03 | Generate desired host definitions
+  ansible.builtin.set_fact:
+    image_builder_desired_hosts: >-
+      {{
+        image_builder_desired_hosts
+        +
+        [
+          {
+            'name':
+              generation.hostname_prefix
+              ~ host_number
+              ~ '.'
+              ~ image_builder_domain_name,
+            'short_name':
+              generation.hostname_prefix
+              ~ host_number,
+            'generation':
+              generation.name,
+            'rhel_major_version':
+              generation.rhel_major_version,
+            'ami_id':
+              generation.ami_id,
+            'host_number':
+              host_number | int
+          }
+        ]
+      }}
+  loop: >-
+    {{
+      image_builder_generations
+      | product(
+          range(
+            1,
+            (generated_number_of_host_var | int) + 1
+          )
+        )
+      | list
+    }}
+  vars:
+    generation: "{{ item.0 }}"
+    host_number: "{{ item.1 }}"
+  loop_control:
+    label: >-
+      {{
+        generation.hostname_prefix
+        ~ host_number
+        ~ '.'
+        ~ image_builder_domain_name
+      }}
+
+
+- name: PHASE 03 | Display desired Image Builder hosts
+  ansible.builtin.debug:
+    var: image_builder_desired_hosts

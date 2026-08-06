@@ -178,6 +178,17 @@
   changed_when: false
   failed_when: false
 
+### Add local sudoers file to allow lab_users sudo access
+- name: Copy over server_admins sudo rule to /etc/sudoers.d directory
+  ansible.builtin.copy:
+    src: "{{ role_path }}/files/server_admins"
+    dest: "/etc/sudoers.d/server_admins"
+    mode: "0440"
+    owner: root
+    group: root
+  
+
+
 - name: Restart SSSD after IdM group configuration
   ansible.builtin.systemd_service:
     name: sssd

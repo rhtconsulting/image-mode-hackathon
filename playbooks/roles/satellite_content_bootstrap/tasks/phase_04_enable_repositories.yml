@@ -24,25 +24,37 @@
 
       # A major and minor repository have the same content label. Resolve the
       # concrete repository name from the repository set's architecture and
-      # release fields so a content-label-only search cannot select the wrong ID.
+      # release fields so a content-label-only search cannot select the wrong
+      # ID. Parse JSON by field name because Hammer CSV column ordering varies
+      # between Satellite/Hammer releases.
       repository_name="$(
-        hammer --csv --no-headers repository-set available-repositories \
+        hammer --output json repository-set available-repositories \
           --id "${repo_set_id}" \
-          --organization-label {{ satellite_organization_label | quote }} \
-          --fields Name,Arch,Release |
-        awk -F',' \
-          -v wanted_arch={{ satellite_basearch | quote }} \
-          -v wanted_release={{ item.0.releasever | quote }} '
-            {
-              for (field = 1; field <= NF; field++) {
-                gsub(/^"|"$/, "", $field)
+          --organization-label {{ satellite_organization_label | quote }} |
+        python3 -c '
+          import json
+          import sys
+
+          wanted_arch = sys.argv[1]
+          wanted_release = sys.argv[2]
+          rows = json.load(sys.stdin)
+
+          def normalized(row):
+              return {
+                  str(key).strip().lower().replace("_", " "): value
+                  for key, value in row.items()
               }
-              if ($2 == wanted_arch && $3 == wanted_release) {
-                print $1
-                exit
-              }
-            }
-          '
+
+          for raw_row in rows:
+              row = normalized(raw_row)
+              arch = str(row.get("arch", row.get("architecture", ""))).strip()
+              release = str(
+                  row.get("release", row.get("release version", ""))
+              ).strip()
+              if arch == wanted_arch and release == wanted_release:
+                  print(row.get("name", ""))
+                  break
+        ' {{ satellite_basearch | quote }} {{ item.0.releasever | quote }}
       )"
 
       if [[ -z "${repository_name}" ]]; then

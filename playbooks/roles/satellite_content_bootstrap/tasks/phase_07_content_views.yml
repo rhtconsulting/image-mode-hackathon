@@ -19,7 +19,12 @@
       - "{{ satellite_organization_label }}"
       - --search
       - 'name="{{ item.content_view }}"'
-  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop: >-
+    {{
+      satellite_rhel_repository_definitions
+      | unique(attribute='content_view')
+      | list
+    }}
   loop_control:
     label: "{{ item.content_view }}"
   register: satellite_content_bootstrap_content_view_lookups
@@ -213,7 +218,12 @@
       - "{{ item.content_view }}"
       - --organization-label
       - "{{ satellite_organization_label }}"
-  loop: "{{ satellite_rhel_repository_definitions }}"
+  loop: >-
+    {{
+      satellite_rhel_repository_definitions
+      | unique(attribute='content_view')
+      | list
+    }}
   loop_control:
     label: "{{ item.content_view }}"
   register: satellite_content_bootstrap_final_content_view_info

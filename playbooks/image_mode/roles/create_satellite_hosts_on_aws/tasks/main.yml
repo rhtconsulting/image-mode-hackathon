@@ -1142,7 +1142,7 @@
 
   register: create_satellite_hosts_on_aws_create_result
   changed_when: true
-  no_log: true
+  no_log: false
   when:
     - create_satellite_hosts_on_aws_existing_hosts | length == 0
 

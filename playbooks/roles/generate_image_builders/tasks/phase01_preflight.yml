@@ -2,74 +2,262 @@
 ###############################################################################
 # PHASE 01
 #
-# Validate all inputs before modifying AWS.
+# Validate the AAP request and static role configuration before performing
+# AWS environment discovery.
+#
+# Dynamic infrastructure values such as the current lab domain, VPC, subnet,
+# security groups, key pair, and AMI IDs are resolved in later phases.
 ###############################################################################
 
-- name: PHASE 01 | Validate requested host count
+###############################################################################
+# Validate requested additional team count
+###############################################################################
+
+- name: PHASE 01 | Validate requested additional team count
   ansible.builtin.assert:
     that:
-      - generated_number_of_host_var is defined
-      - generated_number_of_host_var | int >= image_builder_supported_minimum_count
-      - generated_number_of_host_var | int <= image_builder_supported_maximum_count
+      - image_builder_additional_team_count is defined
+      - image_builder_additional_team_count | int >= image_builder_minimum_additional_teams
+      - image_builder_additional_team_count | int <= image_builder_maximum_additional_teams
     fail_msg: >-
-      generated_number_of_host_var must contain a value between
-      {{ image_builder_supported_minimum_count }} and
-      {{ image_builder_supported_maximum_count }}.
+      image_builder_additional_team_count must contain a value between
+      {{ image_builder_minimum_additional_teams }} and
+      {{ image_builder_maximum_additional_teams }}.
+    success_msg: >-
+      Requested additional Image Builder team count is valid:
+      {{ image_builder_additional_team_count }}.
 
+
+###############################################################################
+# Validate AWS region
+#
+# Authentication is provided by the custom AAP AWS credential.
+###############################################################################
 
 - name: PHASE 01 | Validate AWS region
   ansible.builtin.assert:
     that:
       - image_builder_aws_region is defined
-      - image_builder_aws_region | length > 0
+      - image_builder_aws_region | string | length > 0
     fail_msg: >-
-      AWS region was not supplied. Attach the AAP AWS credential or provide
+      AWS region was not supplied.
+
+      Attach the Image Mode AWS credential to the AAP Job Template or provide
       aws_region/image_builder_aws_region.
 
 
-- name: PHASE 01 | Validate network configuration
+###############################################################################
+# Validate lab discovery conventions
+#
+# These are known properties of the Terraform-created lab and are used later
+# to reconstruct the dynamic environment from AWS.
+###############################################################################
+
+- name: PHASE 01 | Validate IdM anchor pattern
   ansible.builtin.assert:
     that:
-      - image_builder_subnet_id | length > 0
-      - image_builder_security_group_ids | length > 0
+      - image_builder_idm_anchor_pattern is defined
+      - image_builder_idm_anchor_pattern | string | length > 0
     fail_msg: >-
-      image_builder_subnet_id and image_builder_security_group_ids must be
-      configured.
+      image_builder_idm_anchor_pattern must be configured.
 
 
-- name: PHASE 01 | Validate DNS domain
+- name: PHASE 01 | Validate Image Builder subnet CIDR
   ansible.builtin.assert:
     that:
-      - image_builder_domain_name | length > 0
+      - image_builder_subnet_cidr is defined
+      - image_builder_subnet_cidr | string | length > 0
+      - image_builder_subnet_cidr is match(
+          '^[0-9]{1,3}(\\.[0-9]{1,3}){3}/[0-9]{1,2}$'
+        )
     fail_msg: >-
-      image_builder_domain_name must be configured.
+      image_builder_subnet_cidr must contain a valid IPv4 CIDR.
 
+      Current value:
+      {{ image_builder_subnet_cidr | default('UNDEFINED') }}
+
+
+###############################################################################
+# Validate existing Image Builder discovery pattern
+###############################################################################
+
+- name: PHASE 01 | Validate existing Image Builder host pattern
+  ansible.builtin.assert:
+    that:
+      - image_builder_existing_host_pattern is defined
+      - image_builder_existing_host_pattern | string | length > 0
+    fail_msg: >-
+      image_builder_existing_host_pattern must be configured.
+
+
+###############################################################################
+# Validate configured operating system generations
+#
+# AMI IDs are deliberately NOT validated here because they are dynamic values
+# that will be resolved during AWS discovery.
+###############################################################################
 
 - name: PHASE 01 | Validate configured operating system generations
   ansible.builtin.assert:
     that:
       - item.name is defined
+      - item.name | string | length > 0
+
       - item.rhel_major_version is defined
+      - item.rhel_major_version | string | length > 0
+
       - item.hostname_prefix is defined
-      - item.ami_id is defined
-      - item.ami_id | length > 0
+      - item.hostname_prefix | string | length > 0
+
     fail_msg: >-
       Invalid Image Builder generation configuration for
       {{ item.name | default('UNKNOWN') }}.
+
+      Each generation must define:
+
+        name
+        rhel_major_version
+        hostname_prefix
+
   loop: "{{ image_builder_generations }}"
+
   loop_control:
     label: "{{ item.name | default('UNKNOWN') }}"
 
 
-- name: PHASE 01 | Display requested infrastructure
+###############################################################################
+# Validate generation configuration exists
+###############################################################################
+
+- name: PHASE 01 | Validate at least one RHEL generation is configured
+  ansible.builtin.assert:
+    that:
+      - image_builder_generations is defined
+      - image_builder_generations | length > 0
+    fail_msg: >-
+      At least one Image Builder operating system generation must be configured.
+
+
+###############################################################################
+# Validate team identifier capacity
+#
+# The current implementation uses the configured identifier list:
+#
+#   a, b, c ... z
+#
+# This assertion ensures a single launch cannot request more team identifiers
+# than are available.
+#
+# Existing allocations are handled during the discovery phase.
+###############################################################################
+
+- name: PHASE 01 | Validate team identifier configuration
+  ansible.builtin.assert:
+    that:
+      - image_builder_team_identifiers is defined
+      - image_builder_team_identifiers | length > 0
+      - >-
+        image_builder_additional_team_count | int
+        <=
+        image_builder_team_identifiers | length
+    fail_msg: >-
+      The requested additional team count exceeds the number of configured
+      Image Builder team identifiers.
+
+
+###############################################################################
+# Validate EC2 defaults
+###############################################################################
+
+- name: PHASE 01 | Validate EC2 instance type
+  ansible.builtin.assert:
+    that:
+      - image_builder_instance_type is defined
+      - image_builder_instance_type | string | length > 0
+    fail_msg: >-
+      image_builder_instance_type must be configured.
+
+
+###############################################################################
+# Validate storage configuration
+###############################################################################
+
+- name: PHASE 01 | Validate Image Builder storage configuration
+  ansible.builtin.assert:
+    that:
+      - image_builder_root_volume_size | int > 0
+      - image_builder_data_volume_size | int > 0
+
+      - image_builder_root_volume_type | string | length > 0
+      - image_builder_data_volume_type | string | length > 0
+
+      - image_builder_root_device_name | string | length > 0
+      - image_builder_data_device_name | string | length > 0
+
+    fail_msg: >-
+      Invalid Image Builder storage configuration.
+
+
+###############################################################################
+# Calculate requested EC2 capacity
+#
+# Each team receives one host for every configured RHEL generation.
+#
+# Example:
+#
+#   3 teams
+#   2 RHEL generations
+#
+#   3 * 2 = 6 additional EC2 instances
+###############################################################################
+
+- name: PHASE 01 | Calculate requested additional EC2 instance count
+  ansible.builtin.set_fact:
+    image_builder_requested_instance_count: >-
+      {{
+        (image_builder_additional_team_count | int)
+        *
+        (image_builder_generations | length)
+      }}
+
+
+###############################################################################
+# Display requested infrastructure
+###############################################################################
+
+- name: PHASE 01 | Display requested Image Builder capacity
   ansible.builtin.debug:
     msg:
-      - "Hosts per operating system: {{ generated_number_of_host_var }}"
-      - "Operating system generations: {{ image_builder_generations | length }}"
+
       - >-
-        Total requested EC2 instances:
+        Additional Image Builder teams requested:
+        {{ image_builder_additional_team_count }}
+
+      - >-
+        Configured RHEL generations:
+        {{ image_builder_generations | length }}
+
+      - >-
+        RHEL generations:
         {{
-          (generated_number_of_host_var | int)
-          *
-          (image_builder_generations | length)
+          image_builder_generations
+          | map(attribute='name')
+          | list
+          | join(', ')
         }}
+
+      - >-
+        Additional EC2 instances requested:
+        {{ image_builder_requested_instance_count }}
+
+      - >-
+        AWS region:
+        {{ image_builder_aws_region }}
+
+      - >-
+        Image Builder subnet convention:
+        {{ image_builder_subnet_cidr }}
+
+      - >-
+        IdM discovery pattern:
+        {{ image_builder_idm_anchor_pattern }}

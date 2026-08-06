@@ -1,88 +1,277 @@
 ---
 ###############################################################################
 # Image Builder Role Defaults
+#
+# This role adds additional RHEL Image Builder EC2 instances to an existing
+# Image Mode lab.
+#
+# Terraform has already provisioned the base lab before this role runs.
+# Terraform outputs are not assumed to be available.
+#
+# Existing AWS resources are therefore used to discover dynamic environment
+# information such as:
+#
+#   - Lab VPC
+#   - Lab domain
+#   - Image Builder subnet
+#   - Existing Image Builder instances
+#   - Next available Image Builder host numbers
+#
 ###############################################################################
 
+
 ###############################################################################
-# Requested capacity
+# Requested Additional Capacity
 #
-# This controls the number of hosts PER operating system generation.
+# Number of ADDITIONAL hosts to create PER configured RHEL generation.
 #
 # Example:
 #
-#   generated_number_of_host_var: 2
+#   image_builder_additional_hosts_per_rhel: 2
 #
-# With RHEL 9 and RHEL 10 enabled, this results in 4 EC2 instances total.
-###############################################################################
-
-generated_number_of_host_var: 2
-
-
-###############################################################################
-# AWS
+# With RHEL 9 and RHEL 10 configured:
 #
-# aws_region is expected to be injected by the attached AAP custom AWS
-# credential type.
+#   RHEL 9  -> 2 additional hosts
+#   RHEL 10 -> 2 additional hosts
+#
+# Total new EC2 instances: 4
+#
+# This variable is intended to be exposed through the AAP Job Template survey.
 ###############################################################################
 
-image_builder_aws_region: "{{ aws_region | default(lookup('env', 'AWS_REGION'), true) }}"
+image_builder_additional_hosts_per_rhel: 1
+
+
+###############################################################################
+# Backward Compatibility
+#
+# Retain support for the original survey/variable name if required.
+#
+# If generated_number_of_host_var is supplied, it can be mapped to the new
+# variable by the role during preflight processing.
+###############################################################################
+
+generated_number_of_host_var: ""
+
+
+###############################################################################
+# AWS Region
+#
+# The custom AAP AWS credential injects:
+#
+#   AWS_REGION
+#   AWS_DEFAULT_REGION
+#   AWS_ACCESS_KEY_ID
+#   AWS_SECRET_ACCESS_KEY
+#
+# It also currently injects aws_region as an extra variable.
+#
+# Prefer aws_region when available and fall back to AWS_REGION.
+###############################################################################
+
+image_builder_aws_region: >-
+  {{
+    aws_region
+    | default(
+        lookup('env', 'AWS_REGION'),
+        true
+      )
+  }}
+
+
+###############################################################################
+# Existing Lab Discovery
+#
+# Terraform outputs are no longer available when this job executes.
+#
+# An existing IdM EC2 instance is used as the primary anchor for determining
+# which AWS environment belongs to this lab.
+#
+# Example:
+#
+#   idm-1.lab.sandbox2233.opentlc.com
+#
+# From this instance the role can determine:
+#
+#   VPC ID:
+#     Retrieved directly from the EC2 instance.
+#
+#   Domain:
+#     idm-1.lab.sandbox2233.opentlc.com
+#                 |
+#                 +--> lab.sandbox2233.opentlc.com
+#
+###############################################################################
+
+image_builder_idm_anchor_pattern: "idm-1.*"
+
+
+###############################################################################
+# Network Discovery
+#
+# The subnet ID changes between Terraform deployments, but the Image Mode lab
+# uses this subnet CIDR by convention.
+#
+# The role MUST discover the VPC first and then locate this CIDR inside that
+# specific VPC.
+#
+# Do not search by CIDR alone because multiple VPCs in the AWS account may use
+# the same address space.
+###############################################################################
+
+image_builder_subnet_cidr: "10.20.1.0/24"
+
+
+###############################################################################
+# Existing Image Builder Discovery
+#
+# Existing Image Builder systems are inspected to determine current capacity
+# and calculate the next available host numbers.
+#
+# Examples:
+#
+#   image-builder-rhel9-a1.<domain>
+#   image-builder-rhel9-a2.<domain>
+#   image-builder-rhel10-a1.<domain>
+#
+###############################################################################
+
+image_builder_existing_host_pattern: "image-builder-*"
+
+
+###############################################################################
+# EC2 Configuration
+#
+# These are platform defaults for newly generated Image Builder instances.
+#
+# Values discovered from an existing Image Builder may override these later
+# if that behavior is implemented.
+###############################################################################
 
 image_builder_instance_type: "m6i.2xlarge"
-
-image_builder_subnet_id: ""
-
-image_builder_security_group_ids: []
-
-image_builder_key_name: ""
 
 image_builder_assign_public_ip: false
 
 
 ###############################################################################
 # Storage
+#
+# Default Image Builder storage configuration.
 ###############################################################################
 
 image_builder_root_volume_size: 120
 
+image_builder_root_volume_type: "gp3"
+
 image_builder_data_volume_size: 500
 
+image_builder_data_volume_type: "gp3"
 
-###############################################################################
-# DNS
-###############################################################################
-
-image_builder_domain_name: "lab.example.com"
+image_builder_delete_volumes_on_termination: true
 
 
 ###############################################################################
-# Image Builder generations
+# EC2 Instance Metadata Service
 #
-# Add additional operating system generations here in the future.
+# Require IMDSv2 for newly generated EC2 instances.
+###############################################################################
+
+image_builder_metadata_http_endpoint: "enabled"
+
+image_builder_metadata_http_tokens: "required"
+
+
+###############################################################################
+# Image Builder Generations
+#
+# RHEL generations are represented as data rather than separate provisioning
+# implementations.
+#
+# The AMI IDs are intentionally NOT defined here because they should eventually
+# be discovered dynamically from the existing environment or approved AWS AMIs.
+#
+# Until automatic AMI discovery is implemented, the AMI values can be resolved
+# during an earlier discovery phase.
 ###############################################################################
 
 image_builder_generations:
 
-  - name: rhel9
+  - name: "rhel9"
     rhel_major_version: "9"
     hostname_prefix: "image-builder-rhel9-a"
-    ami_id: ""
 
-  - name: rhel10
+  - name: "rhel10"
     rhel_major_version: "10"
     hostname_prefix: "image-builder-rhel10-a"
-    ami_id: ""
 
 
 ###############################################################################
-# Common EC2 tags
+# Host Naming
+#
+# Final FQDNs are constructed dynamically after the lab domain has been
+# discovered.
+#
+# Example:
+#
+#   hostname_prefix:
+#     image-builder-rhel9-a
+#
+#   calculated host number:
+#     3
+#
+#   discovered domain:
+#     lab.sandbox2233.opentlc.com
+#
+# Result:
+#
+#   image-builder-rhel9-a3.lab.sandbox2233.opentlc.com
+#
+###############################################################################
+
+
+###############################################################################
+# Common EC2 Tags
+#
+# These tags identify instances created and managed by this automation.
+#
+# Environment-specific values can be added after the lab has been discovered.
 ###############################################################################
 
 image_builder_common_tags:
-
-  Environment: "Image Mode Lab"
 
   Application: "Image Mode"
 
   Component: "Image Builder"
 
   ManagedBy: "Ansible"
+
+
+###############################################################################
+# Discovery / Safety Settings
+#
+# Discovery operations should fail when AWS returns ambiguous infrastructure.
+#
+# For example:
+#
+#   - More than one IdM anchor
+#   - More than one matching subnet in the discovered VPC
+#   - Multiple conflicting resources
+#
+# The automation should fail instead of guessing which resource to use.
+###############################################################################
+
+image_builder_require_unique_anchor: true
+
+image_builder_require_unique_subnet: true
+
+
+###############################################################################
+# Capacity Safety Limits
+#
+# Prevent accidental creation of an excessive number of EC2 instances from
+# the AAP survey.
+###############################################################################
+
+image_builder_minimum_additional_hosts: 1
+
+image_builder_maximum_additional_hosts: 10

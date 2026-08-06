@@ -96,26 +96,6 @@ RUN set -eux; \
     visudo -cf /etc/sudoers.d/90-ec2-user
 
 ###############################################################################
-# Permit Satellite-provisioned root password authentication
-#
-# The password itself is supplied at instance creation and is never embedded
-# in this image or its build history.
-###############################################################################
-
-RUN set -eux; \
-    mkdir -p /etc/ssh/sshd_config.d; \
-    printf '%s\n' \
-        'PermitRootLogin yes' \
-        'PasswordAuthentication yes' \
-        > /etc/ssh/sshd_config.d/00-image-mode-root-login.conf; \
-    chown root:root /etc/ssh/sshd_config.d/00-image-mode-root-login.conf; \
-    chmod 0600 /etc/ssh/sshd_config.d/00-image-mode-root-login.conf; \
-    grep -Fx 'PermitRootLogin yes' \
-        /etc/ssh/sshd_config.d/00-image-mode-root-login.conf; \
-    grep -Fx 'PasswordAuthentication yes' \
-        /etc/ssh/sshd_config.d/00-image-mode-root-login.conf
-
-###############################################################################
 # Add application content
 ###############################################################################
 
@@ -152,31 +132,6 @@ RUN set -eux; \
         /etc/image-mode-registration
 
 ###############################################################################
-# Upload bootc facts after Satellite registration completes
-###############################################################################
-
-RUN set -eux; \
-    printf '%s\n' \
-        '[Unit]' \
-        'Description=Upload Image Mode bootc facts to Satellite' \
-        'Wants=network-online.target cloud-final.service' \
-        'After=network-online.target cloud-final.service' \
-        'ConditionPathExists=/etc/pki/consumer/cert.pem' \
-        '' \
-        '[Service]' \
-        'Type=oneshot' \
-        'ExecStart=/usr/sbin/subscription-manager facts --update' \
-        'RemainAfterExit=yes' \
-        '' \
-        '[Install]' \
-        'WantedBy=multi-user.target' \
-        > /etc/systemd/system/image-mode-satellite-facts.service; \
-    chown root:root \
-        /etc/systemd/system/image-mode-satellite-facts.service; \
-    chmod 0644 \
-        /etc/systemd/system/image-mode-satellite-facts.service
-
-###############################################################################
 # Enable application, EC2 and Satellite reporting services
 ###############################################################################
 
@@ -188,8 +143,7 @@ RUN set -eux; \
     systemctl enable cloud-init.service; \
     systemctl enable cloud-config.service; \
     systemctl enable cloud-final.service; \
-    systemctl enable rhsmcertd.service; \
-    systemctl enable image-mode-satellite-facts.service
+    systemctl enable rhsmcertd.service
 
 ###############################################################################
 # Record image metadata
@@ -232,7 +186,6 @@ RUN set -eux; \
         || test -x /usr/libexec/bootc; \
     command -v subscription-manager; \
     systemctl is-enabled rhsmcertd.service; \
-    systemctl is-enabled image-mode-satellite-facts.service; \
     systemctl is-enabled cloud-final.service; \
     systemctl is-enabled nginx.service; \
     systemctl is-enabled sshd.service

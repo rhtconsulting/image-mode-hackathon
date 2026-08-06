@@ -30,3 +30,18 @@ controller_inventories:
     organization: "Image Mode Lab"
     variables:
       image_mode_environment: production
+
+
+  - name: Satellite Hosts Source
+    description: Synchronize managed hosts from Red Hat Satellite 6
+    inventory: Satellite Hosts
+    organization: Image Mode Lab
+    source: satellite6
+    credential: Image Mode Satellite Credential
+    overwrite: true
+    overwrite_vars: true
+    update_on_launch: true
+    update_cache_timeout: 0
+    source_vars:
+      validate_certs: false
+    state: present

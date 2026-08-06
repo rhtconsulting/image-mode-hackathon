@@ -13,6 +13,7 @@
     - ../vars/credential_types.yml
     - ../vars/credentials.yml
     - ../vars/inventories.yml
+    - ../vars/controller_inventory_sources.yml
     - ../vars/execution_environments.yml
     - ../vars/projects.yml
     - ../vars/job_templates.yml
@@ -32,6 +33,9 @@
     image_builder_inventory_name: "Image Builders"
     development_inventory_name: "Image Mode Development"
     production_inventory_name: "Image Mode Production"
+    satellite_inventory_name: "Satellite Hosts"
+    satellite_inventory_source_name: "Satellite Hosts Source"
+    satellite_credential_name: "Image Mode Satellite Credential"
 
     ###########################################################################
     # Terraform inventory groups
@@ -85,6 +89,9 @@
 
     idm_admin_password_secret_name: >-
       {{ secret_prefix }}/idm/admin_password
+
+    satellite_admin_password_secret_name: >-
+      {{ secret_prefix }}/satellite/admin_password
 
     resolved_lab_ssh_private_key_secret_name: >-
       {{
@@ -228,6 +235,8 @@
           - groups['quay'] | length > 0
           - groups['image_builder'] is defined
           - groups['image_builder'] | length > 0
+          - groups['satellite'] is defined
+          - groups['satellite'] | length > 0
         fail_msg: >-
           The Terraform-generated inventory must define secret_prefix,
           aws_region, aws_profile, the AWS IAM service-account credentials
@@ -713,6 +722,64 @@
           '{{ quay_registry_ldap_secret_name | trim }}'.
       no_log: true
 
+
+    ###########################################################################
+    # Resolve Satellite endpoint and administrator credential
+    ###########################################################################
+
+    - name: Resolve primary Satellite endpoint
+      ansible.builtin.set_fact:
+        resolved_satellite_inventory_hostname: "{{ groups['satellite'][0] }}"
+        resolved_satellite_hostname: >-
+          {{
+            hostvars[groups['satellite'][0]].public_tls_fqdn
+            | default(
+                hostvars[groups['satellite'][0]].fqdn
+                | default(groups['satellite'][0], true),
+                true
+              )
+            | string
+            | trim
+          }}
+
+    - name: Read Satellite administrator password
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ satellite_admin_password_secret_name }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: satellite_admin_password_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Set Satellite inventory credential variables
+      ansible.builtin.set_fact:
+        satellite_url: "https://{{ resolved_satellite_hostname }}"
+        satellite_password: >-
+          {{ satellite_admin_password_secret_result.stdout | string | trim }}
+      no_log: true
+
+    - name: Validate Satellite inventory credential variables
+      ansible.builtin.assert:
+        that:
+          - resolved_satellite_hostname | length > 0
+          - satellite_password | length > 0
+          - satellite_password != 'None'
+        fail_msg: >-
+          The Satellite endpoint or administrator credential could not be
+          resolved. Verify AWS Secrets Manager secret
+          {{ satellite_admin_password_secret_name }}.
+      no_log: true
 
     ###########################################################################
     # Read Terraform-generated SSH private key
@@ -1526,6 +1593,9 @@
         - name: Configure AAP credentials
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_credentials
+            apply:
+              tags:
+                - credentials
           vars:
             controller_hostname: "{{ controller_host }}"
             controller_username: "{{ gateway_admin_username }}"
@@ -1542,6 +1612,9 @@
         - name: Configure AAP inventories
           ansible.builtin.include_role:
             name: infra.aap_configuration.controller_inventories
+            apply:
+              tags:
+                - inventories
           vars:
             controller_hostname: "{{ controller_host }}"
             controller_username: "{{ gateway_admin_username }}"
@@ -1549,6 +1622,233 @@
             controller_validate_certs: false
           tags:
             - inventories
+
+        #######################################################################
+        # 5. Inventory sources
+        #######################################################################
+
+        - name: Remove incorrect blank Satellite Hosts Source inventory
+          ansible.controller.inventory:
+            name: "{{ satellite_inventory_source_name }}"
+            organization: "{{ aap_organization_name }}"
+            state: absent
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            validate_certs: false
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Ensure Satellite Hosts inventory exists
+          ansible.controller.inventory:
+            name: "{{ satellite_inventory_name }}"
+            description: Hosts synchronized dynamically from Red Hat Satellite 6
+            organization: "{{ aap_organization_name }}"
+            variables:
+              satellite_url: "{{ satellite_url }}"
+              aws_region: "{{ aws_region }}"
+              secret_prefix: "{{ secret_prefix }}"
+            state: present
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            validate_certs: false
+          register: satellite_inventory_result
+          no_log: true
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Resolve Satellite Hosts inventory ID
+          ansible.builtin.uri:
+            url: >-
+              {{
+                controller_host
+                ~ '/api/controller/v2/inventories/?name='
+                ~ (satellite_inventory_name | urlencode)
+              }}
+            method: GET
+            user: "{{ gateway_admin_username }}"
+            password: "{{ gateway_admin_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            status_code: 200
+            return_content: true
+          register: satellite_inventory_lookup
+          changed_when: false
+          no_log: true
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Resolve Image Mode Satellite credential ID
+          ansible.builtin.uri:
+            url: >-
+              {{
+                controller_host
+                ~ '/api/controller/v2/credentials/?name='
+                ~ (satellite_credential_name | urlencode)
+              }}
+            method: GET
+            user: "{{ gateway_admin_username }}"
+            password: "{{ gateway_admin_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            status_code: 200
+            return_content: true
+          register: satellite_credential_lookup
+          changed_when: false
+          no_log: true
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Validate Satellite inventory-source dependencies
+          ansible.builtin.assert:
+            that:
+              - satellite_inventory_lookup.json.count | int == 1
+              - satellite_inventory_lookup.json.results | length == 1
+              - satellite_credential_lookup.json.count | int == 1
+              - satellite_credential_lookup.json.results | length == 1
+            fail_msg: >-
+              Exactly one '{{ satellite_inventory_name }}' inventory and one
+              '{{ satellite_credential_name }}' credential must exist before
+              the Satellite inventory source can be created. Inventory
+              matches: {{ satellite_inventory_lookup.json.count | int }};
+              credential matches:
+              {{ satellite_credential_lookup.json.count | int }}.
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Create Satellite inventory source and attach its credential
+          ansible.controller.inventory_source:
+            name: "{{ satellite_inventory_source_name }}"
+            description: Synchronize managed hosts from Red Hat Satellite 6
+            inventory: "{{ satellite_inventory_lookup.json.results[0].id }}"
+            source: satellite6
+            credential: "{{ satellite_credential_lookup.json.results[0].id }}"
+            overwrite: true
+            overwrite_vars: true
+            update_on_launch: true
+            update_cache_timeout: 0
+            source_vars:
+              validate_certs: false
+            state: present
+            controller_host: "{{ controller_host }}"
+            controller_username: "{{ gateway_admin_username }}"
+            controller_password: "{{ gateway_admin_password }}"
+            validate_certs: false
+          register: satellite_inventory_source_result
+          tags:
+            - inventories
+            - inventory_sources
+          no_log: true
+
+        - name: Resolve created Satellite inventory source ID
+          ansible.builtin.uri:
+            url: >-
+              {{
+                controller_host
+                ~ '/api/controller/v2/inventory_sources/?name='
+                ~ (satellite_inventory_source_name | urlencode)
+                ~ '&inventory='
+                ~ (satellite_inventory_lookup.json.results[0].id | string)
+              }}
+            method: GET
+            user: "{{ gateway_admin_username }}"
+            password: "{{ gateway_admin_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            status_code: 200
+            return_content: true
+          register: satellite_inventory_source_lookup
+          changed_when: false
+          no_log: true
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Validate created Satellite inventory source
+          ansible.builtin.assert:
+            that:
+              - satellite_inventory_source_lookup.json.count | int == 1
+              - satellite_inventory_source_lookup.json.results | length == 1
+            fail_msg: >-
+              The '{{ satellite_inventory_source_name }}' source was not
+              attached uniquely to the '{{ satellite_inventory_name }}'
+              inventory.
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Start initial Satellite inventory synchronization
+          ansible.builtin.uri:
+            url: >-
+              {{
+                controller_host
+                ~ '/api/controller/v2/inventory_sources/'
+                ~ (
+                  satellite_inventory_source_lookup.json.results[0].id
+                  | string
+                )
+                ~ '/update/'
+              }}
+            method: POST
+            user: "{{ gateway_admin_username }}"
+            password: "{{ gateway_admin_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            status_code:
+              - 201
+              - 202
+            return_content: true
+          register: satellite_inventory_sync_launch
+          changed_when: true
+          no_log: true
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Wait for initial Satellite inventory synchronization
+          ansible.builtin.uri:
+            url: >-
+              {{
+                controller_host
+                ~ satellite_inventory_sync_launch.json.url
+              }}
+            method: GET
+            user: "{{ gateway_admin_username }}"
+            password: "{{ gateway_admin_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            status_code: 200
+            return_content: true
+          register: satellite_inventory_sync_status
+          changed_when: false
+          until: >-
+            satellite_inventory_sync_status.json.status
+            in ['successful', 'failed', 'error', 'canceled']
+          retries: 120
+          delay: 5
+          no_log: true
+          tags:
+            - inventories
+            - inventory_sources
+
+        - name: Validate initial Satellite inventory synchronization
+          ansible.builtin.assert:
+            that:
+              - satellite_inventory_sync_status.json.status == 'successful'
+            fail_msg: >-
+              Initial Satellite inventory synchronization finished with status
+              '{{ satellite_inventory_sync_status.json.status }}'. Review
+              inventory update job
+              {{ satellite_inventory_sync_status.json.id }} in AAP.
+          tags:
+            - inventories
+            - inventory_sources
 
         #######################################################################
         # Remove previous static hosts

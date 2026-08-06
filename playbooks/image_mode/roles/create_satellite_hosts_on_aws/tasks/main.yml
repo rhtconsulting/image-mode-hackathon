@@ -930,20 +930,46 @@
       {{ create_satellite_hosts_on_aws_existing_hosts }}
 
 ###############################################################################
-# PHASE 6 | Generate root password for a new host
+# PHASE 6 | Resolve root password for a new host
 ###############################################################################
-- name: PHASE 6 | Generate random root password
+
+- name: PHASE 6 | Read root password from AWS Secrets Manager
+  ansible.builtin.command:
+    argv:
+      - aws
+      - secretsmanager
+      - get-secret-value
+      - --secret-id
+      - image-mode-lab/idm/default_user_password
+      - --region
+      - "{{ create_satellite_hosts_on_aws_effective_region }}"
+      - --query
+      - SecretString
+      - --output
+      - text
+  register: create_satellite_hosts_on_aws_root_password_result
+  changed_when: false
+  no_log: true
+  when:
+    - create_satellite_hosts_on_aws_existing_hosts | length == 0
+
+- name: PHASE 6 | Set root password from AWS secret
   ansible.builtin.set_fact:
     create_satellite_hosts_on_aws_root_password: >-
-      {{
-        lookup(
-          'ansible.builtin.password',
-          '/dev/null',
-          length=create_satellite_hosts_on_aws_root_password_length
-            | default(32),
-          chars=['ascii_letters', 'digits']
-        )
-      }}
+      {{ create_satellite_hosts_on_aws_root_password_result.stdout | trim }}
+  no_log: true
+  when:
+    - create_satellite_hosts_on_aws_existing_hosts | length == 0
+
+- name: PHASE 6 | Validate root password secret
+  ansible.builtin.assert:
+    that:
+      - create_satellite_hosts_on_aws_root_password is defined
+      - create_satellite_hosts_on_aws_root_password | length > 0
+      - create_satellite_hosts_on_aws_root_password != 'None'
+    fail_msg: >-
+      AWS Secrets Manager secret
+      image-mode-lab/idm/default_user_password is missing or empty.
   no_log: true
   when:
     - create_satellite_hosts_on_aws_existing_hosts | length == 0
@@ -1095,7 +1121,7 @@
 
   register: create_satellite_hosts_on_aws_create_result
   changed_when: true
-  no_log: true
+  no_log: false
   when:
     - create_satellite_hosts_on_aws_existing_hosts | length == 0
 

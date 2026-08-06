@@ -97,8 +97,8 @@
             'content_label': item.item.1.content_label,
             'repository_id': (
               item.stdout
-              | regex_search('(?:ALREADY_ENABLED|ENABLED):([0-9]+)', '\\1')
-              | first
+              | regex_replace('(?s)^.*:', '')
+              | trim
               | int
             )
           }

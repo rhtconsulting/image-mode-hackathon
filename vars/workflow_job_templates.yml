@@ -59,3 +59,79 @@ controller_workflows:
           organization:
             name: "Image Mode Lab"
           type: "job_template"
+
+      #########################################################################
+      # Generate AWS certificates
+      #########################################################################
+
+      - identifier: "generate_image_builder_aws_certificates"
+
+        unified_job_template:
+          name: "Generate Image Builder AWS Certificates"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+
+        related:
+          success_nodes:
+            - identifier: "stage_image_builder_certificates"
+
+      #########################################################################
+      # Copy certificates to staged hosts
+      #########################################################################
+
+      - identifier: "stage_image_builder_certificates"
+
+        unified_job_template:
+          name: "Stage Image Builder Certificates"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+
+        related:
+          success_nodes:
+            - identifier: "register_image_builders_with_satellite"
+
+      #########################################################################
+      # Register staged hosts with Satellite
+      #########################################################################
+
+      - identifier: "register_image_builders_with_satellite"
+
+        unified_job_template:
+          name: "Register Image Builder Hosts with Satellite"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+
+        related:
+          success_nodes:
+            - identifier: "validate_staged_image_builders"
+
+      #########################################################################
+      # Validate staged hosts
+      #########################################################################
+
+      - identifier: "validate_staged_image_builders"
+
+        unified_job_template:
+          name: "Validate Staged Image Builder Hosts"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+
+        related:
+          success_nodes:
+            - identifier: "promote_staged_image_builders"
+
+      #########################################################################
+      # Promote hosts to production inventory
+      #########################################################################
+
+      - identifier: "promote_staged_image_builders"
+
+        unified_job_template:
+          name: "Promote Staged Image Builder Hosts"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"

@@ -1,0 +1,31 @@
+###############################################################################
+# Create Additional Image Builder Hosts survey
+###############################################################################
+
+create_additional_image_builder_hosts_survey:
+  name: "Create Additional Image Builder Hosts"
+
+  description: >-
+    Add additional Image Mode Builder teams to the existing AWS lab.
+    Each requested team receives one RHEL 9 Image Builder host and one
+    RHEL 10 Image Builder host. The automation discovers the existing
+    Image Builder hosts, determines the next available team identifiers,
+    and creates the required EC2 instances automatically.
+
+  spec:
+
+    ###########################################################################
+    # Image Builder team count
+    ###########################################################################
+
+    - question_name: "Number of additional Image Builder teams"
+      question_description: >-
+        Number of additional Image Builder teams to create. Each team receives
+        two EC2 instances: one RHEL 9 Image Builder and one RHEL 10 Image
+        Builder. For example, selecting 2 creates four EC2 instances.
+      variable: "generated_number_of_host_var"
+      type: "integer"
+      required: true
+      default: 1
+      min: 1
+      max: 10

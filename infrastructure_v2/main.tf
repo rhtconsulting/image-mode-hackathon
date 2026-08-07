@@ -321,8 +321,12 @@ locals {
 ############################################################
 
 resource "terraform_data" "preflight_cleanup" {
+  triggers_replace = [
+    7
+  ]
+
   input = {
-    cleanup_version  = 5
+    cleanup_version  = 7
     environment_name = var.environment_name
     secret_prefix    = var.secret_prefix
     aws_region       = var.aws_region
@@ -360,6 +364,10 @@ resource "terraform_data" "preflight_cleanup" {
       "${var.environment_name}-image-builder-instance-profile"
     )
 
+    image_builder_installation_isos_policy_name = (
+      "${var.environment_name}-image-builder-installation-isos-read"
+    )
+
     vmimport_role_name = "vmimport"
 
     image_mode_artifact_policy_name = (
@@ -372,6 +380,10 @@ resource "terraform_data" "preflight_cleanup" {
 
     ec2_discovery_policy_name = (
       "${var.environment_name}-ec2-discovery"
+    )
+
+    image_builder_ec2_provisioning_policy_name = (
+      "${var.environment_name}-image-builder-ec2-provisioning"
     )
 
     secrets = local.all_lab_secret_names
@@ -406,6 +418,7 @@ resource "terraform_data" "preflight_cleanup" {
 
       IMAGE_BUILDER_ROLE_NAME="${var.environment_name}-image-builder-role"
       IMAGE_BUILDER_PROFILE_NAME="${var.environment_name}-image-builder-instance-profile"
+      IMAGE_BUILDER_INSTALLATION_ISOS_POLICY_NAME="${var.environment_name}-image-builder-installation-isos-read"
 
       VMIMPORT_ROLE_NAME="vmimport"
       VMIMPORT_POLICY_NAME="${var.environment_name}-vmimport"
@@ -418,6 +431,7 @@ resource "terraform_data" "preflight_cleanup" {
       IMAGE_MODE_ARTIFACT_POLICY_NAME="${var.environment_name}-image-mode-artifact-bucket-rw"
       BOOTC_AMI_IMPORT_POLICY_NAME="${var.environment_name}-bootc-ami-import-caller"
       EC2_DISCOVERY_POLICY_NAME="${var.environment_name}-ec2-discovery"
+      IMAGE_BUILDER_EC2_PROVISIONING_POLICY_NAME="${var.environment_name}-image-builder-ec2-provisioning"
 
       echo "Preflight cleanup: duplicate-prone unmanaged lab resources"
 
@@ -674,9 +688,9 @@ resource "terraform_data" "preflight_cleanup" {
       echo "Checking Secrets Manager secrets"
 
       cat > /tmp/image-mode-lab-secret-names.txt <<'EOF_SECRETS'
-%{ for secret_name in local.all_lab_secret_names ~}
+%{for secret_name in local.all_lab_secret_names~}
 ${secret_name}
-%{ endfor ~}
+%{endfor~}
 EOF_SECRETS
 
       while IFS= read -r SECRET_NAME; do
@@ -854,6 +868,11 @@ EOF_SECRETS
         "$IMAGE_BUILDER_PROFILE_NAME" \
         "$IMAGE_BUILDER_ROLE_NAME"
 
+      cleanup_inline_role_policy \
+        'aws_iam_role_policy.image_builder_installation_isos_read' \
+        "$IMAGE_BUILDER_ROLE_NAME" \
+        "$IMAGE_BUILDER_INSTALLATION_ISOS_POLICY_NAME"
+
       if ! state_has 'aws_iam_role.image_builder'; then
         cleanup_all_role_policy_attachments \
           "$IMAGE_BUILDER_ROLE_NAME"
@@ -998,10 +1017,16 @@ EOF_SECRETS
         'aws_iam_policy.ec2_discovery' \
         "$EC2_DISCOVERY_POLICY_NAME"
 
+      cleanup_managed_policy \
+        'aws_iam_policy.image_builder_ec2_provisioning' \
+        "$IMAGE_BUILDER_EC2_PROVISIONING_POLICY_NAME"
+
       echo "Preflight cleanup complete"
     EOT
   }
 }
+
+
 
 
 resource "random_password" "generated" {
@@ -2399,6 +2424,7 @@ resource "aws_iam_policy" "bootc_ami_import_caller" {
 
 resource "aws_iam_role" "image_builder" {
   name = "${var.environment_name}-image-builder-role"
+
   depends_on = [
     terraform_data.preflight_cleanup
   ]
@@ -2428,6 +2454,32 @@ resource "aws_iam_role" "image_builder" {
   }
 }
 
+############################################################
+# Image Builder Installation ISO Access
+############################################################
+
+resource "aws_iam_role_policy" "image_builder_installation_isos_read" {
+  name = "${var.environment_name}-image-builder-installation-isos-read"
+  role = aws_iam_role.image_builder.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Sid    = "ReadInstallationISOs"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetObject"
+        ]
+
+        Resource = "arn:aws:s3:::aap-containerized-installers/*.iso"
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role_policy_attachment" "image_builder_artifacts" {
   role       = aws_iam_role.image_builder.name
   policy_arn = aws_iam_policy.image_mode_artifact_bucket_rw.arn
@@ -2441,7 +2493,117 @@ resource "aws_iam_role_policy_attachment" "image_builder_ami_import" {
 resource "aws_iam_instance_profile" "image_builder" {
   name = "${var.environment_name}-image-builder-instance-profile"
   role = aws_iam_role.image_builder.name
+
+  depends_on = [
+    aws_iam_role_policy.image_builder_installation_isos_read,
+    aws_iam_role_policy_attachment.image_builder_artifacts,
+    aws_iam_role_policy_attachment.image_builder_ami_import
+  ]
 }
+
+
+############################################################
+# Image Builder EC2 Provisioning Policy
+#
+# Allows the rhel-iam automation user to create and reconcile
+# Image Builder EC2 instances.
+############################################################
+
+resource "aws_iam_policy" "image_builder_ec2_provisioning" {
+  name = "${var.environment_name}-image-builder-ec2-provisioning"
+
+  description = (
+    "Allow Image Mode automation to provision and reconcile Image Builder EC2 instances."
+  )
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Sid    = "ProvisionImageBuilderInstances"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:RunInstances"
+        ]
+
+        Resource = "*"
+      },
+
+      {
+        Sid    = "TagProvisionedResources"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:CreateTags"
+        ]
+
+        Resource = [
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:volume/*"
+        ]
+
+        Condition = {
+          StringEquals = {
+            "ec2:CreateAction" = "RunInstances"
+          }
+        }
+      },
+
+      {
+        Sid    = "ReconcileImageBuilderInstances"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:StartInstances",
+          "ec2:StopInstances",
+          "ec2:RebootInstances",
+          "ec2:TerminateInstances",
+          "ec2:ModifyInstanceAttribute",
+          "ec2:ModifyVolume"
+        ]
+
+        Resource = [
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:volume/*"
+        ]
+      },
+
+      {
+        Sid    = "PassImageBuilderInstanceRole"
+        Effect = "Allow"
+
+        Action = [
+          "iam:PassRole"
+        ]
+
+        Resource = [
+          aws_iam_role.image_builder.arn
+        ]
+
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = "ec2.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+
+  depends_on = [
+    terraform_data.preflight_cleanup,
+    aws_iam_role.image_builder
+  ]
+
+  tags = {
+    Name        = "${var.environment_name}-image-builder-ec2-provisioning"
+    Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "Provision Image Builder EC2 instances"
+  }
+}
+
 
 
 ############################################################
@@ -2479,6 +2641,11 @@ resource "aws_iam_user_policy_attachment" "rhel_iam_ec2_discovery" {
   policy_arn = aws_iam_policy.ec2_discovery.arn
 }
 
+resource "aws_iam_user_policy_attachment" "rhel_iam_ec2_provisioning" {
+  user       = aws_iam_user.rhel_iam.name
+  policy_arn = aws_iam_policy.image_builder_ec2_provisioning.arn
+}
+
 
 resource "aws_iam_access_key" "rhel_iam" {
   user = aws_iam_user.rhel_iam.name
@@ -2486,7 +2653,9 @@ resource "aws_iam_access_key" "rhel_iam" {
   depends_on = [
     aws_iam_user_policy_attachment.rhel_iam_artifacts,
     aws_iam_user_policy_attachment.rhel_iam_ami_import,
-    aws_iam_user_policy_attachment.rhel_iam_ec2_discovery
+    aws_iam_user_policy_attachment.rhel_iam_ec2_discovery,
+    aws_iam_user_policy_attachment.rhel_iam_ec2_provisioning
+
   ]
 }
 

@@ -6,15 +6,67 @@
 #
 # Required facts resolved before this phase:
 #
-#   image_builder_domain_name
+#   image_builder_idm_instance
+#   image_builder_idm_fqdn
 #   image_builder_vpc_id
 #   image_builder_subnet_id
-#   image_builder_security_group_ids
-#   image_builder_key_name
 #   image_builder_desired_hosts
 #
+# Security groups and the EC2 key pair are inherited from the IdM anchor when
+# they were not explicitly discovered earlier.
 ###############################################################################
 
+###############################################################################
+# Normalize the lab domain
+###############################################################################
+
+- name: PHASE 05 | Normalize lab domain from IdM hostname
+  ansible.builtin.set_fact:
+    image_builder_domain_name: >-
+      {{
+        image_builder_idm_fqdn
+        | lower
+        | trim
+        | regex_replace('[.]$', '')
+        | regex_replace('^idm-1[.]', '')
+      }}
+
+###############################################################################
+# Resolve security groups from the IdM anchor
+###############################################################################
+
+- name: PHASE 05 | Resolve security groups from IdM anchor
+  ansible.builtin.set_fact:
+    image_builder_security_group_ids: >-
+      {{
+        image_builder_idm_instance.security_groups
+        | default([])
+        | selectattr('group_id', 'defined')
+        | map(attribute='group_id')
+        | list
+        | unique
+      }}
+  when:
+    - >-
+      image_builder_security_group_ids is not defined
+      or image_builder_security_group_ids | length == 0
+
+###############################################################################
+# Resolve EC2 key pair from the IdM anchor
+###############################################################################
+
+- name: PHASE 05 | Resolve key pair from IdM anchor
+  ansible.builtin.set_fact:
+    image_builder_key_name: >-
+      {{
+        image_builder_idm_instance.key_name
+        | default('', true)
+        | trim
+      }}
+  when:
+    - >-
+      image_builder_key_name is not defined
+      or image_builder_key_name | length == 0
 
 ###############################################################################
 # Validate runtime-discovered infrastructure
@@ -23,8 +75,17 @@
 - name: PHASE 05 | Validate discovered EC2 configuration
   ansible.builtin.assert:
     that:
+      - image_builder_aws_region is defined
+      - image_builder_aws_region | length > 0
+
+      - image_builder_idm_fqdn is defined
+      - image_builder_idm_fqdn | length > 0
+
       - image_builder_domain_name is defined
       - image_builder_domain_name | length > 0
+      - image_builder_domain_name != image_builder_idm_fqdn
+      - image_builder_domain_name is not match('^idm-1[.]')
+      - image_builder_domain_name is match('^[A-Za-z0-9.-]+$')
 
       - image_builder_vpc_id is defined
       - image_builder_vpc_id | length > 0
@@ -41,10 +102,68 @@
       - image_builder_desired_hosts is defined
       - image_builder_desired_hosts | length > 0
 
+      - image_builder_instance_type is defined
+      - image_builder_instance_type | length > 0
     fail_msg: >-
       PHASE 05 cannot provision Image Builder EC2 instances because one or
       more required runtime-discovered values are missing.
 
+      AWS region:
+      {{ image_builder_aws_region | default('UNDEFINED') }}
+
+      Domain:
+      {{ image_builder_domain_name | default('UNDEFINED') }}
+
+      VPC:
+      {{ image_builder_vpc_id | default('UNDEFINED') }}
+
+      Subnet:
+      {{ image_builder_subnet_id | default('UNDEFINED') }}
+
+      Security groups:
+      {{ image_builder_security_group_ids | default('UNDEFINED') }}
+
+      Key pair:
+      {{ image_builder_key_name | default('UNDEFINED') }}
+
+      Desired host count:
+      {{ image_builder_desired_hosts | default([]) | length }}
+
+###############################################################################
+# Validate each desired host
+###############################################################################
+
+- name: PHASE 05 | Validate desired host configuration
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.name | length > 0
+
+      - item.short_name is defined
+      - item.short_name | length > 0
+
+      - item.generation is defined
+      - item.generation | length > 0
+
+      - item.rhel_major_version is defined
+      - item.rhel_major_version | string | length > 0
+
+      - item.ami_id is defined
+      - item.ami_id | string | length > 0
+      - item.ami_id is match('^ami-[A-Za-z0-9]+$')
+
+      - item.team_id is defined
+      - item.team_id | string | length > 0
+    fail_msg: >-
+      Desired host {{ item.name | default('UNKNOWN') }} is missing one or more
+      required values. Each host must contain name, short_name, generation,
+      rhel_major_version, ami_id, and team_id.
+
+      Host definition:
+      {{ item }}
+  loop: "{{ image_builder_desired_hosts }}"
+  loop_control:
+    label: "{{ item.name | default('UNKNOWN') }}"
 
 ###############################################################################
 # Display provisioning plan
@@ -61,106 +180,71 @@
       - "Key pair: {{ image_builder_key_name }}"
       - "New EC2 instances: {{ image_builder_desired_hosts | length }}"
 
-
 ###############################################################################
 # Provision desired Image Builder instances
 ###############################################################################
 
 - name: PHASE 05 | Ensure Image Builder EC2 instances exist
   amazon.aws.ec2_instance:
-
     region: "{{ image_builder_aws_region }}"
-
     name: "{{ item.name }}"
-
     image_id: "{{ item.ami_id }}"
-
     instance_type: "{{ image_builder_instance_type }}"
-
     key_name: "{{ image_builder_key_name }}"
-
     vpc_subnet_id: "{{ image_builder_subnet_id }}"
 
     network_interfaces:
-
-      - assign_public_ip: "{{ image_builder_assign_public_ip }}"
-
+      - assign_public_ip: "{{ image_builder_assign_public_ip | bool }}"
         groups: "{{ image_builder_security_group_ids }}"
 
     volumes:
-
       - device_name: "{{ image_builder_root_device_name }}"
-
         ebs:
-
-          volume_size: "{{ image_builder_root_volume_size }}"
-
+          volume_size: "{{ image_builder_root_volume_size | int }}"
           volume_type: "{{ image_builder_root_volume_type }}"
-
           delete_on_termination: >-
-            {{ image_builder_delete_volumes_on_termination }}
+            {{
+              image_builder_delete_volumes_on_termination
+              | bool
+            }}
 
       - device_name: "{{ image_builder_data_device_name }}"
-
         ebs:
-
-          volume_size: "{{ image_builder_data_volume_size }}"
-
+          volume_size: "{{ image_builder_data_volume_size | int }}"
           volume_type: "{{ image_builder_data_volume_type }}"
-
           delete_on_termination: >-
-            {{ image_builder_delete_volumes_on_termination }}
+            {{
+              image_builder_delete_volumes_on_termination
+              | bool
+            }}
 
     metadata_options:
-
       http_endpoint: "{{ image_builder_metadata_http_endpoint }}"
-
       http_tokens: "{{ image_builder_metadata_http_tokens }}"
 
     tags:
-
       Name: "{{ item.name }}"
-
       Application: "{{ image_builder_common_tags.Application }}"
-
       Component: "{{ image_builder_common_tags.Component }}"
-
       ManagedBy: "{{ image_builder_common_tags.ManagedBy }}"
-
-      RHELVersion: "{{ item.rhel_major_version }}"
-
+      RHELVersion: "{{ item.rhel_major_version | string }}"
       ImageBuilderGeneration: "{{ item.generation }}"
-
-      ImageBuilderTeam: "{{ item.team_id }}"
-
+      ImageBuilderTeam: "{{ item.team_id | string }}"
       ImageBuilderDomain: "{{ image_builder_domain_name }}"
 
     filters:
-
       "tag:Name": "{{ item.name }}"
-
       "tag:ManagedBy": "{{ image_builder_common_tags.ManagedBy }}"
-
       "tag:Component": "{{ image_builder_common_tags.Component }}"
 
     exact_count: 1
-
     state: running
-
     wait: true
 
   loop: "{{ image_builder_desired_hosts }}"
-
   loop_control:
-
-    label: >-
-      {{
-        item.short_name
-        | default(item.name)
-      }}
-
+    label: "{{ item.short_name | default(item.name) }}"
   register: image_builder_provision_results
-
 
 ###############################################################################
 # Display provisioning results
@@ -168,7 +252,11 @@
 
 - name: PHASE 05 | Display completed provisioning operations
   ansible.builtin.debug:
-    msg: >-
-      EC2 provisioning reconciliation completed for
-      {{ image_builder_desired_hosts | length }}
-      desired Image Builder instances.
+    msg:
+      - >-
+        EC2 provisioning reconciliation completed for
+        {{ image_builder_desired_hosts | length }}
+        desired Image Builder instances.
+      - "Lab domain: {{ image_builder_domain_name }}"
+      - "Security groups: {{ image_builder_security_group_ids }}"
+      - "Key pair: {{ image_builder_key_name }}"

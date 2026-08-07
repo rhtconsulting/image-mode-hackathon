@@ -3,21 +3,16 @@
 # PHASE 02
 #
 # Discover the existing lab environment from AWS.
-#
-# Terraform has already completed and its outputs are no longer available.
-# Existing AWS resources therefore become the source of truth.
 ###############################################################################
 
 - name: PHASE 02 | Resolve AWS caller identity
   amazon.aws.aws_caller_info:
   register: image_builder_aws_caller
 
-
 - name: PHASE 02 | Store AWS account information
   ansible.builtin.set_fact:
     image_builder_aws_account_id: "{{ image_builder_aws_caller.account }}"
     image_builder_aws_caller_arn: "{{ image_builder_aws_caller.arn }}"
-
 
 ###############################################################################
 # Discover IdM anchor instance
@@ -32,7 +27,6 @@
         - running
   register: image_builder_idm_instance_info
 
-
 - name: PHASE 02 | Validate IdM anchor discovery
   ansible.builtin.assert:
     that:
@@ -45,7 +39,6 @@
       The Image Builder provisioning workflow cannot safely determine
       the lab VPC and domain without a unique anchor instance.
 
-
 ###############################################################################
 # Resolve anchor information
 ###############################################################################
@@ -53,11 +46,16 @@
 - name: PHASE 02 | Resolve IdM anchor facts
   ansible.builtin.set_fact:
     image_builder_idm_instance: >-
-      {{ image_builder_idm_instance_info.instances[0] }}
+      {{
+        image_builder_idm_instance_info.instances[0]
+      }}
 
     image_builder_idm_fqdn: >-
       {{
         image_builder_idm_instance_info.instances[0].tags.Name
+        | lower
+        | trim
+        | regex_replace('[.]$', '')
       }}
 
     image_builder_vpc_id: >-
@@ -65,17 +63,8 @@
         image_builder_idm_instance_info.instances[0].vpc_id
       }}
 
-
 ###############################################################################
 # Calculate lab domain
-#
-# Example:
-#
-# idm-1.lab.sandbox2233.opentlc.com
-#
-# becomes:
-#
-# lab.sandbox2233.opentlc.com
 ###############################################################################
 
 - name: PHASE 02 | Calculate lab domain from IdM hostname
@@ -83,9 +72,8 @@
     image_builder_domain_name: >-
       {{
         image_builder_idm_fqdn
-        | regex_replace('^idm-1\\.', '')
+        | regex_replace('^idm-1[.]', '')
       }}
-
 
 ###############################################################################
 # Validation
@@ -94,13 +82,13 @@
 - name: PHASE 02 | Validate calculated lab domain
   ansible.builtin.assert:
     that:
+      - image_builder_idm_fqdn is match('^idm-1[.].+')
       - image_builder_domain_name | length > 0
       - image_builder_domain_name != image_builder_idm_fqdn
       - image_builder_domain_name is match('^[A-Za-z0-9.-]+$')
     fail_msg: >-
       Unable to calculate a valid lab domain from IdM hostname
       {{ image_builder_idm_fqdn }}.
-
 
 ###############################################################################
 # Results

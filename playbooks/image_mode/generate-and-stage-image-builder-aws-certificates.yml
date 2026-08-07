@@ -1,0 +1,552 @@
+---
+###############################################################################
+# Request, validate, export, and install public ACM certificates for every host
+# in the persistent "Staged Image Builders" AAP inventory.
+#
+# Job template credentials:
+#   - Image Mode Machine Credential
+#   - AWS IAM Service Account Credential
+#   - Red Hat Ansible Controller Credential
+#
+# Optional inventory/job variables:
+#   public_route53_zone_name: sandbox550.opentlc.com
+#   public_route53_zone_id: Z0123456789ABCDEF
+#   image_builder_certificate_directory: /opt/image-builder/certs
+###############################################################################
+
+- name: Generate and stage Image Builder AWS certificates
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    staged_inventory_name: "Staged Image Builders"
+    image_builder_certificate_directory: "/opt/image-builder/certs"
+    image_builder_certificate_wait_retries: 60
+    image_builder_certificate_wait_delay: 10
+
+    image_builder_tls_fqdn: >-
+      {{
+        public_tls_fqdn
+        | default(fqdn | default(inventory_hostname), true)
+        | lower
+        | regex_replace('[.]$', '')
+      }}
+
+    # A public Route 53 zone normally owns sandboxNNN.opentlc.com while the
+    # hosts reside below lab.sandboxNNN.opentlc.com. Set
+    # public_route53_zone_name explicitly if this convention does not apply.
+    image_builder_route53_zone_name: >-
+      {{
+        public_route53_zone_name
+        | default(
+            image_builder_workflow_domain
+            | default(image_builder_tls_fqdn | regex_replace('^[^.]+[.]', ''))
+            | regex_replace('^lab[.]', ''),
+            true
+          )
+        | lower
+        | regex_replace('[.]$', '')
+      }}
+
+  pre_tasks:
+    - name: Validate certificate configuration
+      ansible.builtin.assert:
+        that:
+          - image_builder_tls_fqdn | length > 0
+          - image_builder_tls_fqdn is match('^[a-z0-9][a-z0-9.-]*[a-z0-9]$')
+          - image_builder_route53_zone_name | length > 0
+          - >-
+            image_builder_tls_fqdn == image_builder_route53_zone_name or
+            image_builder_tls_fqdn.endswith('.' ~ image_builder_route53_zone_name)
+          - aws_region | default(image_builder_workflow_region | default('')) | length > 0
+        fail_msg: >-
+          Cannot request a certificate for {{ inventory_hostname }}. Verify
+          public_tls_fqdn/fqdn, aws_region, and public_route53_zone_name.
+
+    - name: Resolve certificate AWS region
+      ansible.builtin.set_fact:
+        image_builder_certificate_region: >-
+          {{
+            aws_region
+            | default(image_builder_workflow_region | default(''), true)
+          }}
+
+    - name: Verify AWS CLI is available in the execution environment
+      ansible.builtin.command:
+        argv:
+          - aws
+          - "--version"
+      changed_when: false
+      delegate_to: localhost
+      become: false
+
+    - name: Verify OpenSSL is available in the execution environment
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - version
+      changed_when: false
+      delegate_to: localhost
+      become: false
+
+  tasks:
+    ###########################################################################
+    # Locate the authoritative public Route 53 zone
+    ###########################################################################
+
+    - name: Look up the public Route 53 hosted zone
+      ansible.builtin.command:
+        argv:
+          - aws
+          - route53
+          - list-hosted-zones-by-name
+          - --dns-name
+          - "{{ image_builder_route53_zone_name }}"
+          - --query
+          - >-
+            HostedZones[?Name=='{{ image_builder_route53_zone_name }}.' &&
+            Config.PrivateZone==`false`] | [0].Id
+          - --output
+          - text
+          - --no-cli-pager
+      register: image_builder_route53_zone_lookup
+      changed_when: false
+      delegate_to: localhost
+      become: false
+      when: public_route53_zone_id | default('') | length == 0
+
+    - name: Store the Route 53 hosted zone ID
+      ansible.builtin.set_fact:
+        image_builder_route53_zone_id: >-
+          {{
+            public_route53_zone_id
+            | default(image_builder_route53_zone_lookup.stdout, true)
+            | regex_replace('^/hostedzone/', '')
+            | trim
+          }}
+
+    - name: Validate the Route 53 hosted zone lookup
+      ansible.builtin.assert:
+        that:
+          - image_builder_route53_zone_id | length > 0
+          - image_builder_route53_zone_id not in ['None', 'null']
+        fail_msg: >-
+          No public Route 53 hosted zone named
+          {{ image_builder_route53_zone_name }} was found.
+
+    ###########################################################################
+    # Reuse an exportable certificate or request a new one
+    ###########################################################################
+
+    - name: Find an existing ACM certificate for the exact hostname
+      ansible.builtin.command:
+        argv:
+          - aws
+          - acm
+          - list-certificates
+          - --region
+          - "{{ image_builder_certificate_region }}"
+          - --certificate-statuses
+          - PENDING_VALIDATION
+          - ISSUED
+          - --query
+          - >-
+            CertificateSummaryList[?DomainName=='{{ image_builder_tls_fqdn }}']
+            | [0].CertificateArn
+          - --output
+          - text
+          - --no-cli-pager
+      register: image_builder_existing_certificate
+      changed_when: false
+      delegate_to: localhost
+      become: false
+
+    - name: Store an existing certificate ARN
+      ansible.builtin.set_fact:
+        image_builder_acm_certificate_arn: >-
+          {{ image_builder_existing_certificate.stdout | trim }}
+      when:
+        - image_builder_existing_certificate.stdout | trim | length > 0
+        - image_builder_existing_certificate.stdout | trim not in ['None', 'null']
+
+    - name: Inspect the existing ACM certificate
+      ansible.builtin.command:
+        argv:
+          - aws
+          - acm
+          - describe-certificate
+          - --region
+          - "{{ image_builder_certificate_region }}"
+          - --certificate-arn
+          - "{{ image_builder_acm_certificate_arn }}"
+          - --output
+          - json
+          - --no-cli-pager
+      register: image_builder_existing_certificate_description
+      changed_when: false
+      delegate_to: localhost
+      become: false
+      when: image_builder_acm_certificate_arn is defined
+
+    - name: Validate that an existing certificate is exportable
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              image_builder_existing_certificate_description.stdout
+              | from_json
+            ).Certificate.Options.Export | default('DISABLED') == 'ENABLED'
+        fail_msg: >-
+          ACM certificate {{ image_builder_acm_certificate_arn }} already exists
+          for {{ image_builder_tls_fqdn }}, but it is not exportable. ACM cannot
+          enable export after creation. Remove or replace that certificate, or
+          supply an exportable certificate before rerunning this job.
+      when: image_builder_acm_certificate_arn is defined
+
+    - name: Request a new exportable public ACM certificate
+      ansible.builtin.command:
+        argv:
+          - aws
+          - acm
+          - request-certificate
+          - --region
+          - "{{ image_builder_certificate_region }}"
+          - --domain-name
+          - "{{ image_builder_tls_fqdn }}"
+          - --validation-method
+          - DNS
+          - --key-algorithm
+          - RSA_2048
+          - --options
+          - Export=ENABLED
+          - --idempotency-token
+          - >-
+            {{ image_builder_tls_fqdn | hash('sha256') | truncate(32, true, '') }}
+          - --tags
+          - Key=ManagedBy,Value=Ansible
+          - Key=Component,Value=ImageBuilder
+          - "Key=Name,Value={{ image_builder_tls_fqdn }}"
+          - --query
+          - CertificateArn
+          - --output
+          - text
+          - --no-cli-pager
+      register: image_builder_requested_certificate
+      changed_when: true
+      delegate_to: localhost
+      become: false
+      when: image_builder_acm_certificate_arn is not defined
+
+    - name: Store the requested certificate ARN
+      ansible.builtin.set_fact:
+        image_builder_acm_certificate_arn: >-
+          {{ image_builder_requested_certificate.stdout | trim }}
+      when: image_builder_acm_certificate_arn is not defined
+
+    ###########################################################################
+    # Publish ACM's DNS validation record and wait for issuance
+    ###########################################################################
+
+    - name: Wait for ACM to publish the DNS validation record
+      ansible.builtin.command:
+        argv:
+          - aws
+          - acm
+          - describe-certificate
+          - --region
+          - "{{ image_builder_certificate_region }}"
+          - --certificate-arn
+          - "{{ image_builder_acm_certificate_arn }}"
+          - --query
+          - Certificate.DomainValidationOptions[0].ResourceRecord
+          - --output
+          - json
+          - --no-cli-pager
+      register: image_builder_validation_record_lookup
+      changed_when: false
+      until:
+        - image_builder_validation_record_lookup.rc == 0
+        - image_builder_validation_record_lookup.stdout | trim not in ['', 'null', 'None']
+        - (image_builder_validation_record_lookup.stdout | from_json).Name is defined
+      retries: 30
+      delay: 5
+      delegate_to: localhost
+      become: false
+
+    - name: Store the ACM DNS validation record
+      ansible.builtin.set_fact:
+        image_builder_validation_record: >-
+          {{ image_builder_validation_record_lookup.stdout | from_json }}
+
+    - name: Create a controller-side temporary directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: "image-builder-acm-"
+      register: image_builder_certificate_tempdir
+      delegate_to: localhost
+      become: false
+
+    - name: Complete certificate validation and install certificate files
+      block:
+        - name: Build the Route 53 validation change request
+          ansible.builtin.copy:
+            dest: "{{ image_builder_certificate_tempdir.path }}/route53-change.json"
+            mode: "0600"
+            content: >-
+              {{
+                {
+                  'Comment': 'ACM validation for ' ~ image_builder_tls_fqdn,
+                  'Changes': [
+                    {
+                      'Action': 'UPSERT',
+                      'ResourceRecordSet': {
+                        'Name': image_builder_validation_record.Name,
+                        'Type': image_builder_validation_record.Type,
+                        'TTL': 300,
+                        'ResourceRecords': [
+                          {'Value': image_builder_validation_record.Value}
+                        ]
+                      }
+                    }
+                  ]
+                } | to_nice_json
+              }}
+          delegate_to: localhost
+          become: false
+
+        - name: Publish the ACM validation record in Route 53
+          ansible.builtin.command:
+            argv:
+              - aws
+              - route53
+              - change-resource-record-sets
+              - --hosted-zone-id
+              - "{{ image_builder_route53_zone_id }}"
+              - --change-batch
+              - "file://{{ image_builder_certificate_tempdir.path }}/route53-change.json"
+              - --no-cli-pager
+          register: image_builder_route53_change
+          changed_when: true
+          delegate_to: localhost
+          become: false
+
+        - name: Wait for ACM certificate issuance
+          ansible.builtin.command:
+            argv:
+              - aws
+              - acm
+              - describe-certificate
+              - --region
+              - "{{ image_builder_certificate_region }}"
+              - --certificate-arn
+              - "{{ image_builder_acm_certificate_arn }}"
+              - --query
+              - Certificate.Status
+              - --output
+              - text
+              - --no-cli-pager
+          register: image_builder_certificate_status
+          changed_when: false
+          failed_when: >-
+            image_builder_certificate_status.stdout | trim in
+            ['FAILED', 'VALIDATION_TIMED_OUT', 'REVOKED', 'EXPIRED']
+          until: image_builder_certificate_status.stdout | trim == 'ISSUED'
+          retries: "{{ image_builder_certificate_wait_retries | int }}"
+          delay: "{{ image_builder_certificate_wait_delay | int }}"
+          delegate_to: localhost
+          become: false
+
+        - name: Generate a temporary certificate export passphrase
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - rand
+              - -hex
+              - "32"
+          register: image_builder_certificate_passphrase
+          changed_when: false
+          no_log: true
+          delegate_to: localhost
+          become: false
+
+        - name: Store the temporary export passphrase
+          ansible.builtin.copy:
+            dest: "{{ image_builder_certificate_tempdir.path }}/passphrase"
+            content: "{{ image_builder_certificate_passphrase.stdout }}"
+            mode: "0600"
+          no_log: true
+          delegate_to: localhost
+          become: false
+
+        - name: Export the ACM certificate and encrypted private key
+          ansible.builtin.command:
+            argv:
+              - aws
+              - acm
+              - export-certificate
+              - --region
+              - "{{ image_builder_certificate_region }}"
+              - --certificate-arn
+              - "{{ image_builder_acm_certificate_arn }}"
+              - --passphrase
+              - "fileb://{{ image_builder_certificate_tempdir.path }}/passphrase"
+              - --output
+              - json
+              - --no-cli-pager
+          register: image_builder_exported_certificate
+          changed_when: false
+          no_log: true
+          delegate_to: localhost
+          become: false
+
+        - name: Store exported certificate material in memory
+          ansible.builtin.set_fact:
+            image_builder_exported_certificate_data: >-
+              {{ image_builder_exported_certificate.stdout | from_json }}
+          no_log: true
+
+        - name: Write the encrypted private key temporarily
+          ansible.builtin.copy:
+            dest: "{{ image_builder_certificate_tempdir.path }}/encrypted-key.pem"
+            content: "{{ image_builder_exported_certificate_data.PrivateKey }}"
+            mode: "0600"
+          no_log: true
+          delegate_to: localhost
+          become: false
+
+        - name: Decrypt the private key for the target service
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - pkey
+              - -in
+              - "{{ image_builder_certificate_tempdir.path }}/encrypted-key.pem"
+              - -passin
+              - "file:{{ image_builder_certificate_tempdir.path }}/passphrase"
+              - -out
+              - "{{ image_builder_certificate_tempdir.path }}/tls.key"
+          changed_when: true
+          no_log: true
+          delegate_to: localhost
+          become: false
+
+        - name: Create the certificate directory on the Image Builder host
+          ansible.builtin.file:
+            path: "{{ image_builder_certificate_directory }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0750"
+
+        - name: Install the leaf certificate
+          ansible.builtin.copy:
+            dest: "{{ image_builder_certificate_directory }}/tls.crt"
+            content: "{{ image_builder_exported_certificate_data.Certificate }}"
+            owner: root
+            group: root
+            mode: "0644"
+          no_log: true
+
+        - name: Install the certificate chain
+          ansible.builtin.copy:
+            dest: "{{ image_builder_certificate_directory }}/ca-chain.crt"
+            content: "{{ image_builder_exported_certificate_data.CertificateChain }}"
+            owner: root
+            group: root
+            mode: "0644"
+          no_log: true
+
+        - name: Install the full certificate chain
+          ansible.builtin.copy:
+            dest: "{{ image_builder_certificate_directory }}/fullchain.crt"
+            content: |-
+              {{ image_builder_exported_certificate_data.Certificate | trim }}
+              {{ image_builder_exported_certificate_data.CertificateChain | trim }}
+            owner: root
+            group: root
+            mode: "0644"
+          no_log: true
+
+        - name: Install the decrypted private key
+          ansible.builtin.copy:
+            src: "{{ image_builder_certificate_tempdir.path }}/tls.key"
+            dest: "{{ image_builder_certificate_directory }}/tls.key"
+            owner: root
+            group: root
+            mode: "0600"
+          no_log: true
+
+        - name: Validate the installed certificate hostname
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - x509
+              - -in
+              - "{{ image_builder_certificate_directory }}/tls.crt"
+              - -noout
+              - -checkhost
+              - "{{ image_builder_tls_fqdn }}"
+          changed_when: false
+
+      always:
+        - name: Remove controller-side private certificate material
+          ansible.builtin.file:
+            path: "{{ image_builder_certificate_tempdir.path }}"
+            state: absent
+          when: image_builder_certificate_tempdir.path is defined
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+    ###########################################################################
+    # Persist the ARN in AAP so later workflow jobs receive it from inventory
+    ###########################################################################
+
+    - name: Update staged host variables with certificate results
+      ansible.controller.host:
+        name: "{{ inventory_hostname }}"
+        inventory: "{{ staged_inventory_name }}"
+        enabled: true
+        state: present
+        variables:
+          ansible_host: "{{ ansible_host }}"
+          ansible_user: "{{ ansible_user | default('ec2-user') }}"
+          fqdn: "{{ fqdn | default(image_builder_tls_fqdn) }}"
+          private_ip: "{{ private_ip | default(ansible_host) }}"
+          public_ip: "{{ public_ip | default('') }}"
+          aws_instance_id: "{{ aws_instance_id }}"
+          aws_region: "{{ image_builder_certificate_region }}"
+          vpc_id: "{{ vpc_id | default('') }}"
+          subnet_id: "{{ subnet_id | default('') }}"
+          availability_zone: "{{ availability_zone | default('') }}"
+          image_builder_generation: "{{ image_builder_generation }}"
+          image_builder_rhel_major_version: >-
+            {{ image_builder_rhel_major_version | string }}
+          image_builder_team_id: "{{ image_builder_team_id }}"
+          public_tls_fqdn: "{{ image_builder_tls_fqdn }}"
+          acm_certificate_arn: "{{ image_builder_acm_certificate_arn }}"
+          certificate_directory: "{{ image_builder_certificate_directory }}"
+          certificate_status: "issued_and_installed"
+          staging_status: "certificate_installed"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Publish per-host certificate workflow data
+      ansible.builtin.set_stats:
+        data:
+          image_builder_certificate_arn: "{{ image_builder_acm_certificate_arn }}"
+          image_builder_certificate_fqdn: "{{ image_builder_tls_fqdn }}"
+          image_builder_certificate_status: "issued_and_installed"
+        per_host: true
+
+    - name: Display certificate installation result
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "TLS name: {{ image_builder_tls_fqdn }}"
+          - "ACM certificate: {{ image_builder_acm_certificate_arn }}"
+          - "Installed at: {{ image_builder_certificate_directory }}"
+          - "Status: issued and installed"

@@ -1601,9 +1601,12 @@
             controller_username: "{{ gateway_admin_username }}"
             controller_password: "{{ gateway_admin_password }}"
             controller_validate_certs: false
+
+            controller_configuration_credentials_secure_logging: false
           tags:
             - credentials
-          no_log: true
+          # no_log: true
+          
 
         #######################################################################
         # 4. Inventories

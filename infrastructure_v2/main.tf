@@ -2487,6 +2487,111 @@ resource "aws_iam_instance_profile" "image_builder" {
   ]
 }
 
+
+############################################################
+# Image Builder EC2 Provisioning Policy
+#
+# Allows the rhel-iam automation user to create and reconcile
+# Image Builder EC2 instances.
+############################################################
+
+resource "aws_iam_policy" "image_builder_ec2_provisioning" {
+  name = "${var.environment_name}-image-builder-ec2-provisioning"
+
+  description = (
+    "Allow Image Mode automation to provision and reconcile Image Builder EC2 instances."
+  )
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Sid    = "ProvisionImageBuilderInstances"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:RunInstances"
+        ]
+
+        Resource = "*"
+      },
+
+      {
+        Sid    = "TagProvisionedResources"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:CreateTags"
+        ]
+
+        Resource = [
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:volume/*"
+        ]
+
+        Condition = {
+          StringEquals = {
+            "ec2:CreateAction" = "RunInstances"
+          }
+        }
+      },
+
+      {
+        Sid    = "ReconcileImageBuilderInstances"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:StartInstances",
+          "ec2:StopInstances",
+          "ec2:RebootInstances",
+          "ec2:TerminateInstances",
+          "ec2:ModifyInstanceAttribute",
+          "ec2:ModifyVolume"
+        ]
+
+        Resource = [
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:volume/*"
+        ]
+      },
+
+      {
+        Sid    = "PassImageBuilderInstanceRole"
+        Effect = "Allow"
+
+        Action = [
+          "iam:PassRole"
+        ]
+
+        Resource = [
+          aws_iam_role.image_builder.arn
+        ]
+
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = "ec2.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+
+  depends_on = [
+    terraform_data.preflight_cleanup,
+    aws_iam_role.image_builder
+  ]
+
+  tags = {
+    Name        = "${var.environment_name}-image-builder-ec2-provisioning"
+    Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "Provision Image Builder EC2 instances"
+  }
+}
+
+
+
 ############################################################
 # Image Mode Automation IAM User
 ############################################################
@@ -2522,6 +2627,11 @@ resource "aws_iam_user_policy_attachment" "rhel_iam_ec2_discovery" {
   policy_arn = aws_iam_policy.ec2_discovery.arn
 }
 
+resource "aws_iam_user_policy_attachment" "rhel_iam_ec2_provisioning" {
+  user       = aws_iam_user.rhel_iam.name
+  policy_arn = aws_iam_policy.image_builder_ec2_provisioning.arn
+}
+
 
 resource "aws_iam_access_key" "rhel_iam" {
   user = aws_iam_user.rhel_iam.name
@@ -2529,7 +2639,9 @@ resource "aws_iam_access_key" "rhel_iam" {
   depends_on = [
     aws_iam_user_policy_attachment.rhel_iam_artifacts,
     aws_iam_user_policy_attachment.rhel_iam_ami_import,
-    aws_iam_user_policy_attachment.rhel_iam_ec2_discovery
+    aws_iam_user_policy_attachment.rhel_iam_ec2_discovery,
+    aws_iam_user_policy_attachment.rhel_iam_ec2_provisioning
+
   ]
 }
 

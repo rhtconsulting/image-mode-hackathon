@@ -153,11 +153,11 @@ controller_templates:
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
     inventory: "Image Mode Lab Infrastructure"
-    playbook: "playbooks/image_mode/create-additional-image-builder-hosts.yml"
+    playbook: "playbooks/add-additional-image-builder-hosts.yml"
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS IAM Service Account Credential"
-      - "Image Mode Machine Credential"
+      - "Image Builders"
     job_type: "run"
     verbosity: 1
     forks: 1

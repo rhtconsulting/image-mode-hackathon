@@ -1,0 +1,158 @@
+---
+- name: Enroll additional Image Builder hosts into Red Hat IdM
+  hosts: image_builder
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  vars:
+    idm_domain: "{{ idm_domain_name }}"
+    idm_realm: "{{ idm_realm_name }}"
+    idm_server: "{{ idm_server_fqdn }}"
+    idm_client_hostname: "{{ inventory_hostname }}"
+
+    idm_enroll_user: >-
+      {{
+        idm_admin_username
+        | default(ipaadmin_principal | default('admin'), true)
+      }}
+
+    idm_enroll_password: >-
+      {{
+        idm_admin_password
+        | default(ipaadmin_password | default(''), true)
+      }}
+
+  pre_tasks:
+    - name: Validate IdM enrollment configuration
+      ansible.builtin.assert:
+        that:
+          - idm_domain_name | default('') | trim | length > 0
+          - idm_realm_name | default('') | trim | length > 0
+          - idm_server_fqdn | default('') | trim | length > 0
+          - idm_enroll_user | trim | length > 0
+          - idm_enroll_password | length > 0
+        fail_msg: >-
+          The IdM configuration or AAP IdM administrator credential is
+          missing. Verify that the job template has the Image Mode IdM
+          Administrator Credential attached.
+      no_log: true
+
+  tasks:
+    - name: Install required IdM client packages
+      ansible.builtin.dnf:
+        name:
+          - ipa-client
+          - oddjob
+          - oddjob-mkhomedir
+          - sssd
+          - bind-utils
+          - chrony
+          - ca-certificates
+        state: present
+
+    - name: Download IdM CA certificate
+      ansible.builtin.get_url:
+        url: "https://{{ idm_server }}/ipa/config/ca.crt"
+        dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
+        owner: root
+        group: root
+        mode: "0644"
+        validate_certs: false
+      register: image_builder_idm_ca
+
+    - name: Update system CA trust
+      ansible.builtin.command:
+        argv:
+          - update-ca-trust
+      when: image_builder_idm_ca.changed
+
+    - name: Set persistent client hostname
+      ansible.builtin.hostname:
+        name: "{{ idm_client_hostname }}"
+
+    - name: Preserve hostname across cloud-init runs
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+        content: |
+          preserve_hostname: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Ensure IdM server resolves during enrollment
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^\S+\s+{{ idm_server | regex_escape }}(\s|$)'
+        line: "{{ idm_server_ip }} {{ idm_server }}"
+        state: present
+      when:
+        - idm_server_ip | default('') | length > 0
+
+    - name: Check existing IPA client configuration
+      ansible.builtin.stat:
+        path: /etc/ipa/default.conf
+      register: image_builder_ipa_configuration
+
+    - name: Enroll Image Builder host into IdM
+      ansible.builtin.command:
+        argv:
+          - ipa-client-install
+          - --unattended
+          - "--principal={{ idm_enroll_user }}"
+          - "--password={{ idm_enroll_password }}"
+          - "--domain={{ idm_domain }}"
+          - "--realm={{ idm_realm }}"
+          - "--server={{ idm_server }}"
+          - "--hostname={{ idm_client_hostname }}"
+          - --mkhomedir
+          - --force-join
+          - --no-ntp
+      when: not image_builder_ipa_configuration.stat.exists
+      register: image_builder_ipa_enrollment
+      no_log: true
+
+    - name: Enable IdM client services
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop:
+        - oddjobd
+        - sssd
+
+    - name: Check IdM host keytab
+      ansible.builtin.stat:
+        path: /etc/krb5.keytab
+      register: image_builder_krb5_keytab
+
+    - name: Check final IPA client configuration
+      ansible.builtin.stat:
+        path: /etc/ipa/default.conf
+      register: image_builder_ipa_configuration_final
+
+    - name: Validate IdM enrollment
+      ansible.builtin.assert:
+        that:
+          - image_builder_ipa_configuration_final.stat.exists
+          - image_builder_krb5_keytab.stat.exists
+        fail_msg: >-
+          IdM enrollment validation failed on {{ inventory_hostname }}.
+
+    - name: Verify IdM user resolution
+      ansible.builtin.command:
+        argv:
+          - getent
+          - passwd
+          - "{{ idm_users[0] }}"
+      register: image_builder_idm_user_lookup
+      changed_when: false
+
+    - name: Display IdM enrollment result
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "IdM domain: {{ idm_domain }}"
+          - "IdM realm: {{ idm_realm }}"
+          - "IdM server: {{ idm_server }}"
+          - "Enrollment validated successfully."

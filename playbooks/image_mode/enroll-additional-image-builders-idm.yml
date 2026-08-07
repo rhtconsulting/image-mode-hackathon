@@ -193,6 +193,7 @@
           - oddjob
           - oddjob-mkhomedir
           - sssd
+          - sssd-tools
           - bind-utils
           - chrony
           - ca-certificates
@@ -299,6 +300,54 @@
       no_log: true
 
     ###########################################################################
+    # Enforce the interactive shell locally through SSSD
+    #
+    # IdM currently returns /bin/sh for these users. override_shell changes the
+    # effective shell on this client only and does not modify IdM user records.
+    ###########################################################################
+
+    - name: Verify Bash is installed
+      ansible.builtin.stat:
+        path: /bin/bash
+      register: image_builder_bash_binary
+
+    - name: Validate Bash is available
+      ansible.builtin.assert:
+        that:
+          - image_builder_bash_binary.stat.exists
+          - image_builder_bash_binary.stat.isreg
+          - image_builder_bash_binary.stat.executable
+        fail_msg: >-
+          /bin/bash is not available on {{ inventory_hostname }}.
+
+    - name: Configure SSSD to override IdM user shells with Bash
+      ansible.builtin.ini_file:
+        path: /etc/sssd/sssd.conf
+        section: "domain/{{ resolved_idm_domain }}"
+        option: override_shell
+        value: /bin/bash
+        owner: root
+        group: root
+        mode: "0600"
+        no_extra_spaces: true
+        backup: true
+      register: image_builder_sssd_shell_override
+
+    - name: Expire cached SSSD identities
+      ansible.builtin.command:
+        argv:
+          - sss_cache
+          - -E
+      changed_when: false
+
+    - name: Restart SSSD after shell override
+      ansible.builtin.service:
+        name: sssd
+        state: restarted
+        enabled: true
+      when: image_builder_sssd_shell_override.changed
+
+    ###########################################################################
     # Start client services
     ###########################################################################
 
@@ -349,7 +398,29 @@
       changed_when: false
       retries: 12
       delay: 10
-      until: image_builder_idm_user_lookup.rc == 0
+      until:
+        - image_builder_idm_user_lookup.rc == 0
+        - >-
+          image_builder_idm_user_lookup.stdout
+          | trim
+          | length > 0
+
+    - name: Validate effective IdM user shell
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              image_builder_idm_user_lookup.stdout
+              | trim
+            ).split(':')[-1]
+            == '/bin/bash'
+        fail_msg: >-
+          SSSD did not apply the client-side Bash shell override for
+          {{ resolved_idm_validation_user }} on {{ inventory_hostname }}.
+
+          Effective passwd entry:
+
+          {{ image_builder_idm_user_lookup.stdout | trim }}
 
     ###########################################################################
     # Publish downstream status

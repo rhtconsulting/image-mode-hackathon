@@ -126,3 +126,19 @@ controller_workflows:
           organization:
             name: "Image Mode Lab"
           type: "job_template"
+
+        related:
+          success_nodes:
+            - identifier: "generate_certs_in_aws_for_builders"
+
+      #########################################################################
+      # Generate Certs in AWS - Download to Builder Hosts 
+      #########################################################################
+
+      - identifier: "generate_certs_in_aws_for_builders"
+
+        unified_job_template:
+          name: "Generate and Stage Image Builder AWS Certificates"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"

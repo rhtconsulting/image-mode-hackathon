@@ -322,7 +322,7 @@ locals {
 
 resource "terraform_data" "preflight_cleanup" {
   input = {
-    cleanup_version  = 5
+    cleanup_version  = 6
     environment_name = var.environment_name
     secret_prefix    = var.secret_prefix
     aws_region       = var.aws_region
@@ -358,6 +358,10 @@ resource "terraform_data" "preflight_cleanup" {
 
     image_builder_profile_name = (
       "${var.environment_name}-image-builder-instance-profile"
+    )
+
+    image_builder_installation_isos_policy_name = (
+      "${var.environment_name}-image-builder-installation-isos-read"
     )
 
     vmimport_role_name = "vmimport"
@@ -406,6 +410,7 @@ resource "terraform_data" "preflight_cleanup" {
 
       IMAGE_BUILDER_ROLE_NAME="${var.environment_name}-image-builder-role"
       IMAGE_BUILDER_PROFILE_NAME="${var.environment_name}-image-builder-instance-profile"
+      IMAGE_BUILDER_INSTALLATION_ISOS_POLICY_NAME="${var.environment_name}-image-builder-installation-isos-read"
 
       VMIMPORT_ROLE_NAME="vmimport"
       VMIMPORT_POLICY_NAME="${var.environment_name}-vmimport"
@@ -674,9 +679,9 @@ resource "terraform_data" "preflight_cleanup" {
       echo "Checking Secrets Manager secrets"
 
       cat > /tmp/image-mode-lab-secret-names.txt <<'EOF_SECRETS'
-%{ for secret_name in local.all_lab_secret_names ~}
+%{for secret_name in local.all_lab_secret_names~}
 ${secret_name}
-%{ endfor ~}
+%{endfor~}
 EOF_SECRETS
 
       while IFS= read -r SECRET_NAME; do
@@ -854,6 +859,11 @@ EOF_SECRETS
         "$IMAGE_BUILDER_PROFILE_NAME" \
         "$IMAGE_BUILDER_ROLE_NAME"
 
+      cleanup_inline_role_policy \
+        'aws_iam_role_policy.image_builder_installation_isos_read' \
+        "$IMAGE_BUILDER_ROLE_NAME" \
+        "$IMAGE_BUILDER_INSTALLATION_ISOS_POLICY_NAME"
+
       if ! state_has 'aws_iam_role.image_builder'; then
         cleanup_all_role_policy_attachments \
           "$IMAGE_BUILDER_ROLE_NAME"
@@ -1002,6 +1012,7 @@ EOF_SECRETS
     EOT
   }
 }
+
 
 
 resource "random_password" "generated" {

@@ -69,7 +69,7 @@ controller_workflows:
   # Provision additional Image Builder teams
   ###########################################################################
 
-  - name: "Provision Additional Image Builder Teams"
+  - name: "Provision Additional Image Builder Host with Associated Teams"
     description: >-
       Create additional RHEL 9 and RHEL 10 Image Builder hosts, add the newly
       provisioned hosts to the staged AAP inventory, enroll them in IdM, and

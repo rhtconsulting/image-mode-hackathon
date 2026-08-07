@@ -1,103 +1,105 @@
----
 ###############################################################################
-# PHASE 03
-#
-# Resolve current RHEL AMIs and build the desired Image Builder inventory.
+# Discover existing Image Builder team allocations
 ###############################################################################
 
-###############################################################################
-# Discover current Red Hat AMIs
-###############################################################################
-
-- name: PHASE 03 | Discover available RHEL AMIs
-  amazon.aws.ec2_ami_info:
+- name: PHASE 03 | Discover existing Image Builder instances
+  amazon.aws.ec2_instance_info:
     region: "{{ image_builder_aws_region }}"
-    owners:
-      - "309956199498"
     filters:
-      architecture: x86_64
-      state: available
-      root-device-type: ebs
-      virtualization-type: hvm
-      name: >-
-        RHEL-{{ item.rhel_major_version }}*_HVM-*-x86_64-*-Hourly2-GP*
-  loop: "{{ image_builder_generations }}"
-  loop_control:
-    label: "{{ item.name }}"
-  register: image_builder_ami_discovery
+      vpc-id: "{{ image_builder_vpc_id }}"
+      "tag:ManagedBy": "{{ image_builder_common_tags.ManagedBy }}"
+      "tag:Component": "{{ image_builder_common_tags.Component }}"
+      instance-state-name:
+        - pending
+        - running
+        - stopping
+        - stopped
+  register: image_builder_existing_instance_info
 
-###############################################################################
-# Validate AMI discovery
-###############################################################################
-
-- name: PHASE 03 | Validate discovered RHEL AMIs
-  ansible.builtin.assert:
-    that:
-      - item.images is defined
-      - item.images | length > 0
-    fail_msg: >-
-      No usable RHEL {{ item.item.rhel_major_version }} x86_64 AMI was found
-      in {{ image_builder_aws_region }}.
-
-      AMI filter:
-      RHEL-{{ item.item.rhel_major_version }}*_HVM-*-x86_64-*-Hourly2-GP*
-  loop: "{{ image_builder_ami_discovery.results }}"
-  loop_control:
-    label: "{{ item.item.name }}"
-
-###############################################################################
-# Build generation-to-AMI mapping
-###############################################################################
-
-- name: PHASE 03 | Initialize generation AMI mapping
+- name: PHASE 03 | Resolve allocated team identifiers
   ansible.builtin.set_fact:
-    image_builder_generation_ami_ids: {}
-
-- name: PHASE 03 | Select newest AMI for each RHEL generation
-  ansible.builtin.set_fact:
-    image_builder_generation_ami_ids: >-
+    image_builder_allocated_team_identifiers: >-
       {{
-        image_builder_generation_ami_ids
-        | combine(
-            {
-              item.item.name:
-                (
-                  item.images
-                  | sort(attribute='creation_date', reverse=true)
-                  | first
-                ).image_id
-            }
-          )
+        image_builder_existing_instance_info.instances
+        | selectattr('tags.ImageBuilderTeam', 'defined')
+        | map(attribute='tags.ImageBuilderTeam')
+        | map('lower')
+        | unique
+        | list
       }}
-  loop: "{{ image_builder_ami_discovery.results }}"
+
+###############################################################################
+# Preserve configured team-letter order
+###############################################################################
+
+- name: PHASE 03 | Initialize available team identifiers
+  ansible.builtin.set_fact:
+    image_builder_available_team_identifiers: []
+
+- name: PHASE 03 | Calculate available team identifiers
+  ansible.builtin.set_fact:
+    image_builder_available_team_identifiers: >-
+      {{
+        image_builder_available_team_identifiers
+        + [item]
+      }}
+  loop: "{{ image_builder_team_identifiers }}"
+  when:
+    - item | lower not in image_builder_allocated_team_identifiers
   loop_control:
-    label: "{{ item.item.name }}"
-
-- name: PHASE 03 | Display selected RHEL AMIs
-  ansible.builtin.debug:
-    var: image_builder_generation_ami_ids
+    label: "{{ item }}"
 
 ###############################################################################
-# Validate team allocation
+# Select letters for this request
 ###############################################################################
 
-- name: PHASE 03 | Validate available team identifiers
+- name: PHASE 03 | Validate available team capacity
   ansible.builtin.assert:
     that:
-      - image_builder_team_identifiers is defined
-      - image_builder_team_identifiers | length > 0
       - generated_number_of_host_var | int > 0
       - >-
-        generated_number_of_host_var | int
-        <= image_builder_team_identifiers | length
+        image_builder_available_team_identifiers | length
+        >= generated_number_of_host_var | int
     fail_msg: >-
-      PHASE 03 cannot allocate team identifiers. The requested host/team count
-      is {{ generated_number_of_host_var | default('UNDEFINED') }}, but only
-      {{ image_builder_team_identifiers | default([]) | length }}
-      team identifiers are configured.
+      Not enough unused Image Builder team identifiers are available.
+
+      Requested teams:
+      {{ generated_number_of_host_var }}
+
+      Already allocated:
+      {{ image_builder_allocated_team_identifiers | join(', ') }}
+
+      Available:
+      {{ image_builder_available_team_identifiers | join(', ') }}
+
+- name: PHASE 03 | Select team identifiers for this request
+  ansible.builtin.set_fact:
+    image_builder_selected_team_identifiers: >-
+      {{
+        image_builder_available_team_identifiers[
+          0:(generated_number_of_host_var | int)
+        ]
+      }}
+
+- name: PHASE 03 | Display team allocation
+  ansible.builtin.debug:
+    msg:
+      - >-
+        Existing team identifiers:
+        {{
+          image_builder_allocated_team_identifiers
+          | default([])
+          | join(', ')
+        }}
+      - >-
+        Selected team identifiers:
+        {{
+          image_builder_selected_team_identifiers
+          | join(', ')
+        }}
 
 ###############################################################################
-# Build desired host inventory
+# Build desired inventory
 ###############################################################################
 
 - name: PHASE 03 | Initialize desired host inventory
@@ -114,12 +116,15 @@
           {
             'name':
               generation.hostname_prefix
+              ~ '-'
               ~ team_id
-              ~ '.'
+              ~ '-1.'
               ~ image_builder_domain_name,
             'short_name':
               generation.hostname_prefix
-              ~ team_id,
+              ~ '-'
+              ~ team_id
+              ~ '-1',
             'generation':
               generation.name,
             'rhel_major_version':
@@ -129,36 +134,26 @@
             'team_id':
               team_id,
             'host_number':
-              host_number | int
+              1
           }
         ]
       }}
   loop: >-
     {{
       image_builder_generations
-      | product(
-          range(
-            1,
-            (generated_number_of_host_var | int) + 1
-          )
-        )
+      | product(image_builder_selected_team_identifiers)
       | list
     }}
   vars:
     generation: "{{ item.0 }}"
-    host_number: "{{ item.1 }}"
-    team_id: >-
-      {{
-        image_builder_team_identifiers[
-          (item.1 | int) - 1
-        ]
-      }}
+    team_id: "{{ item.1 }}"
   loop_control:
     label: >-
       {{
         generation.hostname_prefix
+        ~ '-'
         ~ team_id
-        ~ '.'
+        ~ '-1.'
         ~ image_builder_domain_name
       }}
 
@@ -171,24 +166,22 @@
     that:
       - item.name is defined
       - item.name | length > 0
+      - item.name is match(
+          '^image-builder-rhel[0-9]+-[a-z]+-[0-9]+[.].+$'
+        )
       - item.short_name is defined
-      - item.short_name | length > 0
       - item.generation is defined
       - item.rhel_major_version is defined
       - item.ami_id is defined
       - item.ami_id is match('^ami-[A-Za-z0-9]+$')
       - item.team_id is defined
-      - item.team_id | string | length > 0
+      - item.team_id | length > 0
     fail_msg: >-
       PHASE 03 generated an invalid host definition:
       {{ item }}
   loop: "{{ image_builder_desired_hosts }}"
   loop_control:
     label: "{{ item.name | default('UNKNOWN') }}"
-
-###############################################################################
-# Display desired inventory
-###############################################################################
 
 - name: PHASE 03 | Display desired Image Builder hosts
   ansible.builtin.debug:

@@ -1603,7 +1603,7 @@
             controller_validate_certs: false
           tags:
             - credentials
-          no_log: false
+          no_log: true
 
         #######################################################################
         # 4. Inventories

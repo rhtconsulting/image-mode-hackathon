@@ -2,16 +2,96 @@
 ###############################################################################
 # PHASE 03
 #
-# Resolve current RHEL AMIs, discover existing team allocations, select the
-# next available team identifiers, and build the desired host inventory.
+# Resolve current RHEL AMIs, discover every existing Image Builder team
+# allocation, select the next available team identifiers, and build the desired
+# host inventory.
 #
 # Hostname convention:
 #
 #   image-builder-rhel9-a-1.lab.example.com
 #   image-builder-rhel10-a-1.lab.example.com
 #
-# Each team receives one host for every configured RHEL generation.
+# A team identifier is considered allocated when any non-terminated Image
+# Builder instance in the lab VPC has either:
+#
+#   ImageBuilderTeam=<letter>
+#
+# or a correctly formatted hostname containing that letter.
+#
+# Each selected team receives one host for every configured RHEL generation.
 ###############################################################################
+
+###############################################################################
+# Resolve requested team count
+#
+# The survey supplies image_builder_additional_team_count. The older
+# generated_number_of_host_var remains populated for compatibility with later
+# phases.
+###############################################################################
+
+- name: PHASE 03 | Resolve requested additional team count
+  ansible.builtin.set_fact:
+    image_builder_requested_team_count: >-
+      {{
+        image_builder_additional_team_count
+        | default(
+            generated_number_of_host_var | default(0),
+            true
+          )
+        | int
+      }}
+
+- name: PHASE 03 | Preserve compatible requested host variable
+  ansible.builtin.set_fact:
+    generated_number_of_host_var: >-
+      {{ image_builder_requested_team_count | int }}
+
+###############################################################################
+# Validate generation and team configuration
+###############################################################################
+
+- name: PHASE 03 | Validate inventory-generation inputs
+  ansible.builtin.assert:
+    that:
+      - image_builder_generations is defined
+      - image_builder_generations | length > 0
+
+      - image_builder_team_identifiers is defined
+      - image_builder_team_identifiers | length > 0
+
+      - image_builder_requested_team_count | int > 0
+      - >-
+        image_builder_requested_team_count | int
+        <= image_builder_team_identifiers | length
+
+      - image_builder_vpc_id is defined
+      - image_builder_vpc_id | length > 0
+
+      - image_builder_domain_name is defined
+      - image_builder_domain_name | length > 0
+    fail_msg: >-
+      PHASE 03 cannot build the desired Image Builder inventory.
+
+      Requested teams:
+      {{ image_builder_requested_team_count | default('UNDEFINED') }}
+
+      Configured team identifiers:
+      {{ image_builder_team_identifiers | default([]) | join(', ') }}
+
+      VPC:
+      {{ image_builder_vpc_id | default('UNDEFINED') }}
+
+      Domain:
+      {{ image_builder_domain_name | default('UNDEFINED') }}
+
+- name: PHASE 03 | Normalize configured team identifiers
+  ansible.builtin.set_fact:
+    image_builder_configured_team_identifiers_normalized: >-
+      {{
+        image_builder_team_identifiers
+        | map('lower')
+        | list
+      }}
 
 ###############################################################################
 # Discover current Red Hat AMIs
@@ -101,50 +181,18 @@
     var: image_builder_generation_ami_ids
 
 ###############################################################################
-# Validate team identifier configuration
+# Discover all existing Image Builder instances
+#
+# Do not restrict this search to the newest hostname format. Legacy hosts may
+# still carry a valid ImageBuilderTeam tag and must reserve their team letter.
 ###############################################################################
 
-- name: PHASE 03 | Validate configured team identifiers
-  ansible.builtin.assert:
-    that:
-      - image_builder_team_identifiers is defined
-      - image_builder_team_identifiers | length > 0
-      - generated_number_of_host_var is defined
-      - generated_number_of_host_var | int > 0
-      - >-
-        generated_number_of_host_var | int
-        <= image_builder_team_identifiers | length
-    fail_msg: >-
-      PHASE 03 cannot allocate team identifiers.
-
-      Requested additional teams:
-      {{ generated_number_of_host_var | default('UNDEFINED') }}
-
-      Configured identifiers:
-      {{ image_builder_team_identifiers | default([]) | join(', ') }}
-
-###############################################################################
-# Discover existing correctly named Image Builder hosts
-#
-# This matches:
-#
-#   image-builder-rhel9-a-1.lab.example.com
-#   image-builder-rhel10-a-1.lab.example.com
-#
-# It deliberately does not match legacy names such as:
-#
-#   image-builder-rhel9a.lab.example.com
-###############################################################################
-
-- name: PHASE 03 | Discover existing Image Builder instances
+- name: PHASE 03 | Discover all existing Image Builder instances
   amazon.aws.ec2_instance_info:
     region: "{{ image_builder_aws_region }}"
     filters:
       vpc-id: "{{ image_builder_vpc_id }}"
-      "tag:Name": >-
-        image-builder-rhel*-*-1.{{ image_builder_domain_name }}
-      "tag:ManagedBy": "{{ image_builder_common_tags.ManagedBy }}"
-      "tag:Component": "{{ image_builder_common_tags.Component }}"
+      "tag:Name": "image-builder*"
       instance-state-name:
         - pending
         - running
@@ -153,40 +201,114 @@
   register: image_builder_existing_instance_info
 
 ###############################################################################
-# Resolve already allocated team identifiers
+# Build existing-instance discovery records
 ###############################################################################
+
+- name: PHASE 03 | Initialize existing instance records
+  ansible.builtin.set_fact:
+    image_builder_existing_instance_records: []
+
+- name: PHASE 03 | Build existing instance records
+  ansible.builtin.set_fact:
+    image_builder_existing_instance_records: >-
+      {{
+        image_builder_existing_instance_records
+        +
+        [
+          {
+            'name': item.tags.Name,
+            'instance_id': item.instance_id,
+            'state': item.state.name,
+            'private_ip': (
+              item.private_ip_address
+              | default('', true)
+            ),
+            'tagged_team_id': (
+              item.tags.ImageBuilderTeam
+              | default('', true)
+              | lower
+            ),
+            'resolved_team_id': candidate_team_id,
+            'generation': (
+              item.tags.ImageBuilderGeneration
+              | default('', true)
+            ),
+            'rhel_major_version': (
+              item.tags.RHELVersion
+              | default('', true)
+            )
+          }
+        ]
+      }}
+  vars:
+    candidate_team_id: >-
+      {{
+        (
+          item.tags.ImageBuilderTeam
+          | default('', true)
+          | lower
+        )
+        if
+        (
+          item.tags.ImageBuilderTeam
+          | default('', true)
+          | length
+        ) > 0
+        else
+        (
+          item.tags.Name
+          | regex_replace(
+              '^image-builder-rhel[0-9]+-([a-z]+)-[0-9]+[.].*$',
+              '\1'
+            )
+          | lower
+        )
+      }}
+  loop: "{{ image_builder_existing_instance_info.instances }}"
+  when:
+    - item.tags is defined
+    - item.tags.Name is defined
+    - item.tags.Name | length > 0
+  loop_control:
+    label: "{{ item.tags.Name | default(item.instance_id) }}"
+
+###############################################################################
+# Resolve allocated team identifiers
+#
+# Prefer ImageBuilderTeam. If that tag is absent, the correctly formatted
+# hostname can provide the team identifier. Values that do not match a
+# configured identifier are ignored.
+###############################################################################
+
+- name: PHASE 03 | Initialize allocated team identifiers
+  ansible.builtin.set_fact:
+    image_builder_allocated_team_identifiers: []
 
 - name: PHASE 03 | Resolve allocated team identifiers
   ansible.builtin.set_fact:
     image_builder_allocated_team_identifiers: >-
       {{
-        image_builder_existing_instance_info.instances
-        | selectattr('tags.ImageBuilderTeam', 'defined')
-        | map(attribute='tags.ImageBuilderTeam')
-        | map('lower')
-        | unique
-        | list
+        image_builder_allocated_team_identifiers
+        + [item.resolved_team_id]
       }}
-
-- name: PHASE 03 | Display existing team allocations
-  ansible.builtin.debug:
-    msg:
-      - >-
-        Existing correctly named Image Builder instances:
-        {{ image_builder_existing_instance_info.instances | length }}
-      - >-
-        Allocated team identifiers:
-        {{
-          image_builder_allocated_team_identifiers
-          | default([])
-          | join(', ')
-        }}
+  loop: "{{ image_builder_existing_instance_records }}"
+  when:
+    - item.resolved_team_id | length > 0
+    - >-
+      item.resolved_team_id
+      in image_builder_configured_team_identifiers_normalized
+    - >-
+      item.resolved_team_id
+      not in image_builder_allocated_team_identifiers
+  loop_control:
+    label: >-
+      {{ item.name }} => {{ item.resolved_team_id | default('UNRESOLVED') }}
 
 ###############################################################################
 # Calculate unused team identifiers
 #
-# Build the list through a loop instead of using difference so the configured
-# a, b, c ordering is preserved.
+# Build this list through a loop so the configured a, b, c ordering is
+# preserved.
 ###############################################################################
 
 - name: PHASE 03 | Initialize available team identifiers
@@ -207,6 +329,39 @@
     label: "{{ item }}"
 
 ###############################################################################
+# Display detection results
+###############################################################################
+
+- name: PHASE 03 | Display existing team allocation detection
+  ansible.builtin.debug:
+    msg:
+      - >-
+        Existing Image Builder instances:
+        {{ image_builder_existing_instance_records | length }}
+      - >-
+        Existing hostnames:
+        {{
+          image_builder_existing_instance_records
+          | map(attribute='name')
+          | list
+          | join(', ')
+        }}
+      - >-
+        Allocated team identifiers:
+        {{
+          image_builder_allocated_team_identifiers
+          | default([])
+          | join(', ')
+        }}
+      - >-
+        Available team identifiers:
+        {{
+          image_builder_available_team_identifiers
+          | default([])
+          | join(', ')
+        }}
+
+###############################################################################
 # Validate remaining team capacity
 ###############################################################################
 
@@ -215,12 +370,12 @@
     that:
       - >-
         image_builder_available_team_identifiers | length
-        >= generated_number_of_host_var | int
+        >= image_builder_requested_team_count | int
     fail_msg: >-
       There are not enough unused Image Builder team identifiers.
 
       Requested additional teams:
-      {{ generated_number_of_host_var }}
+      {{ image_builder_requested_team_count }}
 
       Already allocated:
       {{
@@ -240,28 +395,31 @@
 # Select team identifiers for this request
 ###############################################################################
 
-- name: PHASE 03 | Select team identifiers for this request
+- name: PHASE 03 | Select next unused team identifiers
   ansible.builtin.set_fact:
     image_builder_selected_team_identifiers: >-
       {{
         image_builder_available_team_identifiers[
-          0:(generated_number_of_host_var | int)
+          0:(image_builder_requested_team_count | int)
         ]
       }}
 
-- name: PHASE 03 | Display selected team identifiers
-  ansible.builtin.debug:
-    msg:
+- name: PHASE 03 | Validate selected identifiers are unused
+  ansible.builtin.assert:
+    that:
+      - image_builder_selected_team_identifiers | length > 0
       - >-
-        Selected team identifiers:
-        {{ image_builder_selected_team_identifiers | join(', ') }}
-      - >-
-        Instances to generate:
-        {{
-          (image_builder_selected_team_identifiers | length)
-          *
-          (image_builder_generations | length)
-        }}
+        image_builder_selected_team_identifiers
+        | intersect(image_builder_allocated_team_identifiers)
+        | length == 0
+    fail_msg: >-
+      PHASE 03 selected an already allocated team identifier.
+
+      Allocated:
+      {{ image_builder_allocated_team_identifiers }}
+
+      Selected:
+      {{ image_builder_selected_team_identifiers }}
 
 ###############################################################################
 # Build desired host inventory
@@ -293,6 +451,14 @@
               ~ team_id
               ~ '-'
               ~ host_number,
+            'fqdn':
+              generation.hostname_prefix
+              ~ '-'
+              ~ team_id
+              ~ '-'
+              ~ host_number
+              ~ '.'
+              ~ image_builder_domain_name,
             'generation':
               generation.name,
             'rhel_major_version':
@@ -302,7 +468,19 @@
             'team_id':
               team_id,
             'host_number':
-              host_number | int
+              host_number | int,
+            'aws_region':
+              image_builder_aws_region,
+            'domain_name':
+              image_builder_domain_name,
+            'public_tls_fqdn':
+              generation.hostname_prefix
+              ~ '-'
+              ~ team_id
+              ~ '-'
+              ~ host_number
+              ~ '.'
+              ~ image_builder_domain_name
           }
         ]
       }}
@@ -329,6 +507,42 @@
       }}
 
 ###############################################################################
+# Build downstream workflow context
+#
+# Phase 08 enriches these desired records with EC2 instance IDs and addresses,
+# then publishes staged_image_builder_hosts through set_stats.
+###############################################################################
+
+- name: PHASE 03 | Build desired hostname list
+  ansible.builtin.set_fact:
+    image_builder_desired_hostnames: >-
+      {{
+        image_builder_desired_hosts
+        | map(attribute='name')
+        | list
+      }}
+
+    image_builder_desired_total_count: >-
+      {{ image_builder_desired_hosts | length }}
+
+- name: PHASE 03 | Build workflow allocation context
+  ansible.builtin.set_fact:
+    image_builder_phase03_workflow_context:
+      requested_team_count: "{{ image_builder_requested_team_count | int }}"
+      allocated_team_identifiers: >-
+        {{ image_builder_allocated_team_identifiers }}
+      available_team_identifiers: >-
+        {{ image_builder_available_team_identifiers }}
+      selected_team_identifiers: >-
+        {{ image_builder_selected_team_identifiers }}
+      desired_hostnames: "{{ image_builder_desired_hostnames }}"
+      desired_hosts: "{{ image_builder_desired_hosts }}"
+      desired_instance_count: "{{ image_builder_desired_total_count | int }}"
+      aws_region: "{{ image_builder_aws_region }}"
+      vpc_id: "{{ image_builder_vpc_id }}"
+      domain_name: "{{ image_builder_domain_name }}"
+
+###############################################################################
 # Validate generated inventory
 ###############################################################################
 
@@ -347,6 +561,9 @@
           '^image-builder-rhel[0-9]+-[a-z]+-[0-9]+$'
         )
 
+      - item.fqdn == item.name
+      - item.public_tls_fqdn == item.name
+
       - item.generation is defined
       - item.generation | length > 0
 
@@ -358,19 +575,70 @@
 
       - item.team_id is defined
       - item.team_id | string | length > 0
+      - item.team_id in image_builder_selected_team_identifiers
+      - item.team_id not in image_builder_allocated_team_identifiers
 
       - item.host_number is defined
       - item.host_number | int > 0
+
+      - item.aws_region == image_builder_aws_region
+      - item.domain_name == image_builder_domain_name
     fail_msg: >-
-      PHASE 03 generated an invalid host definition:
+      PHASE 03 generated an invalid or already allocated host definition:
       {{ item }}
   loop: "{{ image_builder_desired_hosts }}"
   loop_control:
     label: "{{ item.name | default('UNKNOWN') }}"
 
+- name: PHASE 03 | Validate desired host count
+  ansible.builtin.assert:
+    that:
+      - >-
+        image_builder_desired_hosts | length
+        ==
+        (
+          (image_builder_requested_team_count | int)
+          *
+          (image_builder_generations | length)
+        )
+      - >-
+        image_builder_desired_hostnames | unique | length
+        == image_builder_desired_hostnames | length
+    fail_msg: >-
+      PHASE 03 generated an incorrect number of hosts or duplicate hostnames.
+
+      Expected:
+      {{
+        (image_builder_requested_team_count | int)
+        *
+        (image_builder_generations | length)
+      }}
+
+      Generated:
+      {{ image_builder_desired_hosts | length }}
+
+      Hostnames:
+      {{ image_builder_desired_hostnames }}
+
 ###############################################################################
-# Display desired inventory
+# Display desired inventory and downstream context
 ###############################################################################
+
+- name: PHASE 03 | Display selected allocation
+  ansible.builtin.debug:
+    msg:
+      - >-
+        Requested teams:
+        {{ image_builder_requested_team_count }}
+      - >-
+        Selected team identifiers:
+        {{ image_builder_selected_team_identifiers | join(', ') }}
+      - >-
+        Desired instances:
+        {{ image_builder_desired_total_count }}
+      - >-
+        Desired hostnames:
+        {{ image_builder_desired_hostnames | join(', ') }}
 
 - name: PHASE 03 | Display desired Image Builder hosts
   ansible.builtin.debug:

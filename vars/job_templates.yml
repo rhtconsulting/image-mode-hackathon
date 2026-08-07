@@ -169,6 +169,42 @@ controller_templates:
     survey_spec: "{{ create_additional_image_builder_hosts_survey }}"
 
 
+  - name: "Enroll Image Builder Hosts in IdM"
+    description: >-
+      Enroll newly provisioned RHEL 9 and RHEL 10 Image Builder hosts in the
+      Red Hat IdM domain. Configure persistent hostnames, install the IdM CA,
+      enroll the hosts using the IdM administrator account, enable SSSD and
+      oddjobd, and verify domain-user resolution.
+
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Builders"
+    playbook: "playbooks/image_mode/enroll-image-builder-hosts-idm.yml"
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Image Mode Machine Credential"
+      - "AWS IAM Service Account Credential"
+      - "Image Mode IdM Administrator Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 10
+    timeout: 3600
+    allow_simultaneous: false
+
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
+    ask_limit_on_launch: true
+    ask_variables_on_launch: false
+
+    survey_enabled: false
+
+    extra_vars:
+      idm_enroll_user: "admin"
+
+
+
   # - name: "Bootstrap Satellite Content"
   #   description: >-
   #     Bootstrap connected RHEL content, content views, lifecycle environments,

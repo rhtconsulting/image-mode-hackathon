@@ -39,7 +39,7 @@
         controller_username: "{{ controller_username }}"
         controller_password: "{{ controller_password }}"
         validate_certs: false
-      no_log: true
+      no_log: false
 
     - name: Add new hosts to staged inventory
       ansible.controller.host:

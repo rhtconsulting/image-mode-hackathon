@@ -3,12 +3,12 @@
 # PHASE 03
 #
 # Build the desired Image Builder host inventory.
+# AMI IDs are attached later, after dynamic AMI discovery.
 ###############################################################################
 
 - name: PHASE 03 | Initialize desired host inventory
   ansible.builtin.set_fact:
     image_builder_desired_hosts: []
-
 
 - name: PHASE 03 | Generate desired host definitions
   ansible.builtin.set_fact:
@@ -30,8 +30,6 @@
               generation.name,
             'rhel_major_version':
               generation.rhel_major_version,
-            'ami_id':
-              generation.ami_id,
             'host_number':
               host_number | int
           }
@@ -60,6 +58,20 @@
         ~ image_builder_domain_name
       }}
 
+- name: PHASE 03 | Validate desired host inventory
+  ansible.builtin.assert:
+    that:
+      - image_builder_desired_hosts | length > 0
+      - item.name | length > 0
+      - item.short_name | length > 0
+      - item.generation | length > 0
+      - item.rhel_major_version | string | length > 0
+    fail_msg: >-
+      An invalid desired Image Builder host definition was generated:
+      {{ item }}
+  loop: "{{ image_builder_desired_hosts }}"
+  loop_control:
+    label: "{{ item.name | default('UNKNOWN') }}"
 
 - name: PHASE 03 | Display desired Image Builder hosts
   ansible.builtin.debug:

@@ -1,0 +1,86 @@
+---
+- name: Populate staged Image Builder inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    aap_organization_name: "Image Mode Lab"
+    staged_inventory_name: "Staged Image Builders"
+
+  pre_tasks:
+    - name: Validate staged host workflow artifact
+      ansible.builtin.assert:
+        that:
+          - staged_image_builder_hosts is defined
+          - staged_image_builder_hosts | length > 0
+          - item.name | default('') | length > 0
+          - item.ansible_host | default('') | length > 0
+          - item.instance_id | default('') | length > 0
+          - item.generation | default('') | length > 0
+          - item.team_id | default('') | length > 0
+        fail_msg: >-
+          Invalid staged Image Builder definition:
+          {{ item }}
+      loop: "{{ staged_image_builder_hosts | default([]) }}"
+      loop_control:
+        label: "{{ item.name | default('UNKNOWN') }}"
+
+  tasks:
+    - name: Ensure staged inventory exists
+      ansible.controller.inventory:
+        name: "{{ staged_inventory_name }}"
+        description: >-
+          Newly provisioned Image Builder hosts awaiting configuration.
+        organization: "{{ aap_organization_name }}"
+        state: present
+        controller_host: "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+      no_log: true
+
+    - name: Add new hosts to staged inventory
+      ansible.controller.host:
+        name: "{{ item.name }}"
+        description: >-
+          Staged {{ item.generation }} Image Builder team {{ item.team_id }}
+        inventory: "{{ staged_inventory_name }}"
+        enabled: true
+        state: present
+        variables:
+          ansible_host: "{{ item.ansible_host }}"
+          ansible_user: "{{ image_builder_ansible_user | default('ec2-user') }}"
+
+          fqdn: "{{ item.fqdn }}"
+          private_ip: "{{ item.private_ip }}"
+          public_ip: "{{ item.public_ip }}"
+
+          aws_instance_id: "{{ item.instance_id }}"
+          image_builder_generation: "{{ item.generation }}"
+          image_builder_rhel_major_version: >-
+            {{ item.rhel_major_version | string }}
+          image_builder_team_id: "{{ item.team_id }}"
+
+          public_tls_fqdn: "{{ item.fqdn }}"
+          acm_certificate_arn: ""
+          staging_status: "provisioned"
+      loop: "{{ staged_image_builder_hosts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      no_log: true
+
+    - name: Display staged inventory population
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Added {{ staged_image_builder_hosts | length }} hosts to
+            {{ staged_inventory_name }}.
+          - >-
+            Hosts:
+            {{
+              staged_image_builder_hosts
+              | map(attribute='name')
+              | join(', ')
+            }}

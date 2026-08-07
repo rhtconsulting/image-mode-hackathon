@@ -169,22 +169,21 @@ controller_templates:
     survey_spec: "{{ create_additional_image_builder_hosts_survey }}"
 
 
-  - name: "Enroll Image Builder Hosts in IdM"
+  - name: "Enroll Additional Image Builder Hosts in IdM"
     description: >-
-      Enroll newly provisioned RHEL 9 and RHEL 10 Image Builder hosts in the
-      Red Hat IdM domain. Configure persistent hostnames, install the IdM CA,
-      enroll the hosts using the IdM administrator account, enable SSSD and
-      oddjobd, and verify domain-user resolution.
+      Enroll post-Terraform Image Builder EC2 instances into the existing
+      Red Hat IdM domain using the IdM administrator credential injected by
+      AAP.
 
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
     inventory: "Image Builders"
-    playbook: "playbooks/image_mode/enroll-image-builder-hosts-idm.yml"
+    playbook: >-
+      playbooks/image_mode/enroll-additional-image-builders-idm.yml
     execution_environment: "Image Mode EE"
 
     credentials:
       - "Image Mode Machine Credential"
-      - "AWS IAM Service Account Credential"
       - "Image Mode IdM Administrator Credential"
 
     job_type: "run"
@@ -199,9 +198,6 @@ controller_templates:
     ask_variables_on_launch: false
 
     survey_enabled: false
-
-    extra_vars:
-      idm_enroll_user: "admin"
 
 
 

@@ -2399,6 +2399,7 @@ resource "aws_iam_policy" "bootc_ami_import_caller" {
 
 resource "aws_iam_role" "image_builder" {
   name = "${var.environment_name}-image-builder-role"
+
   depends_on = [
     terraform_data.preflight_cleanup
   ]
@@ -2428,6 +2429,32 @@ resource "aws_iam_role" "image_builder" {
   }
 }
 
+############################################################
+# Image Builder Installation ISO Access
+############################################################
+
+resource "aws_iam_role_policy" "image_builder_installation_isos_read" {
+  name = "${var.environment_name}-image-builder-installation-isos-read"
+  role = aws_iam_role.image_builder.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Sid    = "ReadInstallationISOs"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetObject"
+        ]
+
+        Resource = "arn:aws:s3:::aap-containerized-installers/*.iso"
+      }
+    ]
+  })
+}
+
 resource "aws_iam_role_policy_attachment" "image_builder_artifacts" {
   role       = aws_iam_role.image_builder.name
   policy_arn = aws_iam_policy.image_mode_artifact_bucket_rw.arn
@@ -2441,8 +2468,13 @@ resource "aws_iam_role_policy_attachment" "image_builder_ami_import" {
 resource "aws_iam_instance_profile" "image_builder" {
   name = "${var.environment_name}-image-builder-instance-profile"
   role = aws_iam_role.image_builder.name
-}
 
+  depends_on = [
+    aws_iam_role_policy.image_builder_installation_isos_read,
+    aws_iam_role_policy_attachment.image_builder_artifacts,
+    aws_iam_role_policy_attachment.image_builder_ami_import
+  ]
+}
 
 ############################################################
 # Image Mode Automation IAM User

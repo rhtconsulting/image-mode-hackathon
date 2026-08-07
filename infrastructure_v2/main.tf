@@ -321,8 +321,12 @@ locals {
 ############################################################
 
 resource "terraform_data" "preflight_cleanup" {
+  triggers_replace = [
+    7
+  ]
+
   input = {
-    cleanup_version  = 6
+    cleanup_version  = 7
     environment_name = var.environment_name
     secret_prefix    = var.secret_prefix
     aws_region       = var.aws_region
@@ -378,6 +382,10 @@ resource "terraform_data" "preflight_cleanup" {
       "${var.environment_name}-ec2-discovery"
     )
 
+    image_builder_ec2_provisioning_policy_name = (
+      "${var.environment_name}-image-builder-ec2-provisioning"
+    )
+
     secrets = local.all_lab_secret_names
   }
 
@@ -423,6 +431,7 @@ resource "terraform_data" "preflight_cleanup" {
       IMAGE_MODE_ARTIFACT_POLICY_NAME="${var.environment_name}-image-mode-artifact-bucket-rw"
       BOOTC_AMI_IMPORT_POLICY_NAME="${var.environment_name}-bootc-ami-import-caller"
       EC2_DISCOVERY_POLICY_NAME="${var.environment_name}-ec2-discovery"
+      IMAGE_BUILDER_EC2_PROVISIONING_POLICY_NAME="${var.environment_name}-image-builder-ec2-provisioning"
 
       echo "Preflight cleanup: duplicate-prone unmanaged lab resources"
 
@@ -1008,10 +1017,15 @@ EOF_SECRETS
         'aws_iam_policy.ec2_discovery' \
         "$EC2_DISCOVERY_POLICY_NAME"
 
+      cleanup_managed_policy \
+        'aws_iam_policy.image_builder_ec2_provisioning' \
+        "$IMAGE_BUILDER_EC2_PROVISIONING_POLICY_NAME"
+
       echo "Preflight cleanup complete"
     EOT
   }
 }
+
 
 
 

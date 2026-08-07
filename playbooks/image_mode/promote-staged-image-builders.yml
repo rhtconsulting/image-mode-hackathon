@@ -1,0 +1,74 @@
+---
+- name: Promote staged Image Builder hosts
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    staged_inventory_name: "Staged Image Builders"
+    production_inventory_name: "Image Builders"
+
+  pre_tasks:
+    - name: Validate host promotion information
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname | length > 0
+          - ansible_host | default('') | length > 0
+          - fqdn | default('') | length > 0
+          - private_ip | default('') | length > 0
+          - aws_instance_id | default('') | length > 0
+          - image_builder_generation | default('') | length > 0
+          - image_builder_team_id | default('') | length > 0
+          - acm_certificate_arn | default('') | length > 0
+        fail_msg: >-
+          Host {{ inventory_hostname }} is not ready for promotion.
+
+  tasks:
+    - name: Add host to production Image Builders inventory
+      ansible.controller.host:
+        name: "{{ inventory_hostname }}"
+        description: >-
+          Production {{ image_builder_generation }} Image Builder team
+          {{ image_builder_team_id }}
+        inventory: "{{ production_inventory_name }}"
+        enabled: true
+        state: present
+        variables:
+          ansible_host: "{{ ansible_host }}"
+          ansible_user: "{{ ansible_user | default('ec2-user') }}"
+
+          fqdn: "{{ fqdn }}"
+          private_ip: "{{ private_ip }}"
+          public_ip: "{{ public_ip | default('', true) }}"
+
+          aws_instance_id: "{{ aws_instance_id }}"
+          image_builder_generation: "{{ image_builder_generation }}"
+          image_builder_rhel_major_version: >-
+            {{ image_builder_rhel_major_version | string }}
+          image_builder_team_id: "{{ image_builder_team_id }}"
+
+          public_tls_fqdn: "{{ public_tls_fqdn }}"
+          acm_certificate_arn: "{{ acm_certificate_arn }}"
+          staging_status: "promoted"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Remove promoted host from staged inventory
+      ansible.controller.host:
+        name: "{{ inventory_hostname }}"
+        inventory: "{{ staged_inventory_name }}"
+        state: absent
+        controller_host: "{{ controller_host }}"
+        controller_username: "{{ controller_username }}"
+        controller_password: "{{ controller_password }}"
+        validate_certs: false
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Display host promotion
+      ansible.builtin.debug:
+        msg: >-
+          Promoted {{ inventory_hostname }} from {{ staged_inventory_name }}
+          to {{ production_inventory_name }}.

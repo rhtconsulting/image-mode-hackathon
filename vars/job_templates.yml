@@ -157,7 +157,7 @@ controller_templates:
     execution_environment: "Image Mode EE"
     credentials:
       - "AWS IAM Service Account Credential"
-      - "Image Builders"
+      - "Image Mode AMI SSH Public Key Credential"
     job_type: "run"
     verbosity: 1
     forks: 1

@@ -2,7 +2,11 @@
 ###############################################################################
 # PHASE 05
 #
-# Reconcile desired Image Builder EC2 instances.
+# Create newly allocated Image Builder EC2 instances.
+#
+# Existing instances are never reconciled or modified. Phase 03 selects unused
+# team identifiers, and this phase performs an exact-name collision check before
+# launching each new instance.
 #
 # Required facts resolved before this phase:
 #
@@ -138,9 +142,15 @@
     that:
       - item.name is defined
       - item.name | length > 0
+      - item.name is match(
+          '^image-builder-rhel[0-9]+-[a-z]+-[0-9]+[.].+$'
+        )
 
       - item.short_name is defined
       - item.short_name | length > 0
+      - item.short_name is match(
+          '^image-builder-rhel[0-9]+-[a-z]+-[0-9]+$'
+        )
 
       - item.generation is defined
       - item.generation | length > 0
@@ -154,16 +164,85 @@
 
       - item.team_id is defined
       - item.team_id | string | length > 0
+
+      - item.host_number is defined
+      - item.host_number | int > 0
     fail_msg: >-
       Desired host {{ item.name | default('UNKNOWN') }} is missing one or more
       required values. Each host must contain name, short_name, generation,
-      rhel_major_version, ami_id, and team_id.
+      rhel_major_version, ami_id, team_id, and host_number.
 
       Host definition:
       {{ item }}
   loop: "{{ image_builder_desired_hosts }}"
   loop_control:
     label: "{{ item.name | default('UNKNOWN') }}"
+
+###############################################################################
+# Validate desired hostnames are unique
+###############################################################################
+
+- name: PHASE 05 | Resolve desired hostname list
+  ansible.builtin.set_fact:
+    image_builder_phase05_desired_hostnames: >-
+      {{
+        image_builder_desired_hosts
+        | map(attribute='name')
+        | list
+      }}
+
+- name: PHASE 05 | Validate desired hostnames are unique
+  ansible.builtin.assert:
+    that:
+      - >-
+        image_builder_phase05_desired_hostnames | unique | length
+        == image_builder_phase05_desired_hostnames | length
+    fail_msg: >-
+      PHASE 05 received duplicate desired hostnames:
+      {{ image_builder_phase05_desired_hostnames }}
+
+###############################################################################
+# Refuse to modify existing same-name instances
+###############################################################################
+
+- name: PHASE 05 | Check for desired hostname collisions
+  amazon.aws.ec2_instance_info:
+    region: "{{ image_builder_aws_region }}"
+    filters:
+      vpc-id: "{{ image_builder_vpc_id }}"
+      "tag:Name": "{{ item.name }}"
+      instance-state-name:
+        - pending
+        - running
+        - stopping
+        - stopped
+  loop: "{{ image_builder_desired_hosts }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: image_builder_name_collision_checks
+
+- name: PHASE 05 | Refuse to modify existing EC2 instances
+  ansible.builtin.assert:
+    that:
+      - item.instances is defined
+      - item.instances | length == 0
+    fail_msg: >-
+      PHASE 05 refused to create or modify {{ item.item.name }} because an
+      existing non-terminated EC2 instance already uses that name.
+
+      Existing instance IDs:
+      {{
+        item.instances
+        | default([])
+        | map(attribute='instance_id')
+        | list
+      }}
+
+      Phase 03 should have allocated the next available team identifier.
+      Review the Name and ImageBuilderTeam tags on existing instances.
+  loop: "{{ image_builder_name_collision_checks.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
 
 ###############################################################################
 # Display provisioning plan
@@ -178,13 +257,14 @@
       - "Subnet: {{ image_builder_subnet_id }}"
       - "Security groups: {{ image_builder_security_group_ids }}"
       - "Key pair: {{ image_builder_key_name }}"
+      - "Operation: create-only; existing instances are not modified."
       - "New EC2 instances: {{ image_builder_desired_hosts | length }}"
 
 ###############################################################################
 # Provision desired Image Builder instances
 ###############################################################################
 
-- name: PHASE 05 | Ensure Image Builder EC2 instances exist
+- name: PHASE 05 | Launch new Image Builder EC2 instances
   amazon.aws.ec2_instance:
     region: "{{ image_builder_aws_region }}"
     name: "{{ item.name }}"
@@ -230,14 +310,11 @@
       RHELVersion: "{{ item.rhel_major_version | string }}"
       ImageBuilderGeneration: "{{ item.generation }}"
       ImageBuilderTeam: "{{ item.team_id | string }}"
+      ImageBuilderHostNumber: "{{ item.host_number | string }}"
       ImageBuilderDomain: "{{ image_builder_domain_name }}"
+      ImageBuilderLifecycle: "staged"
 
-    filters:
-      "tag:Name": "{{ item.name }}"
-      "tag:ManagedBy": "{{ image_builder_common_tags.ManagedBy }}"
-      "tag:Component": "{{ image_builder_common_tags.Component }}"
-
-    exact_count: 1
+    count: 1
     state: running
     wait: true
 
@@ -254,7 +331,7 @@
   ansible.builtin.debug:
     msg:
       - >-
-        EC2 provisioning reconciliation completed for
+        Create-only EC2 provisioning completed for
         {{ image_builder_desired_hosts | length }}
         desired Image Builder instances.
       - "Lab domain: {{ image_builder_domain_name }}"

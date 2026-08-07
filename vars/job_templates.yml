@@ -302,6 +302,44 @@ controller_templates:
     survey_enabled: false
 
 
+  ###############################################################################
+  # Generate and stage AWS certificates
+  ###############################################################################
+
+  - name: "Generate and Stage Image Builder AWS Certificates"
+    description: >-
+      Request or reuse exportable AWS Certificate Manager certificates for
+      staged Image Builder hosts, create the required Route 53 DNS validation
+      records, wait for certificate issuance, export the certificate material,
+      install it on each host, and persist the certificate ARN in the staged
+      AAP inventory.
+
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Staged Image Builders"
+    playbook: >-
+      playbooks/image_mode/generate-and-stage-image-builder-aws-certificates.yml
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Image Mode Machine Credential"
+      - "AWS IAM Service Account Credential"
+      - "Red Hat Ansible Controller Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 2
+    timeout: 1800
+    allow_simultaneous: false
+
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+
+    survey_enabled: false
+    state: present
+
 
   # - name: "Bootstrap Satellite Content"
   #   description: >-

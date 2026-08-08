@@ -2514,7 +2514,7 @@ resource "aws_iam_instance_profile" "image_builder" {
 # Image Builder EC2 Provisioning Policy
 #
 # Allows the rhel-iam automation user to create and reconcile
-# Image Builder EC2 instances.
+# Image Builder EC2 instances and attach existing security groups.
 ############################################################
 
 resource "aws_iam_policy" "image_builder_ec2_provisioning" {
@@ -2560,21 +2560,53 @@ resource "aws_iam_policy" "image_builder_ec2_provisioning" {
       },
 
       {
-        Sid    = "ReconcileImageBuilderInstances"
+        Sid    = "ReconcileImageBuilderInstanceLifecycle"
         Effect = "Allow"
 
         Action = [
           "ec2:StartInstances",
           "ec2:StopInstances",
           "ec2:RebootInstances",
-          "ec2:TerminateInstances",
-          "ec2:ModifyInstanceAttribute",
+          "ec2:TerminateInstances"
+        ]
+
+        Resource = [
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        ]
+      },
+
+      {
+        Sid    = "ModifyImageBuilderVolumes"
+        Effect = "Allow"
+
+        Action = [
           "ec2:ModifyVolume"
         ]
 
         Resource = [
-          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
           "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:volume/*"
+        ]
+      },
+
+      #########################################################################
+      # Changing an instance's security groups requires authorization for the
+      # instance and every security group included in the replacement list.
+      # Network-interface coverage is included because security-group changes
+      # are applied to the instance's primary network interface.
+      #########################################################################
+
+      {
+        Sid    = "ManageImageBuilderInstanceSecurityGroups"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:ModifyInstanceAttribute"
+        ]
+
+        Resource = [
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:network-interface/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:security-group/*"
         ]
       },
 

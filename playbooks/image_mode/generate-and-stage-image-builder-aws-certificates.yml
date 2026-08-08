@@ -25,6 +25,8 @@
     image_builder_certificate_directory: "/opt/image-builder/certs"
     image_builder_certificate_wait_retries: 60
     image_builder_certificate_wait_delay: 10
+    image_builder_aws_cli_environment:
+      AWS_PAGER: ""
 
     image_builder_tls_fqdn: >-
       {{
@@ -110,9 +112,9 @@
             Config.PrivateZone==`false`] | [0].Id
           - --output
           - text
-          - --no-cli-pager
       register: image_builder_route53_zone_lookup
       changed_when: false
+      environment: "{{ image_builder_aws_cli_environment }}"
       delegate_to: localhost
       become: false
       when: public_route53_zone_id | default('') | length == 0
@@ -157,9 +159,9 @@
             | [0].CertificateArn
           - --output
           - text
-          - --no-cli-pager
       register: image_builder_existing_certificate
       changed_when: false
+      environment: "{{ image_builder_aws_cli_environment }}"
       delegate_to: localhost
       become: false
 
@@ -183,9 +185,9 @@
           - "{{ image_builder_acm_certificate_arn }}"
           - --output
           - json
-          - --no-cli-pager
       register: image_builder_existing_certificate_description
       changed_when: false
+      environment: "{{ image_builder_aws_cli_environment }}"
       delegate_to: localhost
       become: false
       when: image_builder_acm_certificate_arn is defined
@@ -232,9 +234,9 @@
           - CertificateArn
           - --output
           - text
-          - --no-cli-pager
       register: image_builder_requested_certificate
       changed_when: true
+      environment: "{{ image_builder_aws_cli_environment }}"
       delegate_to: localhost
       become: false
       when: image_builder_acm_certificate_arn is not defined
@@ -263,9 +265,9 @@
           - Certificate.DomainValidationOptions[0].ResourceRecord
           - --output
           - json
-          - --no-cli-pager
       register: image_builder_validation_record_lookup
       changed_when: false
+      environment: "{{ image_builder_aws_cli_environment }}"
       until:
         - image_builder_validation_record_lookup.rc == 0
         - image_builder_validation_record_lookup.stdout | trim not in ['', 'null', 'None']
@@ -326,9 +328,9 @@
               - "{{ image_builder_route53_zone_id }}"
               - --change-batch
               - "file://{{ image_builder_certificate_tempdir.path }}/route53-change.json"
-              - --no-cli-pager
           register: image_builder_route53_change
           changed_when: true
+          environment: "{{ image_builder_aws_cli_environment }}"
           delegate_to: localhost
           become: false
 
@@ -346,9 +348,9 @@
               - Certificate.Status
               - --output
               - text
-              - --no-cli-pager
           register: image_builder_certificate_status
           changed_when: false
+          environment: "{{ image_builder_aws_cli_environment }}"
           failed_when: >-
             image_builder_certificate_status.stdout | trim in
             ['FAILED', 'VALIDATION_TIMED_OUT', 'REVOKED', 'EXPIRED']
@@ -394,9 +396,9 @@
               - "fileb://{{ image_builder_certificate_tempdir.path }}/passphrase"
               - --output
               - json
-              - --no-cli-pager
           register: image_builder_exported_certificate
           changed_when: false
+          environment: "{{ image_builder_aws_cli_environment }}"
           no_log: true
           delegate_to: localhost
           become: false

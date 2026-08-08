@@ -39,7 +39,7 @@ satellite_activation_keys:
 # These must match the minor releases enabled and synchronized in Satellite.
 satellite_activation_release_versions:
   "9": "9.8"
-  "10": "10.1"
+  "10": "10.2"
 
 satellite_activation_expected_repository_ids:
   "9":

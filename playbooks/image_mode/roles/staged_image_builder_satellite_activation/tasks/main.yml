@@ -18,23 +18,9 @@
       - acm_certificate_arn | default('') | length > 0
       - >-
         certificate_status | default('') == 'issued_and_installed'
-      - satellite_activation_organization_label | default('') | length > 0
-      - satellite_activation_organization_name | default('') | length > 0
-      - satellite_activation_keys is defined
-      - >-
-        image_builder_rhel_major_version | string
-        in satellite_activation_keys
-      - satellite_activation_release_versions is defined
-      - >-
-        image_builder_rhel_major_version | string
-        in satellite_activation_release_versions
-      - satellite_activation_expected_repository_ids is defined
-      - >-
-        image_builder_rhel_major_version | string
-        in satellite_activation_expected_repository_ids
     fail_msg: >-
-      {{ inventory_hostname }} is missing staged host data or Satellite
-      activation configuration for RHEL
+      {{ inventory_hostname }} is missing staged host or certificate data for
+      RHEL
       {{ image_builder_rhel_major_version | default('unknown') }}.
 
 - name: Resolve staged host certificate directory
@@ -85,6 +71,7 @@
 - name: Activate staged Image Builder subscription in Satellite
   ansible.builtin.include_role:
     name: satellite_subscription_activation
+    public: true
 
 - name: Read final Satellite registration identity
   ansible.builtin.command:

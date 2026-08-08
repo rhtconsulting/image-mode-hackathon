@@ -1,0 +1,737 @@
+---
+###############################################################################
+# Tasks for satellite_subscription_activation
+###############################################################################
+
+###############################################################################
+# PHASE 0 | Validate host and resolve activation configuration
+###############################################################################
+
+- name: PHASE 0 | Verify supported operating system family
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family | default('') == "RedHat"
+      - >-
+        ansible_facts.distribution_major_version | string
+        in satellite_activation_supported_major_versions
+    fail_msg: >-
+      {{ inventory_hostname }} must run a supported RHEL major version.
+      Detected {{ ansible_facts.distribution | default('unknown') }}
+      {{ ansible_facts.distribution_version | default('unknown') }}.
+
+- name: PHASE 0 | Resolve Satellite server FQDN
+  ansible.builtin.set_fact:
+    satellite_activation_resolved_server_fqdn: >-
+      {{
+        (
+          satellite_activation_server_fqdn
+          | default('', true)
+          | trim
+        )
+        if
+        (
+          satellite_activation_server_fqdn
+          | default('', true)
+          | trim
+          | length
+        ) > 0
+        else
+        (
+          groups[satellite_activation_satellite_group]
+          | default([])
+          | first
+          | default('')
+          | trim
+        )
+      }}
+
+- name: PHASE 0 | Resolve OS-specific activation settings
+  ansible.builtin.set_fact:
+    satellite_activation_major_version: >-
+      {{ ansible_facts.distribution_major_version | string }}
+    satellite_activation_selected_key: >-
+      {{
+        satellite_activation_keys[
+          ansible_facts.distribution_major_version | string
+        ]
+      }}
+    satellite_activation_selected_release: >-
+      {{
+        satellite_activation_release_versions[
+          ansible_facts.distribution_major_version | string
+        ]
+      }}
+    satellite_activation_selected_repositories: >-
+      {{
+        satellite_activation_expected_repository_ids[
+          ansible_facts.distribution_major_version | string
+        ]
+      }}
+
+- name: PHASE 0 | Validate resolved activation configuration
+  ansible.builtin.assert:
+    that:
+      - satellite_activation_resolved_server_fqdn | length > 0
+      - satellite_activation_organization_label | length > 0
+      - satellite_activation_selected_key | length > 0
+      - satellite_activation_selected_release | length > 0
+      - satellite_activation_selected_repositories | length > 0
+      - satellite_activation_port | int > 0
+    fail_msg: >-
+      Satellite activation configuration is incomplete for
+      {{ inventory_hostname }}.
+
+      Resolved Satellite:
+      {{ satellite_activation_resolved_server_fqdn | default('') }}
+
+      Organization label:
+      {{ satellite_activation_organization_label | default('') }}
+
+      Activation key:
+      {{ satellite_activation_selected_key | default('') }}
+
+      Release:
+      {{ satellite_activation_selected_release | default('') }}
+
+###############################################################################
+# PHASE 1 | Inspect current RHSM state
+###############################################################################
+
+- name: PHASE 1 | Ensure required client packages are installed
+  ansible.builtin.package:
+    name:
+      - subscription-manager
+      - curl
+    state: present
+
+- name: PHASE 1 | Read current RHSM identity
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - identity
+  register: satellite_activation_existing_identity
+  changed_when: false
+  failed_when: false
+
+- name: PHASE 1 | Read current RHSM server configuration
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - config
+      - --list
+  register: satellite_activation_existing_config
+  changed_when: false
+  failed_when: false
+
+- name: PHASE 1 | Determine whether registration is already correct
+  ansible.builtin.set_fact:
+    satellite_activation_already_correct: >-
+      {{
+        satellite_activation_existing_identity.rc | default(1) == 0
+        and
+        (
+          (
+            'org ID: ' ~ satellite_activation_organization_label
+          )
+          in
+          (
+            satellite_activation_existing_identity.stdout
+            | default('')
+          )
+          or
+          (
+            'org name: ' ~ satellite_activation_organization_name
+          )
+          in
+          (
+            satellite_activation_existing_identity.stdout
+            | default('')
+          )
+        )
+        and
+        satellite_activation_resolved_server_fqdn
+        in
+        (
+          satellite_activation_existing_config.stdout
+          | default('')
+        )
+      }}
+
+- name: PHASE 1 | Fail rather than overwrite an unexpected registration
+  ansible.builtin.assert:
+    that:
+      - >-
+        satellite_activation_existing_identity.rc | default(1) != 0
+        or satellite_activation_already_correct
+        or satellite_activation_force_registration | bool
+    fail_msg: >-
+      {{ inventory_hostname }} is already registered to a different RHSM
+      organization or server.
+
+      Current identity:
+
+      {{
+        satellite_activation_existing_identity.stdout
+        | default(
+            satellite_activation_existing_identity.stderr
+            | default('No identity information returned.'),
+            true
+          )
+        | trim
+      }}
+
+      Run satellite_subscription_cleanup first, or set
+      satellite_activation_force_registration=true.
+
+###############################################################################
+# PHASE 2 | Install the current Satellite Katello consumer package
+###############################################################################
+
+- name: PHASE 2 | Build Katello consumer package URL
+  ansible.builtin.set_fact:
+    satellite_activation_resolved_consumer_rpm_url: >-
+      {{
+        satellite_activation_scheme
+        ~ '://'
+        ~ satellite_activation_resolved_server_fqdn
+        ~ ':'
+        ~ (satellite_activation_port | string)
+        ~ '/pub/katello-ca-consumer-latest.noarch.rpm'
+      }}
+
+- name: PHASE 2 | Validate Katello consumer package URL
+  ansible.builtin.assert:
+    that:
+      - satellite_activation_resolved_consumer_rpm_url | length > 0
+      - "' ' not in satellite_activation_resolved_consumer_rpm_url"
+      - >-
+        satellite_activation_resolved_consumer_rpm_url
+        is match('^https?://[^/]+/pub/katello-ca-consumer-latest\.noarch\.rpm$')
+    fail_msg: >-
+      Invalid Katello consumer package URL:
+      {{ satellite_activation_resolved_consumer_rpm_url }}
+
+- name: PHASE 2 | Display resolved Katello consumer package URL
+  ansible.builtin.debug:
+    msg: >-
+      Downloading Katello consumer package from
+      {{ satellite_activation_resolved_consumer_rpm_url }}
+  when:
+    - satellite_activation_display_status | default(true) | bool
+
+- name: PHASE 2 | Remove stale Katello consumer package download
+  ansible.builtin.file:
+    path: "{{ satellite_activation_consumer_rpm_path }}"
+    state: absent
+  when:
+    - not satellite_activation_already_correct
+
+- name: PHASE 2 | Download current Katello consumer CA package
+  ansible.builtin.command:
+    argv:
+      - curl
+      - --fail
+      - --location
+      - --silent
+      - --show-error
+      - --output
+      - "{{ satellite_activation_consumer_rpm_path }}"
+      - "{{ satellite_activation_resolved_consumer_rpm_url }}"
+  register: satellite_activation_consumer_download
+  changed_when: satellite_activation_consumer_download.rc == 0
+  when:
+    - not satellite_activation_already_correct
+
+- name: PHASE 2 | Inspect downloaded Katello consumer package
+  ansible.builtin.stat:
+    path: "{{ satellite_activation_consumer_rpm_path }}"
+  register: satellite_activation_consumer_rpm_stat
+  when:
+    - not satellite_activation_already_correct
+
+- name: PHASE 2 | Verify Katello consumer package was downloaded
+  ansible.builtin.assert:
+    that:
+      - satellite_activation_consumer_rpm_stat.stat.exists
+      - satellite_activation_consumer_rpm_stat.stat.isreg
+      - satellite_activation_consumer_rpm_stat.stat.size | int > 0
+    fail_msg: >-
+      The Katello consumer package was not downloaded successfully from
+      {{ satellite_activation_resolved_consumer_rpm_url }}.
+  when:
+    - not satellite_activation_already_correct
+
+- name: PHASE 2 | Install current Katello consumer CA package
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - --upgrade
+      - --replacepkgs
+      - "{{ satellite_activation_consumer_rpm_path }}"
+  register: satellite_activation_consumer_install
+  changed_when: satellite_activation_consumer_install.rc == 0
+  when:
+    - not satellite_activation_already_correct
+
+- name: PHASE 2 | Read installed Katello consumer packages
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -qa
+      - katello-ca-consumer*
+  register: satellite_activation_installed_consumer_packages
+  changed_when: false
+  failed_when: false
+
+- name: PHASE 2 | Verify Katello consumer package is installed
+  ansible.builtin.assert:
+    that:
+      - satellite_activation_installed_consumer_packages.rc == 0
+      - >-
+        satellite_activation_installed_consumer_packages.stdout
+        | trim
+        | length > 0
+    fail_msg: >-
+      No Katello consumer CA package is installed on
+      {{ inventory_hostname }}.
+
+- name: PHASE 2 | Read RHSM configuration after Katello installation
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - config
+      - --list
+  register: satellite_activation_post_katello_config
+  changed_when: false
+
+- name: PHASE 2 | Normalize effective RHSM configuration
+  ansible.builtin.set_fact:
+    satellite_activation_normalized_rhsm_config: >-
+      {{
+        satellite_activation_post_katello_config.stdout
+        | regex_replace('\[([^\]]*)\]', '\1')
+      }}
+
+- name: PHASE 2 | Verify Katello configured the intended Satellite server
+  ansible.builtin.assert:
+    that:
+      - >-
+        'hostname = ' ~ satellite_activation_resolved_server_fqdn
+        in satellite_activation_normalized_rhsm_config
+      - >-
+        'port = ' ~ (satellite_activation_port | string)
+        in satellite_activation_normalized_rhsm_config
+      - >-
+        'prefix = /rhsm'
+        in satellite_activation_normalized_rhsm_config
+      - >-
+        'baseurl = https://'
+        ~ satellite_activation_resolved_server_fqdn
+        ~ '/pulp/content/'
+        in satellite_activation_normalized_rhsm_config
+      - >-
+        'repo_ca_cert = /etc/rhsm/ca/katello-server-ca.pem'
+        in satellite_activation_normalized_rhsm_config
+    fail_msg: >-
+      Installing the Katello consumer package did not configure
+      subscription-manager to use the intended Satellite server.
+
+      Expected Satellite:
+      {{ satellite_activation_resolved_server_fqdn }}
+
+      Expected port:
+      {{ satellite_activation_port }}
+
+      Effective RHSM configuration:
+
+      {{ satellite_activation_post_katello_config.stdout | trim }}
+
+
+###############################################################################
+# PHASE 3 | Configure RHSM and register the host
+###############################################################################
+
+- name: PHASE 3 | Restore RHSM repository management
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - config
+      - "--rhsm.manage_repos={{ 1 if satellite_activation_manage_repos else 0 }}"
+  register: satellite_activation_manage_repos_result
+  changed_when: false
+
+- name: PHASE 3 | Read RHSM configuration after restoring repository management
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - config
+      - --list
+  register: satellite_activation_manage_repos_config
+  changed_when: false
+
+- name: PHASE 3 | Verify RHSM repository management setting
+  ansible.builtin.assert:
+    that:
+      - >-
+        satellite_activation_manage_repos_config.stdout_lines
+        | map('trim')
+        | select(
+            'equalto',
+            'manage_repos = [' ~
+            (
+              '1'
+              if satellite_activation_manage_repos | bool
+              else '0'
+            )
+            ~ ']'
+          )
+        | list
+        | length > 0
+    fail_msg: >-
+      subscription-manager did not apply the requested manage_repos setting.
+
+      Expected:
+      manage_repos = [
+      {{- 1 if satellite_activation_manage_repos | bool else 0 -}}
+      ]
+
+      Effective configuration:
+
+      {{ satellite_activation_manage_repos_config.stdout | trim }}
+
+- name: PHASE 3 | Register host using OS-specific activation key
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - register
+      - "--org={{ satellite_activation_organization_label }}"
+      - "--activationkey={{ satellite_activation_selected_key }}"
+      - --force
+  register: satellite_activation_registration
+  changed_when: satellite_activation_registration.rc == 0
+  failed_when: false
+  when:
+    - not satellite_activation_already_correct
+
+- name: PHASE 3 | Verify Satellite registration command succeeded
+  ansible.builtin.assert:
+    that:
+      - satellite_activation_registration.rc | default(1) == 0
+    success_msg: >-
+      {{ inventory_hostname }} registered successfully with Satellite
+      {{ satellite_activation_resolved_server_fqdn }} using activation key
+      {{ satellite_activation_selected_key }}.
+    fail_msg: >-
+      Satellite registration failed for {{ inventory_hostname }}.
+
+      Satellite:
+      {{ satellite_activation_resolved_server_fqdn }}
+
+      Organization label:
+      {{ satellite_activation_organization_label }}
+
+      Activation key:
+      {{ satellite_activation_selected_key }}
+
+      Return code:
+      {{ satellite_activation_registration.rc | default('unknown') }}
+
+      Standard output:
+
+      {{
+        satellite_activation_registration.stdout
+        | default('')
+        | trim
+      }}
+
+      Standard error:
+
+      {{
+        satellite_activation_registration.stderr
+        | default('')
+        | trim
+      }}
+  when:
+    - not satellite_activation_already_correct
+
+###############################################################################
+# PHASE 4 | Configure release and repositories
+###############################################################################
+
+- name: PHASE 4 | Read currently configured release
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - release
+      - --show
+  register: satellite_activation_current_release
+  changed_when: false
+  failed_when: false
+
+- name: PHASE 4 | Set Satellite repository release
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - release
+      - "--set={{ satellite_activation_selected_release }}"
+  register: satellite_activation_release_set
+  changed_when: >-
+    satellite_activation_selected_release
+    not in
+    (
+      satellite_activation_current_release.stdout
+      | default('')
+    )
+
+- name: PHASE 4 | Refresh subscription-manager data
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - refresh
+  register: satellite_activation_refresh_result
+  changed_when: false
+  when:
+    - satellite_activation_refresh_after_registration | bool
+
+- name: PHASE 4 | Read currently enabled repositories
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - repos
+      - --list-enabled
+  register: satellite_activation_repositories_before_enable
+  changed_when: false
+  failed_when: false
+
+- name: PHASE 4 | Enable expected Satellite repositories
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - repos
+      - "--enable={{ item }}"
+  loop: "{{ satellite_activation_selected_repositories }}"
+  register: satellite_activation_repo_enable
+  changed_when: >-
+    item
+    not in
+    (
+      satellite_activation_repositories_before_enable.stdout
+      | default('')
+    )
+  when:
+    - satellite_activation_enable_expected_repositories | bool
+    - >-
+      item
+      not in
+      (
+        satellite_activation_repositories_before_enable.stdout
+        | default('')
+      )
+
+###############################################################################
+# PHASE 5 | Verify registration and repository configuration
+###############################################################################
+
+- name: PHASE 5 | Read registered identity
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - identity
+  register: satellite_activation_final_identity
+  changed_when: false
+
+- name: PHASE 5 | Read effective RHSM configuration
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - config
+      - --list
+  register: satellite_activation_final_config
+  changed_when: false
+
+- name: PHASE 5 | Read configured release
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - release
+      - --show
+  register: satellite_activation_final_release
+  changed_when: false
+
+- name: PHASE 5 | Read enabled repositories
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - repos
+      - --list-enabled
+  register: satellite_activation_enabled_repositories
+  changed_when: false
+
+- name: PHASE 5 | Verify identity, Satellite server, and selected release
+  ansible.builtin.assert:
+    that:
+      - satellite_activation_final_identity.rc == 0
+      - >-
+        (
+          'org ID: ' ~ satellite_activation_organization_label
+        )
+        in satellite_activation_final_identity.stdout
+        or
+        (
+          'org name: ' ~ satellite_activation_organization_name
+        )
+        in satellite_activation_final_identity.stdout
+      - >-
+        satellite_activation_resolved_server_fqdn
+        in satellite_activation_final_config.stdout
+      - >-
+        satellite_activation_final_config.stdout_lines
+        | map('trim')
+        | select(
+            'equalto',
+            'manage_repos = [' ~
+            (
+              '1'
+              if satellite_activation_manage_repos | bool
+              else '0'
+            )
+            ~ ']'
+          )
+        | list
+        | length > 0
+      - >-
+        satellite_activation_selected_release
+        in satellite_activation_final_release.stdout
+    fail_msg: >-
+      RHSM registration validation failed on {{ inventory_hostname }}.
+
+      Expected Satellite:
+      {{ satellite_activation_resolved_server_fqdn }}
+
+      Expected organization label:
+      {{ satellite_activation_organization_label }}
+
+      Expected release:
+      {{ satellite_activation_selected_release }}
+
+      Identity:
+
+      {{ satellite_activation_final_identity.stdout | trim }}
+
+      RHSM configuration:
+
+      {{ satellite_activation_final_config.stdout | trim }}
+
+      Release:
+
+      {{ satellite_activation_final_release.stdout | trim }}
+  when:
+    - satellite_activation_verify_identity | bool
+
+- name: PHASE 5 | Verify all expected repositories are enabled
+  ansible.builtin.assert:
+    that:
+      - item in satellite_activation_enabled_repositories.stdout
+    fail_msg: >-
+      Expected repository {{ item }} is not enabled on
+      {{ inventory_hostname }}.
+
+      Enabled repository output:
+
+      {{ satellite_activation_enabled_repositories.stdout | trim }}
+  loop: "{{ satellite_activation_selected_repositories }}"
+  when:
+    - satellite_activation_verify_repositories | bool
+
+###############################################################################
+# PHASE 6 | Validate DNF access and optionally remove RHUI
+###############################################################################
+
+- name: PHASE 6 | Clean DNF metadata
+  ansible.builtin.command:
+    argv:
+      - dnf
+      - clean
+      - all
+  changed_when: false
+
+- name: PHASE 6 | Build DNF metadata from Satellite
+  ansible.builtin.command:
+    argv:
+      - dnf
+      - "--disablerepo=*"
+      - >-
+        --enablerepo={{
+          satellite_activation_selected_repositories
+          | join(',')
+        }}
+      - makecache
+  register: satellite_activation_makecache_result
+  changed_when: false
+  timeout: "{{ satellite_activation_makecache_timeout }}"
+  when:
+    - satellite_activation_makecache | bool
+
+- name: PHASE 6 | Find installed AWS RHUI client packages
+  ansible.builtin.shell: |
+    set -o pipefail
+    rpm -qa |
+    grep -E '{{ satellite_activation_rhui_package_regex }}' ||
+    true
+  args:
+    executable: /bin/bash
+  register: satellite_activation_rhui_packages_query
+  changed_when: false
+  failed_when: false
+  when:
+    - satellite_activation_remove_rhui_after_validation | bool
+
+- name: PHASE 6 | Remove AWS RHUI client packages after Satellite validation
+  ansible.builtin.dnf:
+    name: >-
+      {{
+        satellite_activation_rhui_packages_query.stdout_lines
+        | default([])
+        | map('trim')
+        | reject('equalto', '')
+        | list
+      }}
+    state: absent
+    disablerepo: "*"
+    enablerepo: "{{ satellite_activation_selected_repositories }}"
+  when:
+    - satellite_activation_remove_rhui_after_validation | bool
+    - >-
+      satellite_activation_rhui_packages_query.stdout_lines
+      | default([])
+      | length > 0
+
+###############################################################################
+# PHASE 7 | Display activation summary
+###############################################################################
+
+- name: PHASE 7 | Display activation summary
+  ansible.builtin.debug:
+    msg:
+      host: "{{ inventory_hostname }}"
+      satellite: "{{ satellite_activation_resolved_server_fqdn }}"
+      organization_name: "{{ satellite_activation_organization_name }}"
+      organization_label: "{{ satellite_activation_organization_label }}"
+      rhel_major_version: "{{ satellite_activation_major_version }}"
+      activation_key: "{{ satellite_activation_selected_key }}"
+      release: "{{ satellite_activation_selected_release }}"
+      repositories: "{{ satellite_activation_selected_repositories }}"
+      katello_consumer_packages: >-
+        {{
+          satellite_activation_installed_consumer_packages.stdout_lines
+          | default([])
+        }}
+      rhui_removed_after_validation: >-
+        {{
+          satellite_activation_remove_rhui_after_validation
+          | bool
+        }}
+      registration_identity: >-
+        {{ satellite_activation_final_identity.stdout | trim }}
+  when:
+    - satellite_activation_display_status | bool

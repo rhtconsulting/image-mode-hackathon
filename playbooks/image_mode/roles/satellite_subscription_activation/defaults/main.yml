@@ -1,0 +1,75 @@
+---
+###############################################################################
+# Role defaults for satellite_subscription_activation
+###############################################################################
+
+###############################################################################
+# Satellite identity and connectivity
+###############################################################################
+
+satellite_activation_organization_name: "Image Mode Lab"
+satellite_activation_organization_label: "Image_Mode_Lab"
+
+# Prefer an explicitly supplied FQDN. If empty, tasks resolve the first host in
+# the configured Satellite inventory group.
+satellite_activation_server_fqdn: ""
+satellite_activation_satellite_group: "satellite"
+
+satellite_activation_scheme: "https"
+satellite_activation_port: 443
+satellite_activation_validate_certs: true
+
+satellite_activation_consumer_rpm_url: >-
+  {{ satellite_activation_scheme }}://{{ satellite_activation_resolved_server_fqdn }}:
+  {{ satellite_activation_port }}/pub/katello-ca-consumer-latest.noarch.rpm
+satellite_activation_consumer_rpm_path: "/var/tmp/katello-ca-consumer-latest.noarch.rpm"
+
+###############################################################################
+# Supported RHEL releases
+###############################################################################
+
+satellite_activation_supported_major_versions:
+  - "9"
+  - "10"
+
+satellite_activation_keys:
+  "9": "rhel9"
+  "10": "rhel10"
+
+# These must match the minor releases enabled and synchronized in Satellite.
+satellite_activation_release_versions:
+  "9": "9.8"
+  "10": "10.1"
+
+satellite_activation_expected_repository_ids:
+  "9":
+    - rhel-9-for-x86_64-baseos-rpms
+    - rhel-9-for-x86_64-appstream-rpms
+  "10":
+    - rhel-10-for-x86_64-baseos-rpms
+    - rhel-10-for-x86_64-appstream-rpms
+
+###############################################################################
+# Registration behavior
+###############################################################################
+
+satellite_activation_force_registration: false
+satellite_activation_manage_repos: true
+satellite_activation_refresh_after_registration: true
+satellite_activation_enable_expected_repositories: true
+
+# Remove AWS RHUI only after Satellite repositories and metadata are verified.
+satellite_activation_remove_rhui_after_validation: true
+satellite_activation_rhui_package_regex: >-
+  ^(rh-amazon-rhui-client|rhui-client-config|rhui-.*-client)
+
+###############################################################################
+# Validation
+###############################################################################
+
+satellite_activation_verify_identity: true
+satellite_activation_verify_server: true
+satellite_activation_verify_repositories: true
+satellite_activation_makecache: true
+satellite_activation_makecache_timeout: 1200
+satellite_activation_display_status: true

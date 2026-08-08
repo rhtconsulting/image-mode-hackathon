@@ -12,7 +12,367 @@
 #   public_route53_zone_name: sandbox550.opentlc.com
 #   public_route53_zone_id: Z0123456789ABCDEF
 #   image_builder_certificate_directory: /opt/image-builder/certs
+#   image_builder_public_dns_ttl: 300
 ###############################################################################
+
+- name: Prepare staged Image Builder AWS networking
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    image_builder_aws_cli_environment:
+      AWS_PAGER: ""
+    image_builder_security_group_name: "image-mode-lab-image-builder-sg"
+    image_builder_public_dns_ttl: 300
+    image_builder_aws_hosts: >-
+      {{
+        staged_image_builder_hosts
+        | default(image_builder_generated_hosts | default([]), true)
+      }}
+    image_builder_aws_domain: >-
+      {{
+        image_builder_workflow_domain
+        | default(
+            (
+              image_builder_aws_hosts
+              | first
+            ).fqdn
+            | default('')
+            | regex_replace('^[^.]+[.]', ''),
+            true
+          )
+        | regex_replace('[.]$', '')
+      }}
+    image_builder_public_route53_zone_name: >-
+      {{
+        public_route53_zone_name
+        | default(
+            image_builder_aws_domain | regex_replace('^lab[.]', ''),
+            true
+          )
+        | regex_replace('[.]$', '')
+      }}
+    image_builder_aws_region: >-
+      {{
+        image_builder_workflow_region
+        | default(
+            (image_builder_aws_hosts | first).aws_region | default(''),
+            true
+          )
+      }}
+
+  tasks:
+    - name: Validate staged AWS host definitions
+      ansible.builtin.assert:
+        that:
+          - image_builder_aws_hosts | length > 0
+          - item.name | default('') | length > 0
+          - item.public_tls_fqdn | default(item.fqdn | default(''), true) | length > 0
+          - item.public_ip | default('') | length > 0
+          - item.instance_id | default('') | length > 0
+          - item.vpc_id | default('') | length > 0
+          - item.aws_region | default(image_builder_aws_region, true) | length > 0
+        fail_msg: >-
+          Invalid staged Image Builder AWS definition: {{ item }}
+      loop: "{{ image_builder_aws_hosts }}"
+      loop_control:
+        label: "{{ item.name | default('UNKNOWN') }}"
+
+    - name: Validate staged public IPv4 addresses
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - >-
+            import ipaddress,sys;
+            address=ipaddress.ip_address(sys.argv[1]);
+            assert address.version == 4 and address.is_global,
+            'address must be a globally routable IPv4 address'
+          - "{{ item.public_ip }}"
+      loop: "{{ image_builder_aws_hosts }}"
+      loop_control:
+        label: "{{ item.name }} -> {{ item.public_ip }}"
+      changed_when: false
+
+    - name: Validate all staged hosts use one VPC
+      ansible.builtin.assert:
+        that:
+          - >-
+            image_builder_aws_hosts
+            | map(attribute='vpc_id')
+            | unique
+            | list
+            | length == 1
+        fail_msg: >-
+          All staged Image Builder hosts must belong to the same lab VPC.
+
+    - name: Resolve staged Image Builder VPC
+      ansible.builtin.set_fact:
+        image_builder_staged_vpc_id: >-
+          {{ (image_builder_aws_hosts | first).vpc_id }}
+
+    ###########################################################################
+    # Discover public Route 53 zone and publish host A records
+    ###########################################################################
+
+    - name: Discover the public Route 53 zone
+      ansible.builtin.command:
+        argv:
+          - aws
+          - route53
+          - list-hosted-zones-by-name
+          - --dns-name
+          - "{{ image_builder_public_route53_zone_name }}"
+          - --query
+          - >-
+            HostedZones[?Name=='{{ image_builder_public_route53_zone_name }}.' &&
+            Config.PrivateZone==`false`] | [0].Id
+          - --output
+          - text
+      register: image_builder_public_zone_lookup
+      changed_when: false
+      environment: "{{ image_builder_aws_cli_environment }}"
+      when: public_route53_zone_id | default('') | length == 0
+
+    - name: Store the public Route 53 zone ID
+      ansible.builtin.set_fact:
+        image_builder_public_zone_id: >-
+          {{
+            public_route53_zone_id
+            | default(image_builder_public_zone_lookup.stdout, true)
+            | regex_replace('^/hostedzone/', '')
+            | trim
+          }}
+
+    - name: Validate public Route 53 zone discovery
+      ansible.builtin.assert:
+        that:
+          - image_builder_public_zone_id | length > 0
+          - image_builder_public_zone_id not in ['None', 'null']
+        fail_msg: >-
+          Unable to resolve public Route 53 zone
+          {{ image_builder_public_route53_zone_name }}.
+
+    - name: Publish staged Image Builder public A records
+      ansible.builtin.command:
+        argv:
+          - aws
+          - route53
+          - change-resource-record-sets
+          - --hosted-zone-id
+          - "{{ image_builder_public_zone_id }}"
+          - --change-batch
+          - >-
+            {{
+              {
+                'Comment': 'Public address for staged Image Builder ' ~ item.name,
+                'Changes': [
+                  {
+                    'Action': 'UPSERT',
+                    'ResourceRecordSet': {
+                      'Name': (
+                        item.public_tls_fqdn
+                        | default(item.fqdn, true)
+                      ) ~ '.',
+                      'Type': 'A',
+                      'TTL': image_builder_public_dns_ttl | int,
+                      'ResourceRecords': [
+                        {'Value': item.public_ip}
+                      ]
+                    }
+                  }
+                ]
+              } | to_json
+            }}
+          - --output
+          - json
+      loop: "{{ image_builder_aws_hosts }}"
+      loop_control:
+        label: >-
+          {{ item.public_tls_fqdn | default(item.fqdn, true) }} ->
+          {{ item.public_ip }}
+      register: image_builder_public_dns_changes
+      changed_when: true
+      environment: "{{ image_builder_aws_cli_environment }}"
+
+    - name: Wait for staged Image Builder public A record changes
+      ansible.builtin.command:
+        argv:
+          - aws
+          - route53
+          - wait
+          - resource-record-sets-changed
+          - --id
+          - "{{ (item.stdout | from_json).ChangeInfo.Id }}"
+      loop: "{{ image_builder_public_dns_changes.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      changed_when: false
+      environment: "{{ image_builder_aws_cli_environment }}"
+
+    - name: Verify staged Image Builder public A records
+      ansible.builtin.command:
+        argv:
+          - aws
+          - route53
+          - list-resource-record-sets
+          - --hosted-zone-id
+          - "{{ image_builder_public_zone_id }}"
+          - --query
+          - >-
+            ResourceRecordSets[?Name=='{{ item.public_tls_fqdn | default(item.fqdn, true) }}.' &&
+            Type=='A'] | [0].ResourceRecords[].Value
+          - --output
+          - json
+      loop: "{{ image_builder_aws_hosts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: image_builder_public_dns_verification
+      changed_when: false
+      environment: "{{ image_builder_aws_cli_environment }}"
+      failed_when: >-
+        (image_builder_public_dns_verification.stdout | from_json)
+        != [item.public_ip]
+
+    ###########################################################################
+    # Discover and attach the Image Builder security group
+    ###########################################################################
+
+    - name: Discover the Image Builder security group
+      ansible.builtin.command:
+        argv:
+          - aws
+          - ec2
+          - describe-security-groups
+          - --region
+          - "{{ image_builder_aws_region }}"
+          - --filters
+          - "Name=group-name,Values={{ image_builder_security_group_name }}"
+          - "Name=vpc-id,Values={{ image_builder_staged_vpc_id }}"
+          - --query
+          - SecurityGroups[].GroupId
+          - --output
+          - json
+      register: image_builder_security_group_lookup
+      changed_when: false
+      environment: "{{ image_builder_aws_cli_environment }}"
+
+    - name: Store Image Builder security group IDs
+      ansible.builtin.set_fact:
+        image_builder_target_security_group_ids: >-
+          {{ image_builder_security_group_lookup.stdout | from_json }}
+
+    - name: Validate Image Builder security group discovery
+      ansible.builtin.assert:
+        that:
+          - image_builder_target_security_group_ids | length == 1
+        fail_msg: >-
+          Expected exactly one security group named
+          {{ image_builder_security_group_name }} in VPC
+          {{ image_builder_staged_vpc_id }}, but found
+          {{ image_builder_target_security_group_ids | length }}.
+
+    - name: Store target Image Builder security group ID
+      ansible.builtin.set_fact:
+        image_builder_target_security_group_id: >-
+          {{ image_builder_target_security_group_ids | first }}
+
+    - name: Read current staged instance security groups
+      ansible.builtin.command:
+        argv:
+          - aws
+          - ec2
+          - describe-instances
+          - --region
+          - "{{ item.aws_region | default(image_builder_aws_region, true) }}"
+          - --instance-ids
+          - "{{ item.instance_id }}"
+          - --query
+          - Reservations[0].Instances[0].SecurityGroups[].GroupId
+          - --output
+          - json
+      loop: "{{ image_builder_aws_hosts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: image_builder_instance_security_group_lookups
+      changed_when: false
+      environment: "{{ image_builder_aws_cli_environment }}"
+
+    - name: Attach Image Builder security group while preserving existing groups
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'aws',
+              'ec2',
+              'modify-instance-attribute',
+              '--region',
+              item.item.aws_region | default(image_builder_aws_region, true),
+              '--instance-id',
+              item.item.instance_id,
+              '--groups'
+            ]
+            + (
+                (
+                  item.stdout | from_json
+                )
+                + [image_builder_target_security_group_id]
+              )
+              | unique
+              | list
+          }}
+      loop: "{{ image_builder_instance_security_group_lookups.results }}"
+      loop_control:
+        label: >-
+          {{ item.item.name }} -> {{ image_builder_target_security_group_id }}
+      register: image_builder_security_group_attachments
+      changed_when: true
+      environment: "{{ image_builder_aws_cli_environment }}"
+      when:
+        - >-
+          image_builder_target_security_group_id
+          not in (item.stdout | from_json)
+
+    - name: Verify Image Builder security group attachments
+      ansible.builtin.command:
+        argv:
+          - aws
+          - ec2
+          - describe-instances
+          - --region
+          - "{{ item.aws_region | default(image_builder_aws_region, true) }}"
+          - --instance-ids
+          - "{{ item.instance_id }}"
+          - --query
+          - Reservations[0].Instances[0].SecurityGroups[].GroupId
+          - --output
+          - json
+      loop: "{{ image_builder_aws_hosts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: image_builder_security_group_verification
+      changed_when: false
+      environment: "{{ image_builder_aws_cli_environment }}"
+      failed_when: >-
+        image_builder_target_security_group_id
+        not in (image_builder_security_group_verification.stdout | from_json)
+
+    - name: Publish staged AWS network workflow results
+      ansible.builtin.set_stats:
+        data:
+          image_builder_public_dns_status: "published"
+          image_builder_public_dns_hostnames: >-
+            {{
+              image_builder_aws_hosts
+              | map(attribute='public_tls_fqdn')
+              | list
+            }}
+          image_builder_security_group_status: "attached"
+          image_builder_security_group_id: >-
+            {{ image_builder_target_security_group_id }}
+
 
 - name: Generate and stage Image Builder AWS certificates
   hosts: all
@@ -25,6 +385,7 @@
     image_builder_certificate_directory: "/opt/image-builder/certs"
     image_builder_certificate_wait_retries: 60
     image_builder_certificate_wait_delay: 10
+    image_builder_public_dns_ttl: 300
     image_builder_aws_cli_environment:
       AWS_PAGER: ""
 
@@ -35,6 +396,9 @@
         | lower
         | regex_replace('[.]$', '')
       }}
+
+    image_builder_public_ipv4_address: >-
+      {{ public_ip | default('', true) | trim }}
 
     # A public Route 53 zone normally owns sandboxNNN.opentlc.com while the
     # hosts reside below lab.sandboxNNN.opentlc.com. Set
@@ -63,9 +427,12 @@
             image_builder_tls_fqdn == image_builder_route53_zone_name or
             image_builder_tls_fqdn.endswith('.' ~ image_builder_route53_zone_name)
           - aws_region | default(image_builder_workflow_region | default('')) | length > 0
+          - image_builder_public_ipv4_address | length > 0
+          - image_builder_public_dns_ttl | int >= 60
         fail_msg: >-
           Cannot request a certificate for {{ inventory_hostname }}. Verify
-          public_tls_fqdn/fqdn, aws_region, and public_route53_zone_name.
+          public_tls_fqdn/fqdn, public_ip, aws_region, and
+          public_route53_zone_name.
 
     - name: Resolve certificate AWS region
       ansible.builtin.set_fact:
@@ -89,6 +456,21 @@
         argv:
           - openssl
           - version
+      changed_when: false
+      delegate_to: localhost
+      become: false
+
+    - name: Validate the staged public IPv4 address
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - >-
+            import ipaddress,sys;
+            address=ipaddress.ip_address(sys.argv[1]);
+            assert address.version == 4 and address.is_global,
+            'address must be a globally routable IPv4 address'
+          - "{{ image_builder_public_ipv4_address }}"
       changed_when: false
       delegate_to: localhost
       become: false
@@ -137,6 +519,139 @@
         fail_msg: >-
           No public Route 53 hosted zone named
           {{ image_builder_route53_zone_name }} was found.
+
+    ###########################################################################
+    # Publish the public host A record
+    ###########################################################################
+
+    - name: Read the existing public host A record
+      ansible.builtin.command:
+        argv:
+          - aws
+          - route53
+          - list-resource-record-sets
+          - --hosted-zone-id
+          - "{{ image_builder_route53_zone_id }}"
+          - --query
+          - >-
+            ResourceRecordSets[?Name=='{{ image_builder_tls_fqdn }}.' &&
+            Type=='A'] | [0].ResourceRecords[].Value
+          - --output
+          - json
+      register: image_builder_existing_public_a_record
+      changed_when: false
+      environment: "{{ image_builder_aws_cli_environment }}"
+      delegate_to: localhost
+      become: false
+
+    - name: Store the existing public host addresses
+      ansible.builtin.set_fact:
+        image_builder_existing_public_addresses: >-
+          {{
+            (
+              image_builder_existing_public_a_record.stdout
+              | trim
+              | default('null', true)
+              | from_json
+            )
+            | default([], true)
+          }}
+
+    - name: Build the public host A record change
+      ansible.builtin.set_fact:
+        image_builder_public_a_record_change: >-
+          {{
+            {
+              'Comment': 'Public Image Builder address for ' ~ image_builder_tls_fqdn,
+              'Changes': [
+                {
+                  'Action': 'UPSERT',
+                  'ResourceRecordSet': {
+                    'Name': image_builder_tls_fqdn ~ '.',
+                    'Type': 'A',
+                    'TTL': image_builder_public_dns_ttl | int,
+                    'ResourceRecords': [
+                      {'Value': image_builder_public_ipv4_address}
+                    ]
+                  }
+                }
+              ]
+            } | to_json
+          }}
+
+    - name: Publish the public host A record in Route 53
+      ansible.builtin.command:
+        argv:
+          - aws
+          - route53
+          - change-resource-record-sets
+          - --hosted-zone-id
+          - "{{ image_builder_route53_zone_id }}"
+          - --change-batch
+          - "{{ image_builder_public_a_record_change }}"
+          - --output
+          - json
+      register: image_builder_public_a_record_change_result
+      changed_when: true
+      environment: "{{ image_builder_aws_cli_environment }}"
+      delegate_to: localhost
+      become: false
+      when:
+        - >-
+          image_builder_existing_public_addresses
+          != [image_builder_public_ipv4_address]
+
+    - name: Wait for the public host A record change
+      ansible.builtin.command:
+        argv:
+          - aws
+          - route53
+          - wait
+          - resource-record-sets-changed
+          - --id
+          - >-
+            {{
+              (
+                image_builder_public_a_record_change_result.stdout
+                | from_json
+              ).ChangeInfo.Id
+            }}
+      changed_when: false
+      environment: "{{ image_builder_aws_cli_environment }}"
+      delegate_to: localhost
+      become: false
+      when: image_builder_public_a_record_change_result is changed
+
+    - name: Verify the final public host A record
+      ansible.builtin.command:
+        argv:
+          - aws
+          - route53
+          - list-resource-record-sets
+          - --hosted-zone-id
+          - "{{ image_builder_route53_zone_id }}"
+          - --query
+          - >-
+            ResourceRecordSets[?Name=='{{ image_builder_tls_fqdn }}.' &&
+            Type=='A'] | [0].ResourceRecords[].Value
+          - --output
+          - json
+      register: image_builder_final_public_a_record
+      changed_when: false
+      environment: "{{ image_builder_aws_cli_environment }}"
+      delegate_to: localhost
+      become: false
+
+    - name: Validate the final public host A record
+      ansible.builtin.assert:
+        that:
+          - >-
+            image_builder_final_public_a_record.stdout
+            | from_json
+            == [image_builder_public_ipv4_address]
+        fail_msg: >-
+          Route 53 A record {{ image_builder_tls_fqdn }} did not resolve to the
+          expected public address {{ image_builder_public_ipv4_address }}.
 
     ###########################################################################
     # Reuse an exportable certificate or request a new one
@@ -614,6 +1129,15 @@
             {{ image_builder_rhel_major_version | string }}
           image_builder_team_id: "{{ image_builder_team_id }}"
           public_tls_fqdn: "{{ image_builder_tls_fqdn }}"
+          public_dns_ipv4_address: "{{ image_builder_public_ipv4_address }}"
+          public_dns_route53_zone_id: "{{ image_builder_route53_zone_id }}"
+          public_dns_status: "published"
+          image_builder_security_group_id: >-
+            {{
+              hostvars['localhost'].image_builder_target_security_group_id
+              | default('')
+            }}
+          image_builder_security_group_status: "attached"
           acm_certificate_arn: "{{ image_builder_acm_certificate_arn }}"
           certificate_directory: "{{ image_builder_certificate_directory }}"
           certificate_status: "issued_and_installed"
@@ -628,6 +1152,9 @@
           image_builder_certificate_arn: "{{ image_builder_acm_certificate_arn }}"
           image_builder_certificate_fqdn: "{{ image_builder_tls_fqdn }}"
           image_builder_certificate_status: "issued_and_installed"
+          image_builder_public_dns_ipv4_address: >-
+            {{ image_builder_public_ipv4_address }}
+          image_builder_public_dns_status: "published"
         per_host: true
 
     - name: Display certificate installation result
@@ -635,6 +1162,9 @@
         msg:
           - "Host: {{ inventory_hostname }}"
           - "TLS name: {{ image_builder_tls_fqdn }}"
+          - >-
+            Public DNS: {{ image_builder_tls_fqdn }} ->
+            {{ image_builder_public_ipv4_address }}
           - "ACM certificate: {{ image_builder_acm_certificate_arn }}"
           - "Installed at: {{ image_builder_certificate_directory }}"
           - "Status: issued and installed"

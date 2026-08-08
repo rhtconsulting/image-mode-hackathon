@@ -19,30 +19,75 @@
       Detected {{ ansible_facts.distribution | default('unknown') }}
       {{ ansible_facts.distribution_version | default('unknown') }}.
 
+- name: PHASE 0 | Resolve candidate Satellite inventory host
+  ansible.builtin.set_fact:
+    satellite_activation_group_server_fqdn: >-
+      {{
+        (
+          groups
+          | default({})
+        ).get(
+          satellite_activation_satellite_group | default('satellite'),
+          []
+        )
+        | first
+        | default('')
+        | trim
+      }}
+
+- name: PHASE 0 | Resolve lab domain for Satellite discovery
+  ansible.builtin.set_fact:
+    satellite_activation_resolved_lab_domain: >-
+      {{
+        image_builder_workflow_domain
+        | default(
+            idm_domain_name
+            | default(
+                (
+                  fqdn
+                  | default(inventory_hostname, true)
+                  | regex_replace('^[^.]+[.]', '')
+                ),
+                true
+              ),
+            true
+          )
+        | trim
+        | regex_replace('^[.]', '')
+        | regex_replace('[.]$', '')
+      }}
+
+- name: PHASE 0 | Build derived Satellite server FQDN
+  ansible.builtin.set_fact:
+    satellite_activation_derived_server_fqdn: >-
+      {{
+        (
+          satellite_activation_derived_hostname_prefix
+          | default('satellite-1', true)
+          | trim
+        )
+        ~ '.'
+        ~ satellite_activation_resolved_lab_domain
+        if satellite_activation_resolved_lab_domain | length > 0
+        else ''
+      }}
+
 - name: PHASE 0 | Resolve Satellite server FQDN
   ansible.builtin.set_fact:
     satellite_activation_resolved_server_fqdn: >-
       {{
-        (
-          satellite_activation_server_fqdn
-          | default('', true)
-          | trim
-        )
-        if
-        (
-          satellite_activation_server_fqdn
-          | default('', true)
-          | trim
-          | length
-        ) > 0
-        else
-        (
-          groups[satellite_activation_satellite_group]
-          | default([])
-          | first
-          | default('')
-          | trim
-        )
+        [
+          satellite_activation_server_fqdn | default('', true) | trim,
+          satellite_server_fqdn | default('', true) | trim,
+          satellite_fqdn | default('', true) | trim,
+          satellite_activation_group_server_fqdn | default('', true) | trim,
+          satellite_activation_derived_server_fqdn | default('', true) | trim
+        ]
+        | reject('equalto', '')
+        | first
+        | default('')
+        | lower
+        | regex_replace('[.]$', '')
       }}
 
 - name: PHASE 0 | Resolve OS-specific activation settings
@@ -72,6 +117,9 @@
   ansible.builtin.assert:
     that:
       - satellite_activation_resolved_server_fqdn | length > 0
+      - >-
+        satellite_activation_resolved_server_fqdn
+        is match('^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$')
       - satellite_activation_organization_label | length > 0
       - satellite_activation_selected_key | length > 0
       - satellite_activation_selected_release | length > 0
@@ -80,6 +128,18 @@
     fail_msg: >-
       Satellite activation configuration is incomplete for
       {{ inventory_hostname }}.
+
+      Explicit Satellite:
+      {{ satellite_activation_server_fqdn | default('') }}
+
+      Inventory-group Satellite:
+      {{ satellite_activation_group_server_fqdn | default('') }}
+
+      Derived lab domain:
+      {{ satellite_activation_resolved_lab_domain | default('') }}
+
+      Derived Satellite:
+      {{ satellite_activation_derived_server_fqdn | default('') }}
 
       Resolved Satellite:
       {{ satellite_activation_resolved_server_fqdn | default('') }}
@@ -92,6 +152,27 @@
 
       Release:
       {{ satellite_activation_selected_release | default('') }}
+
+- name: PHASE 0 | Verify Satellite server resolves in DNS
+  ansible.builtin.command:
+    argv:
+      - getent
+      - ahostsv4
+      - "{{ satellite_activation_resolved_server_fqdn }}"
+  register: satellite_activation_server_dns_lookup
+  changed_when: false
+  failed_when: false
+
+- name: PHASE 0 | Validate Satellite server DNS resolution
+  ansible.builtin.assert:
+    that:
+      - satellite_activation_server_dns_lookup.rc == 0
+      - satellite_activation_server_dns_lookup.stdout | trim | length > 0
+    fail_msg: >-
+      Satellite server {{ satellite_activation_resolved_server_fqdn }} does
+      not resolve from {{ inventory_hostname }}. Set
+      satellite_activation_server_fqdn explicitly if the Satellite hostname
+      does not follow the satellite-1.<lab-domain> convention.
 
 ###############################################################################
 # PHASE 1 | Inspect current RHSM state

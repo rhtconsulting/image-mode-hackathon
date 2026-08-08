@@ -497,6 +497,15 @@
             mode: "0644"
           no_log: true
 
+        - name: Install legacy Cockpit leaf certificate
+          ansible.builtin.copy:
+            dest: "{{ image_builder_certificate_directory }}/cockpit-leaf.crt"
+            content: "{{ image_builder_exported_certificate_data.Certificate }}"
+            owner: root
+            group: root
+            mode: "0644"
+          no_log: true
+
         - name: Install Cockpit-compatible certificate chain
           ansible.builtin.copy:
             dest: "{{ image_builder_certificate_directory }}/cockpit-chain.crt"
@@ -537,6 +546,37 @@
               - -checkhost
               - "{{ image_builder_tls_fqdn }}"
           changed_when: false
+
+        - name: Inspect all staged certificate files
+          ansible.builtin.stat:
+            path: "{{ image_builder_certificate_directory }}/{{ item }}"
+            get_checksum: false
+          loop:
+            - tls.key
+            - tls.crt
+            - ca-chain.crt
+            - fullchain.crt
+            - cockpit.key
+            - cockpit.crt
+            - cockpit-leaf.crt
+            - cockpit-chain.crt
+            - cockpit-fullchain.crt
+          register: image_builder_staged_certificate_file_stats
+
+        - name: Validate all staged certificate files
+          ansible.builtin.assert:
+            that:
+              - item.stat.exists
+              - item.stat.isreg
+              - item.stat.size | int > 0
+            fail_msg: >-
+              Certificate staging did not create
+              {{ image_builder_certificate_directory }}/{{ item.item }} on
+              {{ inventory_hostname }}.
+          loop: "{{ image_builder_staged_certificate_file_stats.results }}"
+          loop_control:
+            label: >-
+              {{ image_builder_certificate_directory }}/{{ item.item }}
 
       always:
         - name: Remove controller-side private certificate material

@@ -480,6 +480,52 @@
             mode: "0600"
           no_log: true
 
+        #######################################################################
+        # Legacy Cockpit-compatible staging names
+        #
+        # The original Image Builder configuration role consumes cockpit.*
+        # staging filenames. Keep the canonical tls.* files and also publish
+        # compatibility copies so both workflows use the same certificate.
+        #######################################################################
+
+        - name: Install Cockpit-compatible leaf certificate
+          ansible.builtin.copy:
+            dest: "{{ image_builder_certificate_directory }}/cockpit.crt"
+            content: "{{ image_builder_exported_certificate_data.Certificate }}"
+            owner: root
+            group: root
+            mode: "0644"
+          no_log: true
+
+        - name: Install Cockpit-compatible certificate chain
+          ansible.builtin.copy:
+            dest: "{{ image_builder_certificate_directory }}/cockpit-chain.crt"
+            content: "{{ image_builder_exported_certificate_data.CertificateChain }}"
+            owner: root
+            group: root
+            mode: "0644"
+          no_log: true
+
+        - name: Install Cockpit-compatible full certificate chain
+          ansible.builtin.copy:
+            dest: "{{ image_builder_certificate_directory }}/cockpit-fullchain.crt"
+            content: |-
+              {{ image_builder_exported_certificate_data.Certificate | trim }}
+              {{ image_builder_exported_certificate_data.CertificateChain | trim }}
+            owner: root
+            group: root
+            mode: "0644"
+          no_log: true
+
+        - name: Install Cockpit-compatible private key
+          ansible.builtin.copy:
+            src: "{{ image_builder_certificate_tempdir.path }}/tls.key"
+            dest: "{{ image_builder_certificate_directory }}/cockpit.key"
+            owner: root
+            group: root
+            mode: "0600"
+          no_log: true
+
         - name: Validate the installed certificate hostname
           ansible.builtin.command:
             argv:

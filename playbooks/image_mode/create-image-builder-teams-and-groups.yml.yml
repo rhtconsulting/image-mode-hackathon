@@ -1,0 +1,182 @@
+---
+###############################################################################
+# Create Team A, Team B, ... from generated_number_of_host_var and create
+# corresponding groups in the Image Builders inventory. AAP Teams are RBAC
+# containers for users; inventory groups are used to associate managed hosts.
+#
+# Required job template credential:
+#   - Red Hat Ansible Controller Credential
+#
+# Run this job template against:
+#   Image Builders
+###############################################################################
+
+- name: Create Image Builder AAP teams and assign hosts to matching groups
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    image_builder_organization_name: "Image Mode Lab"
+    image_builder_inventory_name: "Image Builders"
+    image_builder_team_count: "{{ generated_number_of_host_var | int }}"
+    image_builder_team_letters:
+      - A
+      - B
+      - C
+      - D
+      - E
+      - F
+      - G
+      - H
+      - I
+      - J
+      - K
+      - L
+      - M
+      - N
+      - O
+      - P
+      - Q
+      - R
+      - S
+      - T
+      - U
+      - V
+      - W
+      - X
+      - Y
+      - Z
+    image_builder_production_hosts: "{{ groups['all'] | default([]) }}"
+
+  tasks:
+    - name: Validate requested Image Builder team count
+      ansible.builtin.assert:
+        that:
+          - generated_number_of_host_var is defined
+          - image_builder_team_count | int >= 1
+          - image_builder_team_count | int <= image_builder_team_letters | length
+          - image_builder_production_hosts | length > 0
+        fail_msg: >-
+          generated_number_of_host_var must be between 1 and 26 and the
+          {{ image_builder_inventory_name }} inventory must contain hosts.
+
+    - name: Build requested team definitions
+      ansible.builtin.set_fact:
+        image_builder_requested_teams: >-
+          {{
+            image_builder_team_letters[
+              0:(image_builder_team_count | int)
+            ]
+          }}
+
+    - name: Resolve each production host team letter
+      ansible.builtin.set_fact:
+        image_builder_host_team_map: >-
+          {{
+            image_builder_host_team_map | default({})
+            | combine(
+                {
+                  item: (
+                    hostvars[item].image_builder_team_id
+                    | default(
+                        item
+                        | regex_replace(
+                            '^image-builder-rhel[0-9]+-([a-z])-.*$',
+                            '\\1'
+                          ),
+                        true
+                      )
+                    | upper
+                  )
+                }
+              )
+          }}
+      loop: "{{ image_builder_production_hosts }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Validate every host maps to a requested team
+      ansible.builtin.assert:
+        that:
+          - image_builder_host_team_map[item] in image_builder_requested_teams
+        fail_msg: >-
+          Host {{ item }} maps to Team
+          {{ image_builder_host_team_map[item] }}, but
+          generated_number_of_host_var={{ image_builder_team_count }} only
+          requested teams {{ image_builder_requested_teams | join(', ') }}.
+      loop: "{{ image_builder_production_hosts }}"
+      loop_control:
+        label: "{{ item }}"
+
+    ###########################################################################
+    # Create AAP RBAC teams
+    ###########################################################################
+
+    - name: Create Image Builder AAP teams
+      ansible.controller.team:
+        name: "Team {{ item }}"
+        description: >-
+          Image Mode Builder administrators for Image Builder team {{ item }}.
+        organization: "{{ image_builder_organization_name }}"
+        state: present
+      loop: "{{ image_builder_requested_teams }}"
+      loop_control:
+        label: "Team {{ item }}"
+
+    ###########################################################################
+    # Create matching inventory groups
+    ###########################################################################
+
+    - name: Create matching Image Builder inventory groups
+      ansible.controller.group:
+        name: "Team {{ item }}"
+        description: >-
+          Production Image Builder hosts allocated to team {{ item }}.
+        inventory: "{{ image_builder_inventory_name }}"
+        state: present
+        preserve_existing_hosts: true
+        variables:
+          image_builder_team_id: "{{ item | lower }}"
+          image_builder_team_name: "Team {{ item }}"
+      loop: "{{ image_builder_requested_teams }}"
+      loop_control:
+        label: "Team {{ item }}"
+
+    - name: Assign production hosts to their matching inventory groups
+      ansible.controller.group:
+        name: "Team {{ image_builder_host_team_map[item] }}"
+        inventory: "{{ image_builder_inventory_name }}"
+        state: present
+        hosts:
+          - "{{ item }}"
+        preserve_existing_hosts: true
+        preserve_existing_children: true
+      loop: "{{ image_builder_production_hosts }}"
+      loop_control:
+        label: >-
+          {{ item }} -> Team {{ image_builder_host_team_map[item] }}
+
+    - name: Publish Image Builder team workflow results
+      ansible.builtin.set_stats:
+        data:
+          image_builder_aap_teams: >-
+            {{
+              image_builder_requested_teams
+              | map('regex_replace', '^(.*)$', 'Team \\1')
+              | list
+            }}
+          image_builder_host_team_map: "{{ image_builder_host_team_map }}"
+          image_builder_team_count: "{{ image_builder_team_count | int }}"
+
+    - name: Display Image Builder team assignments
+      ansible.builtin.debug:
+        msg:
+          teams: >-
+            {{
+              image_builder_requested_teams
+              | map('regex_replace', '^(.*)$', 'Team \\1')
+              | list
+            }}
+          host_assignments: "{{ image_builder_host_team_map }}"

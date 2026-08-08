@@ -70,7 +70,7 @@
 
 - name: Activate staged Image Builder subscription in Satellite
   ansible.builtin.include_role:
-    name: satellite_subscription_activation
+    name: image_mode_satellite_subscription_activation
     public: true
 
 - name: Read final Satellite registration identity

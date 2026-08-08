@@ -142,3 +142,15 @@ controller_workflows:
           organization:
             name: "Image Mode Lab"
           type: "job_template"
+
+      #########################################################################
+      # Activate Staged Image Builder Hosts in Satellite
+      #########################################################################
+
+      - identifier: "activate_staged_builders_in_satellite"
+
+        unified_job_template:
+          name: "Activate Staged Image Builder Hosts in Satellite"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"

@@ -1,0 +1,13 @@
+---
+###############################################################################
+# Activate all hosts in the persistent Staged Image Builders inventory.
+###############################################################################
+
+- name: Activate staged Image Builder hosts in Satellite
+  hosts: all
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  roles:
+    - role: staged_image_builder_satellite_activation

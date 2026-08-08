@@ -301,6 +301,43 @@ controller_templates:
 
     survey_enabled: false
 
+  
+  ###############################################################################
+  # Activate Image Builder Hosts in Satellite
+  ###############################################################################
+  
+  - name: "Activate Staged Image Builder Hosts in Satellite"
+    description: >-
+      Validate installed ACM certificates, register staged Image Builder hosts
+      with Red Hat Satellite using their RHEL-specific activation keys, verify
+      repository access, and persist activation status in AAP.
+  
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Staged Image Builders"
+    playbook: >-
+      playbooks/image_mode/activate-staged-image-builders-in-satellite.yml
+    execution_environment: "Image Mode EE"
+  
+    credentials:
+    - "Image Mode Machine Credential"
+    - "Red Hat Ansible Controller Credential"
+    job_type: "run"
+    verbosity: 1
+    forks: 2
+    timeout: 3600
+    allow_simultaneous: false
+  
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+  
+    survey_enabled: false
+    state: present
+
+
+
 
   ###############################################################################
   # Generate and stage AWS certificates

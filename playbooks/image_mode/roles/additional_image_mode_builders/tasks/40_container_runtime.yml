@@ -1,0 +1,74 @@
+---
+# Container configuration
+###########################################################################
+
+- name: Ensure system container configuration directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/containers
+    - /etc/containers/registries.conf.d
+
+- name: Configure container short-name search registries
+  ansible.builtin.copy:
+    dest: /etc/containers/registries.conf.d/10-image-mode.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      unqualified-search-registries = [
+        "registry.access.redhat.com",
+        "registry.redhat.io",
+        "docker.io"
+      ]
+
+- name: Ensure root container authentication directory exists
+  ansible.builtin.file:
+    path: "{{ root_container_auth_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Authenticate to Red Hat registry
+  containers.podman.podman_login:
+    registry: "{{ redhat_registry_host }}"
+    username: "{{ redhat_registry_username }}"
+    password: "{{ redhat_registry_password }}"
+    authfile: "{{ root_container_auth_file }}"
+  when:
+    - redhat_registry_username | length > 0
+    - redhat_registry_password | length > 0
+  no_log: true
+
+- name: Authenticate to Quay registry
+  containers.podman.podman_login:
+    registry: "{{ quay_registry_host }}"
+    username: "{{ quay_registry_username }}"
+    password: "{{ quay_registry_password }}"
+    authfile: "{{ root_container_auth_file }}"
+    tlsverify: "{{ quay_registry_tls_verify | bool }}"
+  when: image_mode_configure_quay_login | bool
+  no_log: false
+  ignore_errors: true
+
+- name: Check for container authentication file
+  ansible.builtin.stat:
+    path: "{{ root_container_auth_file }}"
+  register: root_container_auth_file_status
+
+- name: Pull Bootc Image Builder container
+  containers.podman.podman_image:
+    name: "{{ bootc_image_builder_image }}"
+    state: present
+    pull: true
+    authfile: >-
+      {{
+        root_container_auth_file
+        if root_container_auth_file_status.stat.exists
+        else omit
+      }}

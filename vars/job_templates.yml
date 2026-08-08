@@ -338,7 +338,6 @@ controller_templates:
 
 
 
-
   ###############################################################################
   # Generate and stage AWS certificates
   ###############################################################################
@@ -376,6 +375,21 @@ controller_templates:
 
     survey_enabled: false
     state: present
+
+  ###############################################################################
+  # Additional Image Builder Host playbook for configuration hosts in a inventory
+  ###############################################################################
+  - name: Configure Additional Staged Image Mode Builder Hosts
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Staged Image Builders"
+    playbook: playbooks/image_mode/add-new-image-mode-builder-hosts.yml
+    execution_environment: "Image Mode EE"
+    credentials:
+      - "Image Mode Machine Credential"
+      - "Image Mode Red Hat Registry Credential"
+      - "Image Mode Quay Registry Credential"
+      - "Image Mode IdM Administrator Credential"
 
 
   # - name: "Bootstrap Satellite Content"

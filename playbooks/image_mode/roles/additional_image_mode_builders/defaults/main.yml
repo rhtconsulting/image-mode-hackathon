@@ -1,0 +1,329 @@
+---
+###############################################################################
+# Image Mode Builder role defaults
+#
+# These defaults may be overridden by:
+#
+# - inventory
+# - group_vars
+# - host_vars
+# - AAP Job Template variables
+# - Extra vars
+#
+# Sensitive values should be injected through:
+#
+# - AAP Credentials
+# - Ansible Vault
+# - AWS Secrets Manager
+#
+###############################################################################
+
+###############################################################################
+# Image Mode workspace
+###############################################################################
+
+# Root directory used by Image Mode development.
+image_mode_root: /var/lib/image-mode
+
+image_mode_source_directory: "{{ image_mode_root }}/sources"
+image_mode_containerfiles_directory: "{{ image_mode_root }}/containerfiles"
+image_mode_blueprints_directory: "{{ image_mode_root }}/blueprints"
+image_mode_build_directory: "{{ image_mode_root }}/builds"
+image_mode_output_directory: "{{ image_mode_root }}/output"
+image_mode_artifacts_directory: "{{ image_mode_root }}/artifacts"
+image_mode_cache_directory: "{{ image_mode_root }}/cache"
+image_mode_registry_auth_directory: "{{ image_mode_root }}/registry-auth"
+image_mode_logs_directory: "{{ image_mode_root }}/logs"
+image_mode_tmp_directory: "{{ image_mode_root }}/tmp"
+
+# Local POSIX group used for the shared workspace.
+image_mode_group: image-builders
+
+###############################################################################
+# IdM Image Builder access
+###############################################################################
+
+# IdM group containing all domain users.
+idm_all_users_group: ipausers
+
+# POSIX IdM group granted access to Image Builder.
+image_builder_access_group: image-builder-users
+
+# Automatically create and manage the Image Builder access group.
+image_mode_manage_idm_access_group: true
+
+# Kerberos administrator principal.
+idm_admin_principal: admin
+
+# Inject securely from AAP or another credential source.
+idm_admin_password: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'IDM_ADMIN_PASSWORD'
+    )
+    | default('', true)
+  }}
+
+###############################################################################
+# Bootc Image Builder
+###############################################################################
+
+bootc_image_builder_rhel9_image: >-
+  registry.redhat.io/rhel9/bootc-image-builder:latest
+
+bootc_image_builder_rhel10_image: >-
+  registry.redhat.io/rhel10/bootc-image-builder:latest
+
+image_mode_pull_bootc_image_builder: true
+
+###############################################################################
+# Red Hat registry authentication
+###############################################################################
+
+redhat_registry_host: registry.redhat.io
+
+redhat_registry_username: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'REDHAT_REGISTRY_USERNAME'
+    )
+    | default('', true)
+  }}
+
+redhat_registry_password: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'REDHAT_REGISTRY_PASSWORD'
+    )
+    | default('', true)
+  }}
+
+# Require registry authentication before the role proceeds.
+image_mode_require_redhat_registry_login: false
+
+###############################################################################
+# Optional Quay registry authentication
+###############################################################################
+
+quay_registry_host: >-
+  {{
+    quay_hostname
+    | default('', true)
+  }}
+
+quay_registry_username: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'QUAY_REGISTRY_USERNAME'
+    )
+    | default('', true)
+  }}
+
+quay_registry_password: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'QUAY_REGISTRY_PASSWORD'
+    )
+    | default('', true)
+  }}
+
+image_mode_configure_quay_login: >-
+  {{
+    (quay_registry_host | length > 0)
+    and
+    (quay_registry_username | length > 0)
+    and
+    (quay_registry_password | length > 0)
+  }}
+
+# Set to true after Quay's CA certificate is trusted.
+quay_registry_tls_verify: false
+
+###############################################################################
+# Red Hat Insights
+###############################################################################
+
+image_mode_register_with_insights: true
+
+redhat_insights_activation_key: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'REDHAT_INSIGHTS_ACTIVATION_KEY'
+    )
+    | default('', true)
+  }}
+
+redhat_insights_organization_id: >-
+  {{
+    lookup(
+      'ansible.builtin.env',
+      'REDHAT_INSIGHTS_ORGANIZATION_ID'
+    )
+    | default('', true)
+  }}
+
+image_mode_have_insights_activation_credentials: >-
+  {{
+    (redhat_insights_activation_key | length > 0)
+    and
+    (redhat_insights_organization_id | length > 0)
+  }}
+
+###############################################################################
+# Cockpit and firewall
+###############################################################################
+
+cockpit_port: 9090
+cockpit_firewall_zone: public
+
+image_mode_firewall_ports:
+  - 80/tcp
+  - 443/tcp
+  - "{{ cockpit_port }}/tcp"
+
+###############################################################################
+# Cockpit TLS
+###############################################################################
+
+cockpit_public_tls_fqdn: >-
+  {{
+    public_tls_fqdn
+    | default(inventory_hostname, true)
+  }}
+
+cockpit_tls_root: /opt/image-builder
+cockpit_tls_directory: "{{ cockpit_tls_root }}/certs"
+
+cockpit_tls_leaf_certificate_path: "{{ cockpit_tls_directory }}/cockpit-leaf.crt"
+cockpit_tls_chain_path: "{{ cockpit_tls_directory }}/cockpit-chain.crt"
+cockpit_tls_private_key_path: "{{ cockpit_tls_directory }}/cockpit.key"
+cockpit_tls_fullchain_path: "{{ cockpit_tls_directory }}/cockpit-fullchain.crt"
+cockpit_tls_metadata_path: "{{ cockpit_tls_directory }}/certificate-metadata.json"
+
+cockpit_ws_certificate_directory: /etc/cockpit/ws-certs.d
+cockpit_ws_certificate_path: "{{ cockpit_ws_certificate_directory }}/99-image-builder-acm.cert"
+
+cockpit_tls_minimum_validity_seconds: 1209600
+
+###############################################################################
+# Python yq
+###############################################################################
+
+image_mode_install_yq: true
+image_mode_yq_pip_package: yq
+image_mode_yq_command: /usr/local/bin/yq
+
+###############################################################################
+# Podman authentication
+###############################################################################
+
+root_container_auth_directory: /root/.config/containers
+root_container_auth_file: /root/.config/containers/auth.json
+
+
+
+###############################################################################
+#Default core packages
+###############################################################################
+image_mode_core_packages:
+
+  # Container tools
+  - podman
+  - buildah
+  - skopeo
+  - bootc
+
+  # Image Builder
+  - osbuild-composer
+  - composer-cli
+
+  # Cockpit
+  - cockpit
+  - cockpit-system
+  - cockpit-composer
+  - cockpit-podman
+  - cockpit-storaged
+  - cockpit-packagekit
+
+  # Registration
+  - insights-client
+  - rhc
+  - subscription-manager
+  - freeipa-client
+  - krb5-workstation
+
+  # Python
+  - python3
+  - python3-pip
+
+  # Development
+  - git
+  - git-lfs
+  - make
+  - jq
+  - rsync
+  - tar
+  - gzip
+  - unzip
+  - wget
+  - curl
+  - vim-enhanced
+  - bash-completion
+  - tree
+  - tmux
+
+  # Image utilities
+  - acl
+  - qemu-img
+  - xz
+  - squashfs-tools
+  - policycoreutils-python-utils
+  - openssl
+
+  # Networking
+  - firewalld
+  - bind-utils
+  - iproute
+  - net-tools
+  - lsof
+
+###############################################################################
+# Workspace directory definitions
+###############################################################################
+
+image_mode_workspace_directories:
+  - path: "{{ image_mode_source_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_containerfiles_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_blueprints_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_build_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_output_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_artifacts_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_cache_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_registry_auth_directory }}"
+    mode: "2770"
+
+  - path: "{{ image_mode_logs_directory }}"
+    mode: "2775"
+
+  - path: "{{ image_mode_tmp_directory }}"
+    mode: "2775"

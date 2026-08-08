@@ -157,3 +157,19 @@ controller_workflows:
           organization:
             name: "Image Mode Lab"
           type: "job_template"
+        related:
+          success_nodes:
+            - identifier: "configure_additional_staged_builders"
+
+    #########################################################################
+    # Configure additional staged Image Mode Builder hosts
+    #########################################################################
+
+      - identifier: "configure_additional_staged_builders"
+
+        unified_job_template:
+          name: "Configure Additional Staged Image Mode Builder Hosts"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+

@@ -12,6 +12,147 @@
     name: "{{ image_mode_core_packages }}"
     state: present
 
+
+###############################################################################
+# KVM/libvirt packages required for local RHEL VM installation
+###############################################################################
+
+- name: Install Image Builder virtualization packages
+  ansible.builtin.dnf:
+    name:
+      - qemu-kvm
+      - libvirt
+      - libvirt-client
+      - libvirt-daemon-kvm
+      - libvirt-daemon-config-network
+      - virt-install
+    state: present
+
+- name: Enable and start libvirt modular daemon sockets
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - virtqemud.socket
+    - virtqemud-ro.socket
+    - virtqemud-admin.socket
+    - virtnetworkd.socket
+    - virtnetworkd-ro.socket
+    - virtnetworkd-admin.socket
+    - virtnodedevd.socket
+    - virtnodedevd-ro.socket
+    - virtnodedevd-admin.socket
+    - virtnwfilterd.socket
+    - virtnwfilterd-ro.socket
+    - virtnwfilterd-admin.socket
+    - virtsecretd.socket
+    - virtsecretd-ro.socket
+    - virtsecretd-admin.socket
+    - virtstoraged.socket
+    - virtstoraged-ro.socket
+    - virtstoraged-admin.socket
+    - virtinterfaced.socket
+    - virtinterfaced-ro.socket
+    - virtinterfaced-admin.socket
+
+- name: Verify virt-install is available
+  ansible.builtin.command:
+    argv:
+      - virt-install
+      - --version
+  register: image_mode_virt_install_version
+  changed_when: false
+
+- name: Check whether the default libvirt network exists
+  ansible.builtin.command:
+    argv:
+      - virsh
+      - net-info
+      - default
+  register: image_mode_libvirt_default_network_info
+  changed_when: false
+  failed_when: false
+
+- name: Locate packaged default libvirt network definition
+  ansible.builtin.stat:
+    path: /usr/share/libvirt/networks/default.xml
+  register: image_mode_libvirt_default_network_definition
+  when: image_mode_libvirt_default_network_info.rc != 0
+
+- name: Define the default libvirt network
+  ansible.builtin.command:
+    argv:
+      - virsh
+      - net-define
+      - /usr/share/libvirt/networks/default.xml
+  when:
+    - image_mode_libvirt_default_network_info.rc != 0
+    - image_mode_libvirt_default_network_definition.stat.exists
+  register: image_mode_libvirt_default_network_define
+  changed_when: image_mode_libvirt_default_network_define.rc == 0
+
+- name: Read final default libvirt network state
+  ansible.builtin.command:
+    argv:
+      - virsh
+      - net-info
+      - default
+  register: image_mode_libvirt_default_network_final
+  changed_when: false
+
+- name: Start the default libvirt network
+  ansible.builtin.command:
+    argv:
+      - virsh
+      - net-start
+      - default
+  when: >-
+    image_mode_libvirt_default_network_final.stdout
+    is not search('Active:[ ]+yes')
+  register: image_mode_libvirt_default_network_start
+  changed_when: image_mode_libvirt_default_network_start.rc == 0
+
+- name: Enable default libvirt network autostart
+  ansible.builtin.command:
+    argv:
+      - virsh
+      - net-autostart
+      - default
+  when: >-
+    image_mode_libvirt_default_network_final.stdout
+    is not search('Autostart:[ ]+yes')
+  register: image_mode_libvirt_default_network_autostart
+  changed_when: >-
+    'marked as autostarted' in
+    image_mode_libvirt_default_network_autostart.stdout
+
+- name: Check for KVM acceleration
+  ansible.builtin.stat:
+    path: /dev/kvm
+  register: image_mode_kvm_device
+
+- name: Display virtualization readiness
+  ansible.builtin.debug:
+    msg:
+      - "virt-install version: {{ image_mode_virt_install_version.stdout }}"
+      - >-
+        KVM acceleration:
+        {{
+          'available'
+          if image_mode_kvm_device.stat.exists
+          else 'not exposed by this EC2 instance type'
+        }}
+      - >-
+        Default network:
+        {{
+          'active'
+          if image_mode_libvirt_default_network_final.stdout
+             is search('Active:[ ]+yes')
+          else 'started by this run'
+        }}
+
+
 ###############################################################################
 # Python yq
 ###############################################################################

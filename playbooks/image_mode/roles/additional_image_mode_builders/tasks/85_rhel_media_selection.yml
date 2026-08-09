@@ -49,15 +49,6 @@
     group: root
     mode: "0755"
 
-- name: Verify AWS CLI is installed on the Image Builder
-  ansible.builtin.command:
-    argv:
-      - aws
-      - --version
-  register: image_builder_aws_cli_version
-  changed_when: false
-  environment: "{{ image_builder_rhel_media_aws_cli_environment }}"
-
 - name: Read selected RHEL ISO size from S3
   ansible.builtin.command:
     argv:
@@ -76,7 +67,6 @@
       - text
   register: image_builder_rhel_media_s3_head
   changed_when: false
-  environment: "{{ image_builder_rhel_media_aws_cli_environment }}"
 
 - name: Validate selected RHEL ISO exists in S3
   ansible.builtin.assert:
@@ -108,7 +98,6 @@
       - "{{ image_builder_rhel_media_aws_region }}"
       - --only-show-errors
   register: image_builder_rhel_media_download
-  environment: "{{ image_builder_rhel_media_aws_cli_environment }}"
   when: >-
     not image_builder_existing_rhel_media_file.stat.exists
     or

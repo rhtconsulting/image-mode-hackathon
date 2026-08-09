@@ -340,11 +340,3 @@ image_builder_rhel_media_directory: "/mnt/ISO"
 image_builder_rhel9_iso_destination_name: "rhel9.iso"
 image_builder_rhel10_iso_destination_name: "rhel10.iso"
 
-image_builder_rhel_media_presign_expiration: 21600
-image_builder_rhel_media_download_timeout: 21600
-
-image_builder_rhel_media_aws_region: >-
-  {{
-    aws_region
-    | default(image_builder_aws_region | default('us-east-2'), true)
-  }}

@@ -12,6 +12,7 @@ controller_templates:
       - "Image Mode Red Hat Registry Credential"
       - "Image Mode Quay Registry Credential"
       - "Image Mode IdM Administrator Credential"
+      - "AWS IAM Service Account Credential"
 
 
   - name: "Build Image Mode AMI"
@@ -390,6 +391,7 @@ controller_templates:
       - "Image Mode Red Hat Registry Credential"
       - "Image Mode Quay Registry Credential"
       - "Image Mode IdM Administrator Credential"
+      - "AWS IAM Service Account Credential"
 
   ###############################################################################
   # Move Image Builder Hosts into main inventory - clear out staged_image_builder_hosts

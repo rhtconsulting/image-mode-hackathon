@@ -175,6 +175,20 @@ controller_workflows:
         related:
           success_nodes:
             - identifier: "promote_new_image_builder_hosts"
+            - identifier: "create_image_builder_teams_and_groups"
+
+      #########################################################################
+      # Create Image Builder teams and inventory groups
+      #########################################################################
+
+      - identifier: "create_image_builder_teams_and_groups"
+        unified_job_template:
+          name: "Create Image Builder Teams and Groups"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+
+
     #########################################################################
     # Configure additional staged Image Mode Builder hosts
     #########################################################################
@@ -189,6 +203,8 @@ controller_workflows:
         related:
           success_nodes:
             - identifier: "clear_promoted_builders_from_staged_inventory"
+
+
 
     #########################################################################
     # Clear inventory out

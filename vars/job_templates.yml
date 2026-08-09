@@ -407,7 +407,6 @@ controller_templates:
       - "Image Mode IdM Administrator Credential"
       - "Red Hat Ansible Controller Credential"
 
-
   ###############################################################################
   # Clear out inventory
   ###############################################################################
@@ -443,6 +442,42 @@ controller_templates:
 
     survey_enabled: false
     state: present
+
+
+  ###############################################################################
+  # Create Image Builder AAP teams and inventory groups
+  ###############################################################################
+
+  - name: "Create Image Builder Teams and Groups"
+    description: >-
+      Analyze the newly promoted Image Builder hostnames, determine their
+      required team letters, query existing AAP teams, create only missing
+      teams, create matching production inventory groups, and assign each
+      promoted host to its corresponding group.
+
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Builders"
+    playbook: >-
+      playbooks/image_mode/create-image-builder-teams-and-groups.yml
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Red Hat Ansible Controller Credential"
+    job_type: "run"
+    verbosity: 1
+    forks: 1
+    timeout: 900
+    allow_simultaneous: false
+
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+
+    survey_enabled: false
+    state: present
+
 
 
   # - name: "Bootstrap Satellite Content"

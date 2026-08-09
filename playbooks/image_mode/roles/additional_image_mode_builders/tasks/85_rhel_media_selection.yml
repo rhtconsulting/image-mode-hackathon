@@ -2,8 +2,9 @@
 ###############################################################################
 # Select and stage the appropriate RHEL DVD ISO for this Image Builder.
 #
-# AWS authentication remains on the AAP execution node. A temporary presigned
-# URL allows the managed EC2 host to download the large ISO directly from S3.
+# The AWS CLI runs on the managed Image Builder. Its EC2 instance profile must
+# permit s3:GetObject for the selected ISO and s3:HeadObject (authorized by the
+# same s3:GetObject IAM action).
 ###############################################################################
 
 - name: Validate Image Builder operating system for RHEL media selection
@@ -48,47 +49,79 @@
     group: root
     mode: "0755"
 
-- name: Generate temporary S3 URL for selected RHEL installation media
+- name: Verify AWS CLI is installed on the Image Builder
+  ansible.builtin.command:
+    argv:
+      - aws
+      - --version
+  register: image_builder_aws_cli_version
+  changed_when: false
+  environment: "{{ image_builder_rhel_media_aws_cli_environment }}"
+
+- name: Read selected RHEL ISO size from S3
+  ansible.builtin.command:
+    argv:
+      - aws
+      - s3api
+      - head-object
+      - --bucket
+      - "{{ image_builder_rhel_media_s3_bucket }}"
+      - --key
+      - "{{ image_builder_selected_iso_s3_object }}"
+      - --region
+      - "{{ image_builder_rhel_media_aws_region }}"
+      - --query
+      - ContentLength
+      - --output
+      - text
+  register: image_builder_rhel_media_s3_head
+  changed_when: false
+  environment: "{{ image_builder_rhel_media_aws_cli_environment }}"
+
+- name: Validate selected RHEL ISO exists in S3
+  ansible.builtin.assert:
+    that:
+      - image_builder_rhel_media_s3_head.rc == 0
+      - image_builder_rhel_media_s3_head.stdout | trim is match('^[1-9][0-9]*$')
+      - image_builder_rhel_media_s3_head.stdout | trim | int > 0
+    fail_msg: >-
+      The Image Builder could not read
+      s3://{{ image_builder_rhel_media_s3_bucket }}/{{ image_builder_selected_iso_s3_object }}.
+      Verify the object name, AWS region, EC2 instance profile, and its
+      s3:GetObject permission.
+
+- name: Inspect existing local RHEL installation media
+  ansible.builtin.stat:
+    path: "{{ image_builder_selected_iso_destination }}"
+  register: image_builder_existing_rhel_media_file
+
+- name: Download selected RHEL installation media from S3
   ansible.builtin.command:
     argv:
       - aws
       - s3
-      - presign
+      - cp
       - >-
         s3://{{ image_builder_rhel_media_s3_bucket }}/{{ image_builder_selected_iso_s3_object }}
+      - "{{ image_builder_selected_iso_destination }}"
       - --region
       - "{{ image_builder_rhel_media_aws_region }}"
-      - --expires-in
-      - "{{ image_builder_rhel_media_presign_expiration | int | string }}"
-  register: image_builder_rhel_media_presign
-  changed_when: false
-  delegate_to: localhost
-  become: false
-  no_log: true
+      - --only-show-errors
+  register: image_builder_rhel_media_download
+  environment: "{{ image_builder_rhel_media_aws_cli_environment }}"
+  when: >-
+    not image_builder_existing_rhel_media_file.stat.exists
+    or
+    image_builder_existing_rhel_media_file.stat.size | default(0) | int
+    != image_builder_rhel_media_s3_head.stdout | trim | int
 
-- name: Validate temporary RHEL media download URL
-  ansible.builtin.assert:
-    that:
-      - image_builder_rhel_media_presign.rc == 0
-      - image_builder_rhel_media_presign.stdout | trim is match('^https://')
-    fail_msg: >-
-      AAP could not create a temporary download URL for
-      s3://{{ image_builder_rhel_media_s3_bucket }}/{{ image_builder_selected_iso_s3_object }}.
-      Verify that the job has the AWS IAM credential attached and that it can
-      perform s3:GetObject on the selected object.
-  no_log: true
-
-- name: Download selected RHEL installation media from S3
-  ansible.builtin.get_url:
-    url: "{{ image_builder_rhel_media_presign.stdout | trim }}"
-    dest: "{{ image_builder_selected_iso_destination }}"
+- name: Set permissions on downloaded RHEL installation media
+  ansible.builtin.file:
+    path: "{{ image_builder_selected_iso_destination }}"
+    state: file
     owner: root
     group: root
     mode: "0644"
-    timeout: "{{ image_builder_rhel_media_download_timeout | int }}"
-    force: false
-  register: image_builder_rhel_media_download
-  no_log: false
 
 - name: Inspect staged RHEL installation media
   ansible.builtin.stat:
@@ -115,4 +148,3 @@
         s3://{{ image_builder_rhel_media_s3_bucket }}/{{ image_builder_selected_iso_s3_object }}
       - "Installed ISO: {{ image_builder_selected_iso_destination }}"
       - "Size: {{ image_builder_rhel_media_file.stat.size }} bytes"
-

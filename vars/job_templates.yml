@@ -405,6 +405,7 @@ controller_templates:
       - "Image Mode Red Hat Registry Credential"
       - "Image Mode Quay Registry Credential"
       - "Image Mode IdM Administrator Credential"
+      - "Red Hat Ansible Controller Credential"
 
 
 

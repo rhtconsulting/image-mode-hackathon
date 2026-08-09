@@ -143,33 +143,6 @@ controller_templates:
       create_satellite_hosts_on_aws_root_password_length: 32
 
 
-  - name: "Create Additional Image Builder Hosts"
-    description: >-
-      Add additional Image Mode Builder teams to the existing AWS lab.
-      Each requested team receives one RHEL 9 Image Builder host and one
-      RHEL 10 Image Builder host. The automation discovers the current lab
-      environment and allocates the next available Image Builder team
-      identifiers before creating the EC2 instances.
-
-    organization: "Image Mode Lab"
-    project: "Image Mode CI/CD"
-    inventory: "Image Mode Lab Infrastructure"
-    playbook: "playbooks/add-additional-image-builder-hosts.yml"
-    execution_environment: "Image Mode EE"
-    credentials:
-      - "AWS IAM Service Account Credential"
-      - "Image Mode AMI SSH Public Key Credential"
-    job_type: "run"
-    verbosity: 1
-    forks: 1
-    timeout: 3600
-    allow_simultaneous: false
-    ask_limit_on_launch: false
-    ask_variables_on_launch: false
-    survey_enabled: true
-    survey_spec: "{{ create_additional_image_builder_hosts_survey }}"
-
-
 
   ###########################################################################
   # Provision additional Image Builder hosts

@@ -120,7 +120,7 @@
           The Red Hat Ansible Controller Credential was not injected. Attach
           it to the Promote Staged Image Builder Hosts job template and ensure
           the workflow node does not override the template credentials.
-      no_log: true
+      no_log: false
 
     - name: Validate staged inventory contains hosts
       ansible.builtin.assert:

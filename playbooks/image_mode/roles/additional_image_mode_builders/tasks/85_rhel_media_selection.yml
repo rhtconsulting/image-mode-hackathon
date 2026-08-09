@@ -2,9 +2,9 @@
 ###############################################################################
 # Select and stage the appropriate RHEL DVD ISO for this Image Builder.
 #
-# The AWS CLI runs on the managed Image Builder. Its EC2 instance profile must
-# permit s3:GetObject for the selected ISO and s3:HeadObject (authorized by the
-# same s3:GetObject IAM action).
+# The AWS CLI and profile-file tasks run explicitly on the managed Image
+# Builder. The AAP-injected rhel-iam access key must permit s3:GetObject for
+# the selected ISO; HeadObject is authorized by that same action.
 ###############################################################################
 
 - name: Resolve AWS CLI settings for RHEL media download
@@ -60,62 +60,63 @@
     owner: root
     group: root
     mode: "0700"
+  become: true
+  delegate_to: "{{ inventory_hostname }}"
 
-- name: Configure AWS access key for the default CLI profile
-  ansible.builtin.command:
-    argv:
-      - aws
-      - configure
-      - set
-      - aws_access_key_id
-      - "{{ aws_access_key_id }}"
-      - --profile
-      - "{{ image_builder_resolved_aws_profile }}"
-  environment:
-    HOME: "{{ image_builder_resolved_aws_home }}"
-  changed_when: false
-  no_log: true
-
-- name: Configure AWS secret key for the default CLI profile
-  ansible.builtin.command:
-    argv:
-      - aws
-      - configure
-      - set
-      - aws_secret_access_key
-      - "{{ aws_secret_access_key }}"
-      - --profile
-      - "{{ image_builder_resolved_aws_profile }}"
-  environment:
-    HOME: "{{ image_builder_resolved_aws_home }}"
-  changed_when: false
-  no_log: true
-
-- name: Configure AWS region for the default CLI profile
-  ansible.builtin.command:
-    argv:
-      - aws
-      - configure
-      - set
-      - region
-      - "{{ image_builder_resolved_aws_region }}"
-      - --profile
-      - "{{ image_builder_resolved_aws_profile }}"
-  environment:
-    HOME: "{{ image_builder_resolved_aws_home }}"
-  changed_when: false
-  no_log: true
-
-- name: Secure AWS CLI profile files
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: file
+- name: Create AWS CLI credentials profile on the remote Image Builder
+  ansible.builtin.copy:
+    dest: "{{ image_builder_resolved_aws_home }}/.aws/credentials"
+    content: |
+      [{{ image_builder_resolved_aws_profile }}]
+      aws_access_key_id = {{ aws_access_key_id }}
+      aws_secret_access_key = {{ aws_secret_access_key }}
     owner: root
     group: root
     mode: "0600"
+  become: true
+  delegate_to: "{{ inventory_hostname }}"
+  no_log: true
+
+- name: Create AWS CLI configuration profile on the remote Image Builder
+  ansible.builtin.copy:
+    dest: "{{ image_builder_resolved_aws_home }}/.aws/config"
+    content: |
+      [{{ 'default' if image_builder_resolved_aws_profile == 'default' else 'profile ' ~ image_builder_resolved_aws_profile }}]
+      region = {{ image_builder_resolved_aws_region }}
+      output = json
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+  delegate_to: "{{ inventory_hostname }}"
+  no_log: true
+
+- name: Inspect remote AWS CLI profile files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: image_builder_remote_aws_profile_files
   loop:
     - "{{ image_builder_resolved_aws_home }}/.aws/credentials"
     - "{{ image_builder_resolved_aws_home }}/.aws/config"
+  become: true
+  delegate_to: "{{ inventory_hostname }}"
+  no_log: true
+
+- name: Validate remote AWS CLI profile files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - item.stat.pw_name == 'root'
+      - item.stat.gr_name == 'root'
+      - item.stat.mode == '0600'
+      - item.stat.size | int > 0
+    fail_msg: >-
+      AWS CLI profile file creation failed on {{ inventory_hostname }} for
+      {{ item.item }}.
+  loop: "{{ image_builder_remote_aws_profile_files.results }}"
+  loop_control:
+    label: "{{ item.item }}"
   no_log: true
 
 - name: Validate configured AWS CLI identity
@@ -130,9 +131,15 @@
       - json
   environment:
     HOME: "{{ image_builder_resolved_aws_home }}"
+    AWS_SHARED_CREDENTIALS_FILE: >-
+      {{ image_builder_resolved_aws_home }}/.aws/credentials
+    AWS_CONFIG_FILE: >-
+      {{ image_builder_resolved_aws_home }}/.aws/config
     AWS_PAGER: ""
   register: image_builder_rhel_media_aws_identity
   changed_when: false
+  become: true
+  delegate_to: "{{ inventory_hostname }}"
   no_log: true
 
 - name: Select RHEL installation media for the target operating system
@@ -182,9 +189,16 @@
       - "{{ image_builder_resolved_aws_profile }}"
   register: image_builder_rhel_media_s3_head
   changed_when: false
+  failed_when: false
   environment:
     HOME: "{{ image_builder_resolved_aws_home }}"
+    AWS_SHARED_CREDENTIALS_FILE: >-
+      {{ image_builder_resolved_aws_home }}/.aws/credentials
+    AWS_CONFIG_FILE: >-
+      {{ image_builder_resolved_aws_home }}/.aws/config
     AWS_PAGER: ""
+  become: true
+  delegate_to: "{{ inventory_hostname }}"
 
 - name: Validate selected RHEL ISO exists in S3
   ansible.builtin.assert:
@@ -195,8 +209,9 @@
     fail_msg: >-
       The Image Builder could not read
       s3://{{ image_builder_rhel_media_s3_bucket }}/{{ image_builder_selected_iso_s3_object }}.
-      Verify the object name, AWS region, EC2 instance profile, and its
-      s3:GetObject permission.
+      Verify the object name, AWS region, rhel-iam user policy, and its
+      s3:GetObject permission. AWS CLI returned:
+      {{ image_builder_rhel_media_s3_head.stderr | default('no error text') }}
 
 - name: Inspect existing local RHEL installation media
   ansible.builtin.stat:
@@ -220,7 +235,13 @@
   register: image_builder_rhel_media_download
   environment:
     HOME: "{{ image_builder_resolved_aws_home }}"
+    AWS_SHARED_CREDENTIALS_FILE: >-
+      {{ image_builder_resolved_aws_home }}/.aws/credentials
+    AWS_CONFIG_FILE: >-
+      {{ image_builder_resolved_aws_home }}/.aws/config
     AWS_PAGER: ""
+  become: true
+  delegate_to: "{{ inventory_hostname }}"
   when: >-
     not image_builder_existing_rhel_media_file.stat.exists
     or

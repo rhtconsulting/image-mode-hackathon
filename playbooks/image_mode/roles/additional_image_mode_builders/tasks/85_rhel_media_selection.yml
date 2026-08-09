@@ -1,121 +1,118 @@
 ---
-# Firewall and Cockpit
-###########################################################################
+###############################################################################
+# Select and stage the appropriate RHEL DVD ISO for this Image Builder.
+#
+# AWS authentication remains on the AAP execution node. A temporary presigned
+# URL allows the managed EC2 host to download the large ISO directly from S3.
+###############################################################################
 
-- name: Enable and start firewalld
-  ansible.builtin.systemd_service:
-    name: firewalld
-    enabled: true
-    state: started
+- name: Validate Image Builder operating system for RHEL media selection
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == 'RedHat'
+      - ansible_distribution_major_version | int in [9, 10]
+      - image_builder_rhel_media_s3_bucket | string | trim | length > 0
+      - image_builder_rhel9_iso_s3_object | string | trim | length > 0
+      - image_builder_rhel10_iso_s3_object | string | trim | length > 0
+      - image_builder_rhel_media_directory | string | trim | length > 0
+    fail_msg: >-
+      RHEL media selection supports only RHEL 9 and RHEL 10 Image Builders.
+      Detected {{ ansible_distribution | default('UNKNOWN') }}
+      {{ ansible_distribution_version | default('UNKNOWN') }} on
+      {{ inventory_hostname }}.
 
-- name: Open required Image Mode ports permanently and immediately
-  ansible.posix.firewalld:
-    zone: "{{ cockpit_firewall_zone }}"
-    port: "{{ item }}"
-    permanent: true
-    immediate: true
-    state: enabled
-  loop: "{{ image_mode_firewall_ports }}"
+- name: Select RHEL installation media for the target operating system
+  ansible.builtin.set_fact:
+    image_builder_selected_iso_s3_object: >-
+      {{
+        image_builder_rhel10_iso_s3_object
+        if ansible_distribution_major_version | int == 10
+        else image_builder_rhel9_iso_s3_object
+      }}
+    image_builder_selected_iso_destination: >-
+      {{
+        image_builder_rhel_media_directory
+        ~ '/'
+        ~ (
+          image_builder_rhel10_iso_destination_name
+          if ansible_distribution_major_version | int == 10
+          else image_builder_rhel9_iso_destination_name
+        )
+      }}
 
-- name: Enable HTTP firewall service permanently and immediately
-  ansible.posix.firewalld:
-    zone: "{{ cockpit_firewall_zone }}"
-    service: http
-    permanent: true
-    immediate: true
-    state: enabled
+- name: Create RHEL installation media directory
+  ansible.builtin.file:
+    path: "{{ image_builder_rhel_media_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
 
-- name: Enable HTTPS firewall service permanently and immediately
-  ansible.posix.firewalld:
-    zone: "{{ cockpit_firewall_zone }}"
-    service: https
-    permanent: true
-    immediate: true
-    state: enabled
-
-- name: Enable Cockpit firewall service permanently and immediately
-  ansible.posix.firewalld:
-    zone: "{{ cockpit_firewall_zone }}"
-    service: cockpit
-    permanent: true
-    immediate: true
-    state: enabled
-
-- name: Enable and start Cockpit socket
-  ansible.builtin.systemd_service:
-    name: cockpit.socket
-    enabled: true
-    state: started
-    daemon_reload: true
-
-- name: Restart Cockpit socket after TLS certificate update
-  ansible.builtin.systemd_service:
-    name: cockpit.socket
-    state: restarted
-  when:
-    - cockpit_combined_certificate_install is defined
-    - cockpit_combined_certificate_install.changed
-
-- name: Wait for Cockpit port
-  ansible.builtin.wait_for:
-    host: 127.0.0.1
-    port: "{{ cockpit_port }}"
-    state: started
-    timeout: 60
-
-- name: Read certificate presented by Cockpit
-  ansible.builtin.shell: |
-    set -euo pipefail
-    openssl s_client \
-      -connect "127.0.0.1:{{ cockpit_port }}" \
-      -servername "{{ cockpit_public_tls_fqdn }}" \
-      </dev/null 2>/dev/null |
-      openssl x509 \
-        -noout -subject -issuer -serial -dates -fingerprint -sha256
-  args:
-    executable: /bin/bash
-  register: cockpit_presented_certificate
-  changed_when: false
-
-- name: Verify Cockpit presents a certificate for its public hostname
-  ansible.builtin.shell: |
-    set -euo pipefail
-    openssl s_client \
-      -connect "127.0.0.1:{{ cockpit_port }}" \
-      -servername "{{ cockpit_public_tls_fqdn }}" \
-      </dev/null 2>/dev/null |
-      openssl x509 -noout -checkhost "{{ cockpit_public_tls_fqdn }}"
-  args:
-    executable: /bin/bash
-  changed_when: false
-
-- name: Verify permanent firewall ports
+- name: Generate temporary S3 URL for selected RHEL installation media
   ansible.builtin.command:
     argv:
-      - firewall-cmd
-      - --permanent
-      - "--zone={{ cockpit_firewall_zone }}"
-      - "--query-port={{ item }}"
-  loop: "{{ image_mode_firewall_ports }}"
-  register: image_mode_permanent_firewall_checks
+      - aws
+      - s3
+      - presign
+      - >-
+        s3://{{ image_builder_rhel_media_s3_bucket }}/{{ image_builder_selected_iso_s3_object }}
+      - --region
+      - "{{ image_builder_rhel_media_aws_region }}"
+      - --expires-in
+      - "{{ image_builder_rhel_media_presign_expiration | int | string }}"
+  register: image_builder_rhel_media_presign
   changed_when: false
-  failed_when: image_mode_permanent_firewall_checks.rc != 0
+  delegate_to: localhost
+  become: false
+  no_log: true
 
-- name: Verify runtime firewall ports
-  ansible.builtin.command:
-    argv:
-      - firewall-cmd
-      - "--zone={{ cockpit_firewall_zone }}"
-      - "--query-port={{ item }}"
-  loop: "{{ image_mode_firewall_ports }}"
-  register: image_mode_runtime_firewall_checks
-  changed_when: false
-  failed_when: image_mode_runtime_firewall_checks.rc != 0
+- name: Validate temporary RHEL media download URL
+  ansible.builtin.assert:
+    that:
+      - image_builder_rhel_media_presign.rc == 0
+      - image_builder_rhel_media_presign.stdout | trim is match('^https://')
+    fail_msg: >-
+      AAP could not create a temporary download URL for
+      s3://{{ image_builder_rhel_media_s3_bucket }}/{{ image_builder_selected_iso_s3_object }}.
+      Verify that the job has the AWS IAM credential attached and that it can
+      perform s3:GetObject on the selected object.
+  no_log: true
 
-- name: Display active firewall configuration
-  ansible.builtin.command:
-    argv:
-      - firewall-cmd
-      - "--zone={{ cockpit_firewall_zone }}"
-      - --list-all
-  register: image_mode_firewall_configuration
+- name: Download selected RHEL installation media from S3
+  ansible.builtin.get_url:
+    url: "{{ image_builder_rhel_media_presign.stdout | trim }}"
+    dest: "{{ image_builder_selected_iso_destination }}"
+    owner: root
+    group: root
+    mode: "0644"
+    timeout: "{{ image_builder_rhel_media_download_timeout | int }}"
+    force: false
+  register: image_builder_rhel_media_download
+  no_log: true
+
+- name: Inspect staged RHEL installation media
+  ansible.builtin.stat:
+    path: "{{ image_builder_selected_iso_destination }}"
+  register: image_builder_rhel_media_file
+
+- name: Validate staged RHEL installation media
+  ansible.builtin.assert:
+    that:
+      - image_builder_rhel_media_file.stat.exists
+      - image_builder_rhel_media_file.stat.isreg
+      - image_builder_rhel_media_file.stat.size | int > 0
+    fail_msg: >-
+      The selected RHEL installation media was not staged successfully at
+      {{ image_builder_selected_iso_destination }} on {{ inventory_hostname }}.
+
+- name: Display selected RHEL installation media
+  ansible.builtin.debug:
+    msg:
+      - "Host: {{ inventory_hostname }}"
+      - "RHEL major version: {{ ansible_distribution_major_version }}"
+      - >-
+        S3 object:
+        s3://{{ image_builder_rhel_media_s3_bucket }}/{{ image_builder_selected_iso_s3_object }}
+      - "Installed ISO: {{ image_builder_selected_iso_destination }}"
+      - "Size: {{ image_builder_rhel_media_file.stat.size }} bytes"
+

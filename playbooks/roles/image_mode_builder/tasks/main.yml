@@ -17,6 +17,8 @@
   ansible.builtin.import_tasks: 70_cockpit_tls.yml
 - name: Include cockpit firewall tasks
   ansible.builtin.import_tasks: 80_cockpit_firewall.yml
+- name: Include RHEL installation media tasks
+  ansible.builtin.include_tasks: 85_rhel_media_selection.yml
 - name: Include insights tasks
   ansible.builtin.import_tasks: 90_insights.yml
 - name: Include shell tasks

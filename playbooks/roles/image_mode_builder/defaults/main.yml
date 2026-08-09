@@ -327,3 +327,16 @@ image_mode_workspace_directories:
 
   - path: "{{ image_mode_tmp_directory }}"
     mode: "2775"
+
+###############################################################################
+# RHEL installation media
+###############################################################################
+
+image_builder_rhel_media_s3_bucket: "aap-containerized-installers"
+image_builder_rhel9_iso_s3_object: "rhel-9.8-x86_64-dvd.iso"
+image_builder_rhel10_iso_s3_object: "rhel-10.2-x86_64-dvd.iso"
+
+image_builder_rhel_media_directory: "/mnt/ISO"
+image_builder_rhel9_iso_destination_name: "rhel9.iso"
+image_builder_rhel10_iso_destination_name: "rhel10.iso"
+

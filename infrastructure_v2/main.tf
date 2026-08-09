@@ -2825,10 +2825,69 @@ resource "aws_iam_access_key" "rhel_iam" {
     aws_iam_user_policy_attachment.rhel_iam_ami_import,
     aws_iam_user_policy_attachment.rhel_iam_ec2_discovery,
     aws_iam_user_policy_attachment.rhel_iam_ec2_provisioning,
-    aws_iam_user_policy_attachment.rhel_iam_certificate_management
+    aws_iam_user_policy_attachment.rhel_iam_certificate_management,
+    aws_iam_user_policy.rhel_iam_installation_isos_read
   ]
 }
 
+
+###############################################################################
+# rhel-iam access to Image Builder installation ISO media
+###############################################################################
+
+resource "aws_iam_user_policy" "rhel_iam_installation_isos_read" {
+  name = "${var.environment_name}-rhel-iam-installation-isos-read"
+  user = aws_iam_user.rhel_iam.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Sid    = "ReadInstallationISOBucketMetadata"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetBucketLocation"
+        ]
+
+        Resource = "arn:aws:s3:::aap-containerized-installers"
+      },
+      {
+        Sid    = "ListInstallationISOs"
+        Effect = "Allow"
+
+        Action = [
+          "s3:ListBucket"
+        ]
+
+        Resource = "arn:aws:s3:::aap-containerized-installers"
+
+        Condition = {
+          StringLike = {
+            "s3:prefix" = [
+              "rhel-9.8-x86_64-dvd.iso",
+              "rhel-10.2-x86_64-dvd.iso"
+            ]
+          }
+        }
+      },
+      {
+        Sid    = "ReadInstallationISOs"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetObject"
+        ]
+
+        Resource = [
+          "arn:aws:s3:::aap-containerized-installers/rhel-9.8-x86_64-dvd.iso",
+          "arn:aws:s3:::aap-containerized-installers/rhel-10.2-x86_64-dvd.iso"
+        ]
+      }
+    ]
+  })
+}
 
 ############################################################
 # rhel-iam Credentials Secret

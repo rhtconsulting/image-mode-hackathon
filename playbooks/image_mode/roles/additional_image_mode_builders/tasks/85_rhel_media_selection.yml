@@ -88,7 +88,7 @@
     timeout: "{{ image_builder_rhel_media_download_timeout | int }}"
     force: false
   register: image_builder_rhel_media_download
-  no_log: true
+  no_log: false
 
 - name: Inspect staged RHEL installation media
   ansible.builtin.stat:

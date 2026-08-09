@@ -1,13 +1,13 @@
 ---
 ###############################################################################
-# Discover existing AAP teams, allocate the first N unused team letters, create
-# the missing AAP Teams and matching Image Builders inventory groups, and add
-# only the hosts promoted by the current workflow to their matching groups.
+# Discover required team letters from the promoted hostnames, compare them with
+# existing AAP teams, create only the required missing Teams and matching Image
+# Builders inventory groups, and add the current workflow hosts to those groups.
 #
-# Examples for generated_number_of_host_var=2:
-#   Existing Team A       -> allocate Team B and Team C
-#   Existing Team B       -> allocate Team A and Team C
-#   Existing Team A and C -> allocate Team B and Team D
+# Example for hostnames containing team letters A and B:
+#   No existing teams -> create Team A and Team B
+#   Existing Team A   -> create only Team B
+#   Existing A and B  -> create no Teams; ensure groups and assignments exist
 #
 # Required job template credential:
 #   - Red Hat Ansible Controller Credential
@@ -211,45 +211,7 @@
           }}
 
     ###########################################################################
-    # Allocate the first N unused letters while preserving alphabetic order
-    ###########################################################################
-
-    - name: Initialize available Image Builder team letters
-      ansible.builtin.set_fact:
-        image_builder_available_team_letters: []
-
-    - name: Build ordered list of unused Image Builder team letters
-      ansible.builtin.set_fact:
-        image_builder_available_team_letters: >-
-          {{ image_builder_available_team_letters + [item] }}
-      loop: "{{ image_builder_team_letters }}"
-      loop_control:
-        label: "Team {{ item }}"
-      when: item not in image_builder_existing_team_letters
-
-    - name: Validate sufficient unused team letters remain
-      ansible.builtin.assert:
-        that:
-          - >-
-            image_builder_available_team_letters | length
-            >= image_builder_team_count | int
-        fail_msg: >-
-          Requested {{ image_builder_team_count }} new teams, but only
-          {{ image_builder_available_team_letters | length }} unused team
-          letters remain. Existing teams:
-          {{ image_builder_existing_team_names | join(', ') }}.
-
-    - name: Select the first requested unused team letters
-      ansible.builtin.set_fact:
-        image_builder_allocated_team_letters: >-
-          {{
-            image_builder_available_team_letters[
-              0:(image_builder_team_count | int)
-            ]
-          }}
-
-    ###########################################################################
-    # Resolve current workflow host-to-team mappings
+    # Resolve required team letters from the current workflow hostnames
     ###########################################################################
 
     - name: Validate promoted hosts exist in the production inventory snapshot
@@ -264,7 +226,24 @@
       loop_control:
         label: "{{ item }}"
 
-    - name: Resolve promoted host team letters
+    - name: Validate canonical promoted Image Builder hostnames
+      ansible.builtin.assert:
+        that:
+          - >-
+            item is match(
+              '^image-builder-rhel(9|10)-([a-z])-([1-9][0-9]*)[.][A-Za-z0-9.-]+$'
+            )
+        fail_msg: >-
+          Promoted hostname {{ item }} does not follow the required format:
+          image-builder-rhel<9|10>-<team-letter>-<host-number>.<domain>.
+          For example: image-builder-rhel9-a-1.lab.example.com. A hostname such
+          as image-builder-rhel9a-1.lab.example.com is invalid because the
+          separator before the team letter is missing.
+      loop: "{{ image_builder_hosts_for_current_run }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Resolve promoted hostname team letters
       ansible.builtin.set_fact:
         image_builder_host_team_map: >-
           {{
@@ -272,14 +251,10 @@
             | combine(
                 {
                   item: (
-                    hostvars[item].image_builder_team_id
-                    | default(
-                        item
-                        | regex_replace(
-                            '^image-builder-rhel[0-9]+-([a-z])-.*$',
-                            '\\1'
-                          ),
-                        true
+                    item
+                    | regex_replace(
+                        '^image-builder-rhel(?:9|10)-([a-z])-[0-9]+[.].*$',
+                        '\\1'
                       )
                     | upper
                   )
@@ -290,9 +265,42 @@
       loop_control:
         label: "{{ item }}"
 
-    - name: Store distinct promoted host team letters
+    - name: Validate hostname and inventory team metadata agree
+      ansible.builtin.assert:
+        that:
+          - >-
+            hostvars[item].image_builder_team_id
+            | default(hostvars[item].team_id | default(''), true)
+            | upper
+            == image_builder_host_team_map[item]
+          - >-
+            hostvars[item].image_builder_rhel_major_version
+            | default(hostvars[item].rhel_major_version | default(''), true)
+            | string
+            ==
+            (
+              item
+              | regex_replace(
+                  '^image-builder-rhel(9|10)-[a-z]-[0-9]+[.].*$',
+                  '\\1'
+                )
+            )
+        fail_msg: >-
+          Hostname {{ item }} resolves to Team
+          {{ image_builder_host_team_map[item] }}, but its persisted inventory
+          metadata contains team
+          {{
+            hostvars[item].image_builder_team_id
+            | default(hostvars[item].team_id | default('UNKNOWN'), true)
+            | upper
+          }} or a different RHEL major version.
+      loop: "{{ image_builder_hosts_for_current_run }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Store required team letters from promoted hostnames
       ansible.builtin.set_fact:
-        image_builder_promoted_host_team_letters: >-
+        image_builder_required_team_letters: >-
           {{
             image_builder_host_team_map.values()
             | unique
@@ -300,29 +308,44 @@
             | list
           }}
 
-    - name: Validate host letters match newly allocated AAP team letters
+    - name: Validate hostname team count matches workflow request
       ansible.builtin.assert:
         that:
           - >-
-            image_builder_promoted_host_team_letters
-            | difference(image_builder_allocated_team_letters)
-            | length == 0
+            image_builder_required_team_letters | length
+            == image_builder_team_count | int
           - >-
-            image_builder_allocated_team_letters
-            | difference(image_builder_promoted_host_team_letters)
+            image_builder_required_team_letters
+            | difference(image_builder_team_letters)
             | length == 0
         fail_msg: >-
-          AAP allocated teams {{ image_builder_allocated_team_letters }}, but
-          the promoted hostnames/metadata use team letters
-          {{ image_builder_promoted_host_team_letters }}. Phase 03 AWS hostname
-          allocation and this AAP allocation must use the same existing-team
-          source of truth.
+          generated_number_of_host_var={{ image_builder_team_count }} requests
+          that many distinct teams, but the promoted hostnames require
+          {{ image_builder_required_team_letters | length }} teams:
+          {{ image_builder_required_team_letters }}.
+
+    ###########################################################################
+    # Select only required hostname teams that do not already exist in AAP
+    ###########################################################################
+
+    - name: Initialize missing required Image Builder teams
+      ansible.builtin.set_fact:
+        image_builder_missing_team_letters: []
+
+    - name: Build ordered list of required teams missing from AAP
+      ansible.builtin.set_fact:
+        image_builder_missing_team_letters: >-
+          {{ image_builder_missing_team_letters + [item] }}
+      loop: "{{ image_builder_required_team_letters }}"
+      loop_control:
+        label: "Team {{ item }}"
+      when: item not in image_builder_existing_team_letters
 
     ###########################################################################
     # Create AAP RBAC teams and matching inventory groups
     ###########################################################################
 
-    - name: Create allocated Image Builder AAP teams
+    - name: Create required Image Builder AAP teams missing from AAP
       ansible.controller.team:
         name: "Team {{ item }}"
         description: >-
@@ -338,7 +361,7 @@
           {{ team_controller_token if team_controller_token | length > 0 else omit }}
         validate_certs: "{{ team_controller_validate_certs }}"
         request_timeout: "{{ team_controller_request_timeout | int }}"
-      loop: "{{ image_builder_allocated_team_letters }}"
+      loop: "{{ image_builder_missing_team_letters }}"
       loop_control:
         label: "Team {{ item }}"
       no_log: true
@@ -363,7 +386,7 @@
           {{ team_controller_token if team_controller_token | length > 0 else omit }}
         validate_certs: "{{ team_controller_validate_certs }}"
         request_timeout: "{{ team_controller_request_timeout | int }}"
-      loop: "{{ image_builder_allocated_team_letters }}"
+      loop: "{{ image_builder_required_team_letters }}"
       loop_control:
         label: "Team {{ item }}"
       no_log: true
@@ -397,11 +420,13 @@
         data:
           image_builder_existing_aap_teams: >-
             {{ image_builder_existing_team_names }}
-          image_builder_allocated_team_letters: >-
-            {{ image_builder_allocated_team_letters }}
+          image_builder_required_team_letters: >-
+            {{ image_builder_required_team_letters }}
+          image_builder_missing_team_letters: >-
+            {{ image_builder_missing_team_letters }}
           image_builder_created_aap_teams: >-
             {{
-              image_builder_allocated_team_letters
+              image_builder_missing_team_letters
               | map('regex_replace', '^(.*)$', 'Team \\1')
               | list
             }}
@@ -412,9 +437,15 @@
       ansible.builtin.debug:
         msg:
           existing_teams: "{{ image_builder_existing_team_names }}"
-          allocated_teams: >-
+          required_teams: >-
             {{
-              image_builder_allocated_team_letters
+              image_builder_required_team_letters
+              | map('regex_replace', '^(.*)$', 'Team \\1')
+              | list
+            }}
+          newly_created_teams: >-
+            {{
+              image_builder_missing_team_letters
               | map('regex_replace', '^(.*)$', 'Team \\1')
               | list
             }}

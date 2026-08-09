@@ -1560,8 +1560,9 @@ resource "aws_iam_user_policy_attachment" "satellite_provisioner_ec2_discovery" 
 #
 #   aws_iam_policy.ec2_discovery
 #
-# This inline policy contains only permissions that modify or
-# create AWS resources.
+# This inline policy contains permissions required to create,
+# modify, operate, and access the console output of EC2
+# resources managed through Satellite.
 ############################################################
 
 resource "aws_iam_user_policy" "satellite_provisioner" {
@@ -1618,6 +1619,26 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
         ]
 
         Resource = "*"
+      },
+
+      #########################################################################
+      # Read EC2 instance console output and screenshots
+      #
+      # Satellite uses these actions when opening the console for an instance.
+      #########################################################################
+
+      {
+        Sid    = "ReadEC2InstanceConsole"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:GetConsoleOutput",
+          "ec2:GetConsoleScreenshot"
+        ]
+
+        Resource = (
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        )
       },
 
       #########################################################################

@@ -1,7 +1,8 @@
 ---
 ###############################################################################
-# Copy all hosts from Staged Image Builders to Image Builders and clear the
-# staged host records only after every production host has been created.
+# Copy all hosts from Staged Image Builders to Image Builders. Staged records
+# are removed by a separate downstream job after this inventory-bound job has
+# finished, because AAP locks hosts used by running jobs.
 #
 # Required job template credential:
 #   - Red Hat Ansible Controller Credential
@@ -120,7 +121,7 @@
           The Red Hat Ansible Controller Credential was not injected. Attach
           it to the Promote Staged Image Builder Hosts job template and ensure
           the workflow node does not override the template credentials.
-      no_log: false
+      no_log: true
 
     - name: Validate staged inventory contains hosts
       ansible.builtin.assert:
@@ -228,7 +229,7 @@
       loop_control:
         label: "{{ item }}"
       register: image_builder_production_host_results
-      no_log: false
+      no_log: true
 
     - name: Confirm every production host operation completed
       ansible.builtin.assert:
@@ -245,30 +246,6 @@
           Not every staged host was copied into {{ production_inventory_name }}.
           No staged host records will be removed.
 
-    ###########################################################################
-    # Clear staged records only after all production copies succeed
-    ###########################################################################
-
-    - name: Remove promoted hosts from staged inventory
-      ansible.controller.host:
-        name: "{{ item }}"
-        inventory: "{{ staged_inventory_name }}"
-        state: absent
-        controller_host: "{{ promotion_controller_host }}"
-        controller_username: >-
-          {{ promotion_controller_username if promotion_controller_token | length == 0 else omit }}
-        controller_password: >-
-          {{ promotion_controller_password if promotion_controller_token | length == 0 else omit }}
-        aap_token: >-
-          {{ promotion_controller_token if promotion_controller_token | length > 0 else omit }}
-        validate_certs: "{{ promotion_controller_validate_certs }}"
-        request_timeout: "{{ promotion_controller_request_timeout | int }}"
-      loop: "{{ image_builder_hosts_to_promote }}"
-      loop_control:
-        label: "{{ item }}"
-      register: image_builder_staged_host_removal_results
-      no_log: false
-
     - name: Publish promotion workflow results
       ansible.builtin.set_stats:
         data:
@@ -276,7 +253,8 @@
             {{ image_builder_hosts_to_promote }}
           promoted_image_builder_host_count: >-
             {{ image_builder_hosts_to_promote | length }}
-          staged_inventory_cleared: true
+          staged_inventory_cleanup_pending: true
+          staged_inventory_cleared: false
           production_inventory_name: "{{ production_inventory_name }}"
 
     - name: Display completed inventory promotion
@@ -286,7 +264,7 @@
             Promoted {{ image_builder_hosts_to_promote | length }} hosts into
             {{ production_inventory_name }}.
           - >-
-            Removed all promoted host records from
-            {{ staged_inventory_name }}.
+            Staged host cleanup is pending and must run in the downstream
+            Clear Promoted Image Builder Hosts From Staged Inventory job.
           - >-
             Hosts: {{ image_builder_hosts_to_promote | join(', ') }}

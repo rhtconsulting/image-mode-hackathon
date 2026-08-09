@@ -1,0 +1,127 @@
+---
+###############################################################################
+# Remove already-promoted hosts from Staged Image Builders.
+#
+# This must run as a separate workflow job after promotion. Do not configure
+# this job template to use Staged Image Builders, because AAP protects host
+# records used by a currently running job.
+#
+# Recommended job template inventory:
+#   Image Mode Lab Infrastructure
+#
+# Required credential:
+#   Red Hat Ansible Controller Credential
+###############################################################################
+
+- name: Clear promoted hosts from staged Image Builder inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    staged_inventory_name: "Staged Image Builders"
+    staged_hosts_to_remove: >-
+      {{
+        promoted_image_builder_hostnames
+        | default(staged_inventory_hostnames | default([]), true)
+      }}
+    cleanup_controller_host: >-
+      {{
+        aap_hostname
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_HOST'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_HOSTNAME'), true)
+        | trim
+        | regex_replace('/+$', '')
+      }}
+    cleanup_controller_username: >-
+      {{
+        aap_username
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_USERNAME'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_USERNAME'), true)
+        | trim
+      }}
+    cleanup_controller_password: >-
+      {{
+        aap_password
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_PASSWORD'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_PASSWORD'), true)
+      }}
+    cleanup_controller_token: >-
+      {{
+        aap_token
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_OAUTH_TOKEN'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_TOKEN'), true)
+      }}
+    cleanup_controller_validate_certs: >-
+      {{
+        aap_validate_certs
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_VERIFY_SSL'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_VALIDATE_CERTS'), true)
+        | default(false, true)
+        | bool
+      }}
+    cleanup_controller_request_timeout: >-
+      {{
+        aap_request_timeout
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_REQUEST_TIMEOUT'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_REQUEST_TIMEOUT'), true)
+        | default('30', true)
+        | int
+      }}
+
+  tasks:
+    - name: Validate staged cleanup inputs
+      ansible.builtin.assert:
+        that:
+          - staged_hosts_to_remove | length > 0
+          - cleanup_controller_host | length > 0
+          - cleanup_controller_host not in ['https://127.0.0.1', 'http://127.0.0.1']
+          - >-
+            cleanup_controller_token | length > 0
+            or
+            (
+              cleanup_controller_username | length > 0
+              and cleanup_controller_password | length > 0
+            )
+        fail_msg: >-
+          Staged cleanup requires promoted_image_builder_hostnames and the
+          Red Hat Ansible Controller Credential.
+      no_log: true
+
+    - name: Remove promoted hosts from staged inventory
+      ansible.controller.host:
+        name: "{{ item }}"
+        inventory: "{{ staged_inventory_name }}"
+        state: absent
+        controller_host: "{{ cleanup_controller_host }}"
+        controller_username: >-
+          {{ cleanup_controller_username if cleanup_controller_token | length == 0 else omit }}
+        controller_password: >-
+          {{ cleanup_controller_password if cleanup_controller_token | length == 0 else omit }}
+        aap_token: >-
+          {{ cleanup_controller_token if cleanup_controller_token | length > 0 else omit }}
+        validate_certs: "{{ cleanup_controller_validate_certs }}"
+        request_timeout: "{{ cleanup_controller_request_timeout | int }}"
+      loop: "{{ staged_hosts_to_remove }}"
+      loop_control:
+        label: "{{ item }}"
+      register: staged_host_cleanup_results
+      no_log: true
+
+    - name: Publish staged cleanup results
+      ansible.builtin.set_stats:
+        data:
+          staged_inventory_cleared: true
+          staged_inventory_cleanup_pending: false
+          staged_inventory_removed_hostnames: "{{ staged_hosts_to_remove }}"
+          staged_inventory_removed_host_count: >-
+            {{ staged_hosts_to_remove | length }}
+
+    - name: Display staged cleanup result
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Removed {{ staged_hosts_to_remove | length }} promoted hosts from
+            {{ staged_inventory_name }}.
+          - "Hosts: {{ staged_hosts_to_remove | join(', ') }}"

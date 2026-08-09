@@ -16,11 +16,96 @@
       - image_builder_rhel9_iso_s3_object | string | trim | length > 0
       - image_builder_rhel10_iso_s3_object | string | trim | length > 0
       - image_builder_rhel_media_directory | string | trim | length > 0
+      - aws_access_key_id | default('') | string | trim | length > 0
+      - aws_secret_access_key | default('') | string | trim | length > 0
+      - image_builder_rhel_media_aws_region | string | trim | length > 0
     fail_msg: >-
       RHEL media selection supports only RHEL 9 and RHEL 10 Image Builders.
       Detected {{ ansible_distribution | default('UNKNOWN') }}
       {{ ansible_distribution_version | default('UNKNOWN') }} on
       {{ inventory_hostname }}.
+
+- name: Create root AWS CLI configuration directory
+  ansible.builtin.file:
+    path: "{{ image_builder_rhel_media_aws_home }}/.aws"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Configure AWS access key for the default CLI profile
+  ansible.builtin.command:
+    argv:
+      - aws
+      - configure
+      - set
+      - aws_access_key_id
+      - "{{ aws_access_key_id }}"
+      - --profile
+      - "{{ image_builder_rhel_media_aws_profile }}"
+  environment:
+    HOME: "{{ image_builder_rhel_media_aws_home }}"
+  changed_when: false
+  no_log: true
+
+- name: Configure AWS secret key for the default CLI profile
+  ansible.builtin.command:
+    argv:
+      - aws
+      - configure
+      - set
+      - aws_secret_access_key
+      - "{{ aws_secret_access_key }}"
+      - --profile
+      - "{{ image_builder_rhel_media_aws_profile }}"
+  environment:
+    HOME: "{{ image_builder_rhel_media_aws_home }}"
+  changed_when: false
+  no_log: true
+
+- name: Configure AWS region for the default CLI profile
+  ansible.builtin.command:
+    argv:
+      - aws
+      - configure
+      - set
+      - region
+      - "{{ image_builder_rhel_media_aws_region }}"
+      - --profile
+      - "{{ image_builder_rhel_media_aws_profile }}"
+  environment:
+    HOME: "{{ image_builder_rhel_media_aws_home }}"
+  changed_when: false
+  no_log: true
+
+- name: Secure AWS CLI profile files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: file
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - "{{ image_builder_rhel_media_aws_home }}/.aws/credentials"
+    - "{{ image_builder_rhel_media_aws_home }}/.aws/config"
+  no_log: true
+
+- name: Validate configured AWS CLI identity
+  ansible.builtin.command:
+    argv:
+      - aws
+      - sts
+      - get-caller-identity
+      - --profile
+      - "{{ image_builder_rhel_media_aws_profile }}"
+      - --output
+      - json
+  environment:
+    HOME: "{{ image_builder_rhel_media_aws_home }}"
+    AWS_PAGER: ""
+  register: image_builder_rhel_media_aws_identity
+  changed_when: false
+  no_log: true
 
 - name: Select RHEL installation media for the target operating system
   ansible.builtin.set_fact:
@@ -65,8 +150,13 @@
       - ContentLength
       - --output
       - text
+      - --profile
+      - "{{ image_builder_rhel_media_aws_profile }}"
   register: image_builder_rhel_media_s3_head
   changed_when: false
+  environment:
+    HOME: "{{ image_builder_rhel_media_aws_home }}"
+    AWS_PAGER: ""
 
 - name: Validate selected RHEL ISO exists in S3
   ansible.builtin.assert:
@@ -97,7 +187,12 @@
       - --region
       - "{{ image_builder_rhel_media_aws_region }}"
       - --only-show-errors
+      - --profile
+      - "{{ image_builder_rhel_media_aws_profile }}"
   register: image_builder_rhel_media_download
+  environment:
+    HOME: "{{ image_builder_rhel_media_aws_home }}"
+    AWS_PAGER: ""
   when: >-
     not image_builder_existing_rhel_media_file.stat.exists
     or

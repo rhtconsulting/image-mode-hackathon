@@ -391,6 +391,23 @@ controller_templates:
       - "Image Mode Quay Registry Credential"
       - "Image Mode IdM Administrator Credential"
 
+  ###############################################################################
+  # Move Image Builder Hosts into main inventory - clear out staged_image_builder_hosts
+  ###############################################################################
+  - name: Clear Out Staged Image Builders - Promote New Image Builder Hosts
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Staged Image Builders"
+    playbook: playbooks/image_mode/promote-and-clear-staged-image-builders.yml
+    execution_environment: "Image Mode EE"
+    credentials:
+      - "Image Mode Machine Credential"
+      - "Image Mode Red Hat Registry Credential"
+      - "Image Mode Quay Registry Credential"
+      - "Image Mode IdM Administrator Credential"
+
+
+
 
   # - name: "Bootstrap Satellite Content"
   #   description: >-

@@ -172,4 +172,18 @@ controller_workflows:
           organization:
             name: "Image Mode Lab"
           type: "job_template"
+        related:
+          success_nodes:
+            - identifier: "promote_new_image_builder_hosts"
+    #########################################################################
+    # Configure additional staged Image Mode Builder hosts
+    #########################################################################
+
+      - identifier: "promote_new_image_builder_hosts"
+
+        unified_job_template:
+          name: "Clear Out Staged Image Builders - Promote New Image Builder Hosts"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
 

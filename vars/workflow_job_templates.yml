@@ -186,4 +186,19 @@ controller_workflows:
           organization:
             name: "Image Mode Lab"
           type: "job_template"
+        related:
+          success_nodes:
+            - identifier: "clear_promoted_builders_from_staged_inventory"
+
+    #########################################################################
+    # Clear inventory out
+    #########################################################################
+
+      - identifier: "clear_promoted_builders_from_staged_inventory"
+
+        unified_job_template:
+          name: "Clear Promoted Image Builder Hosts From Staged Inventory"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
 

@@ -408,6 +408,41 @@ controller_templates:
       - "Red Hat Ansible Controller Credential"
 
 
+  ###############################################################################
+  # Clear out inventory
+  ###############################################################################
+  - name: "Clear Promoted Image Builder Hosts From Staged Inventory"
+    description: >-
+      Remove successfully promoted Image Builder host records from the staged
+      inventory after the promotion job has completed.
+
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+
+    # Do not use Staged Image Builders here.
+    inventory: "Image Mode Lab Infrastructure"
+
+    playbook: >-
+      playbooks/image_mode/clear-promoted-image-builders-from-staged-inventory.yml
+
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Red Hat Ansible Controller Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 1
+    timeout: 900
+    allow_simultaneous: false
+
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+
+    survey_enabled: false
+    state: present
 
 
   # - name: "Bootstrap Satellite Content"

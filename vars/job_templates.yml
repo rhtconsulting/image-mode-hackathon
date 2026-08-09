@@ -457,7 +457,7 @@ controller_templates:
 
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
-    inventory: "Image Builders"
+    inventory: "Staged Image Builders"
     playbook: >-
       playbooks/image_mode/create-image-builder-teams-and-groups.yml
     execution_environment: "Image Mode EE"

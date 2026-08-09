@@ -12,8 +12,12 @@
 # Required job template credential:
 #   - Red Hat Ansible Controller Credential
 #
-# Recommended job template inventory:
-#   Image Builders
+# Required job template inventory:
+#   Staged Image Builders
+#
+# The staged inventory limits this job to hosts created by the current
+# workflow. The playbook manages groups in Image Builders through the AAP API;
+# it does not expect production hosts to be present in the job's hostvars.
 ###############################################################################
 
 - name: Create available Image Builder AAP teams and inventory groups
@@ -25,6 +29,7 @@
   vars:
     image_builder_organization_name: "Image Mode Lab"
     image_builder_inventory_name: "Image Builders"
+    image_builder_staged_inventory_name: "Staged Image Builders"
     image_builder_team_count: "{{ generated_number_of_host_var | int }}"
     image_builder_team_letters:
       - A
@@ -60,6 +65,14 @@
       {{
         promoted_image_builder_hostnames
         | default(image_builder_generated_hostnames | default([], true), true)
+      }}
+
+    # PHASE 08 publishes the complete records. Prefer the staged artifact and
+    # retain the generated-host artifact as a compatibility fallback.
+    image_builder_host_records_for_current_run: >-
+      {{
+        staged_image_builder_hosts
+        | default(image_builder_generated_hosts | default([], true), true)
       }}
 
     team_controller_host: >-
@@ -118,6 +131,7 @@
           - image_builder_team_count | int >= 1
           - image_builder_team_count | int <= image_builder_team_letters | length
           - image_builder_hosts_for_current_run | length > 0
+          - image_builder_host_records_for_current_run | length > 0
           - team_controller_host | length > 0
           - team_controller_host not in ['https://127.0.0.1', 'http://127.0.0.1']
           - >-
@@ -214,14 +228,26 @@
     # Resolve required team letters from the current workflow hostnames
     ###########################################################################
 
-    - name: Validate promoted hosts exist in the production inventory snapshot
+    - name: Build current workflow host metadata map
+      ansible.builtin.set_fact:
+        image_builder_current_host_records: >-
+          {{
+            image_builder_current_host_records | default({})
+            | combine({item.name: item})
+          }}
+      loop: "{{ image_builder_host_records_for_current_run }}"
+      loop_control:
+        label: "{{ item.name | default('UNKNOWN') }}"
+
+    - name: Validate current hosts exist in the staged workflow artifact
       ansible.builtin.assert:
         that:
-          - item in hostvars
+          - item in image_builder_current_host_records
         fail_msg: >-
-          Promoted host {{ item }} is not present in the
-          {{ image_builder_inventory_name }} job inventory. Ensure this job
-          runs after promotion and uses the Image Builders inventory.
+          Current workflow host {{ item }} is not present in
+          staged_image_builder_hosts or image_builder_generated_hosts. Ensure
+          this job inherits the provisioning workflow artifacts and uses the
+          {{ image_builder_staged_inventory_name }} job inventory.
       loop: "{{ image_builder_hosts_for_current_run }}"
       loop_control:
         label: "{{ item }}"
@@ -265,17 +291,25 @@
       loop_control:
         label: "{{ item }}"
 
-    - name: Validate hostname and inventory team metadata agree
+    - name: Validate hostname and staged metadata agree
       ansible.builtin.assert:
         that:
           - >-
-            hostvars[item].image_builder_team_id
-            | default(hostvars[item].team_id | default(''), true)
+            image_builder_current_host_records[item].image_builder_team_id
+            | default(
+                image_builder_current_host_records[item].team_id
+                | default(''),
+                true
+              )
             | upper
             == image_builder_host_team_map[item]
           - >-
-            hostvars[item].image_builder_rhel_major_version
-            | default(hostvars[item].rhel_major_version | default(''), true)
+            image_builder_current_host_records[item].image_builder_rhel_major_version
+            | default(
+                image_builder_current_host_records[item].rhel_major_version
+                | default(''),
+                true
+              )
             | string
             ==
             (
@@ -290,8 +324,12 @@
           {{ image_builder_host_team_map[item] }}, but its persisted inventory
           metadata contains team
           {{
-            hostvars[item].image_builder_team_id
-            | default(hostvars[item].team_id | default('UNKNOWN'), true)
+            image_builder_current_host_records[item].image_builder_team_id
+            | default(
+                image_builder_current_host_records[item].team_id
+                | default('UNKNOWN'),
+                true
+              )
             | upper
           }} or a different RHEL major version.
       loop: "{{ image_builder_hosts_for_current_run }}"

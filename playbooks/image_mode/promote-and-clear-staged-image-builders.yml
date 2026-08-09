@@ -228,7 +228,7 @@
       loop_control:
         label: "{{ item }}"
       register: image_builder_production_host_results
-      no_log: true
+      no_log: false
 
     - name: Confirm every production host operation completed
       ansible.builtin.assert:
@@ -267,7 +267,7 @@
       loop_control:
         label: "{{ item }}"
       register: image_builder_staged_host_removal_results
-      no_log: true
+      no_log: false
 
     - name: Publish promotion workflow results
       ansible.builtin.set_stats:

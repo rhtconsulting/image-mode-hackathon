@@ -157,7 +157,7 @@
       loop_control:
         label: "{{ item }}"
       register: image_builder_production_host_results
-      no_log: true
+      no_log: false
 
     - name: Confirm every production host operation completed
       ansible.builtin.assert:

@@ -277,11 +277,12 @@
             | combine(
                 {
                   item: (
-                    item
-                    | regex_replace(
-                        '^image-builder-rhel(?:9|10)-([a-z])-[0-9]+[.].*$',
-                        '\\1'
-                      )
+                    (
+                      item
+                      | split('.')
+                      | first
+                      | split('-')
+                    )[3]
                     | upper
                   )
                 }

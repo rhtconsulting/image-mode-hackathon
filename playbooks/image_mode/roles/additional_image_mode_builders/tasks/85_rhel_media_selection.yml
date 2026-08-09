@@ -7,6 +7,34 @@
 # same s3:GetObject IAM action).
 ###############################################################################
 
+- name: Resolve AWS CLI settings for RHEL media download
+  ansible.builtin.set_fact:
+    image_builder_resolved_aws_region: >-
+      {{
+        image_builder_rhel_media_aws_region
+        | default(
+            aws_region
+            | default(
+                aws_default_region
+                | default(
+                    lookup('ansible.builtin.env', 'AWS_REGION')
+                    | default(
+                        lookup('ansible.builtin.env', 'AWS_DEFAULT_REGION'),
+                        true
+                      ),
+                    true
+                  ),
+                true
+              ),
+            true
+          )
+        | trim
+      }}
+    image_builder_resolved_aws_profile: >-
+      {{ image_builder_rhel_media_aws_profile | default('default', true) }}
+    image_builder_resolved_aws_home: >-
+      {{ image_builder_rhel_media_aws_home | default('/root', true) }}
+
 - name: Validate Image Builder operating system for RHEL media selection
   ansible.builtin.assert:
     that:
@@ -18,7 +46,7 @@
       - image_builder_rhel_media_directory | string | trim | length > 0
       - aws_access_key_id | default('') | string | trim | length > 0
       - aws_secret_access_key | default('') | string | trim | length > 0
-      - image_builder_rhel_media_aws_region | string | trim | length > 0
+      - image_builder_resolved_aws_region | string | trim | length > 0
     fail_msg: >-
       RHEL media selection supports only RHEL 9 and RHEL 10 Image Builders.
       Detected {{ ansible_distribution | default('UNKNOWN') }}
@@ -27,7 +55,7 @@
 
 - name: Create root AWS CLI configuration directory
   ansible.builtin.file:
-    path: "{{ image_builder_rhel_media_aws_home }}/.aws"
+    path: "{{ image_builder_resolved_aws_home }}/.aws"
     state: directory
     owner: root
     group: root
@@ -42,9 +70,9 @@
       - aws_access_key_id
       - "{{ aws_access_key_id }}"
       - --profile
-      - "{{ image_builder_rhel_media_aws_profile }}"
+      - "{{ image_builder_resolved_aws_profile }}"
   environment:
-    HOME: "{{ image_builder_rhel_media_aws_home }}"
+    HOME: "{{ image_builder_resolved_aws_home }}"
   changed_when: false
   no_log: true
 
@@ -57,9 +85,9 @@
       - aws_secret_access_key
       - "{{ aws_secret_access_key }}"
       - --profile
-      - "{{ image_builder_rhel_media_aws_profile }}"
+      - "{{ image_builder_resolved_aws_profile }}"
   environment:
-    HOME: "{{ image_builder_rhel_media_aws_home }}"
+    HOME: "{{ image_builder_resolved_aws_home }}"
   changed_when: false
   no_log: true
 
@@ -70,11 +98,11 @@
       - configure
       - set
       - region
-      - "{{ image_builder_rhel_media_aws_region }}"
+      - "{{ image_builder_resolved_aws_region }}"
       - --profile
-      - "{{ image_builder_rhel_media_aws_profile }}"
+      - "{{ image_builder_resolved_aws_profile }}"
   environment:
-    HOME: "{{ image_builder_rhel_media_aws_home }}"
+    HOME: "{{ image_builder_resolved_aws_home }}"
   changed_when: false
   no_log: true
 
@@ -86,8 +114,8 @@
     group: root
     mode: "0600"
   loop:
-    - "{{ image_builder_rhel_media_aws_home }}/.aws/credentials"
-    - "{{ image_builder_rhel_media_aws_home }}/.aws/config"
+    - "{{ image_builder_resolved_aws_home }}/.aws/credentials"
+    - "{{ image_builder_resolved_aws_home }}/.aws/config"
   no_log: true
 
 - name: Validate configured AWS CLI identity
@@ -97,11 +125,11 @@
       - sts
       - get-caller-identity
       - --profile
-      - "{{ image_builder_rhel_media_aws_profile }}"
+      - "{{ image_builder_resolved_aws_profile }}"
       - --output
       - json
   environment:
-    HOME: "{{ image_builder_rhel_media_aws_home }}"
+    HOME: "{{ image_builder_resolved_aws_home }}"
     AWS_PAGER: ""
   register: image_builder_rhel_media_aws_identity
   changed_when: false
@@ -145,17 +173,17 @@
       - --key
       - "{{ image_builder_selected_iso_s3_object }}"
       - --region
-      - "{{ image_builder_rhel_media_aws_region }}"
+      - "{{ image_builder_resolved_aws_region }}"
       - --query
       - ContentLength
       - --output
       - text
       - --profile
-      - "{{ image_builder_rhel_media_aws_profile }}"
+      - "{{ image_builder_resolved_aws_profile }}"
   register: image_builder_rhel_media_s3_head
   changed_when: false
   environment:
-    HOME: "{{ image_builder_rhel_media_aws_home }}"
+    HOME: "{{ image_builder_resolved_aws_home }}"
     AWS_PAGER: ""
 
 - name: Validate selected RHEL ISO exists in S3
@@ -185,13 +213,13 @@
         s3://{{ image_builder_rhel_media_s3_bucket }}/{{ image_builder_selected_iso_s3_object }}
       - "{{ image_builder_selected_iso_destination }}"
       - --region
-      - "{{ image_builder_rhel_media_aws_region }}"
+      - "{{ image_builder_resolved_aws_region }}"
       - --only-show-errors
       - --profile
-      - "{{ image_builder_rhel_media_aws_profile }}"
+      - "{{ image_builder_resolved_aws_profile }}"
   register: image_builder_rhel_media_download
   environment:
-    HOME: "{{ image_builder_rhel_media_aws_home }}"
+    HOME: "{{ image_builder_resolved_aws_home }}"
     AWS_PAGER: ""
   when: >-
     not image_builder_existing_rhel_media_file.stat.exists

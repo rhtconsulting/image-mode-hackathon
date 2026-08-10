@@ -1,0 +1,388 @@
+---
+###############################################################################
+# Create Additional IdM Lab Users
+#
+# Discover existing user* accounts from the ipausers group and create the
+# requested number of additional users beginning after the highest existing
+# user number.
+#
+# Example:
+#
+# Existing:
+#   user01
+#   user02
+#   ...
+#   user10
+#
+# number_of_users_var: 5
+#
+# Creates:
+#   user11
+#   user12
+#   user13
+#   user14
+#   user15
+###############################################################################
+
+- name: Create Additional IdM Lab Users
+  hosts: ipaserver
+  become: true
+  gather_facts: false
+
+  vars:
+
+    ###########################################################################
+    # Number of additional users to create
+    #
+    # This can instead be supplied by an AAP survey:
+    #
+    #   number_of_users_var: 5
+    ###########################################################################
+
+    number_of_users_var: 5
+
+    ###########################################################################
+    # IdM administrator
+    ###########################################################################
+
+    ipaadmin_principal: "admin"
+
+    ###########################################################################
+    # Initial password assigned only when the user is created.
+    #
+    # In AAP this should normally come from a credential, vaulted variable,
+    # or other protected source instead of being stored directly here.
+    ###########################################################################
+
+    idm_new_user_password: "ChangeMe123!"
+
+    ###########################################################################
+    # Naming configuration
+    ###########################################################################
+
+    idm_user_prefix: "user"
+
+    # user01, user02, ..., user09, user10
+    idm_user_number_width: 2
+
+  tasks:
+
+    ###########################################################################
+    # PHASE 01
+    # Validate requested user count
+    ###########################################################################
+
+    - name: Validate requested number of additional users
+      ansible.builtin.assert:
+        that:
+          - number_of_users_var | int >= 1
+        fail_msg: >-
+          number_of_users_var must be greater than or equal to 1.
+        success_msg: >-
+          Requested creation of {{ number_of_users_var }} additional IdM users.
+
+    ###########################################################################
+    # PHASE 02
+    # Authenticate to IdM
+    ###########################################################################
+
+    - name: Obtain IdM administrator Kerberos ticket
+      ansible.builtin.command:
+        argv:
+          - kinit
+          - "{{ ipaadmin_principal }}"
+        stdin: "{{ ipaadmin_password }}"
+        stdin_add_newline: true
+      changed_when: false
+      no_log: true
+
+    ###########################################################################
+    # PHASE 03
+    # Retrieve ipausers group membership
+    ###########################################################################
+
+    - name: Query current ipausers group
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - group-show
+          - ipausers
+          - --all
+          - --raw
+      register: idm_ipausers_group
+      changed_when: false
+
+    ###########################################################################
+    # PHASE 04
+    # Extract user<number> accounts
+    #
+    # Example group output:
+    #
+    # member_user: user01
+    # member_user: user02
+    # member_user: user10
+    #
+    # Other accounts such as:
+    #
+    # admin
+    # svc_account
+    # pduncan
+    #
+    # are ignored.
+    ###########################################################################
+
+    - name: Extract numbered lab users from ipausers
+      ansible.builtin.set_fact:
+        idm_existing_numbered_users: >-
+          {{
+            idm_ipausers_group.stdout_lines
+            | select(
+                'match',
+                '^member_user: '
+                ~ idm_user_prefix
+                ~ '[0-9]+$'
+              )
+            | map(
+                'regex_replace',
+                '^member_user: ',
+                ''
+              )
+            | list
+          }}
+
+    ###########################################################################
+    # PHASE 05
+    # Extract numeric portions
+    #
+    # Example:
+    #
+    # user01 -> 1
+    # user09 -> 9
+    # user10 -> 10
+    ###########################################################################
+
+    - name: Initialize existing user number list
+      ansible.builtin.set_fact:
+        idm_existing_user_numbers: []
+
+    - name: Extract numeric suffix from existing users
+      ansible.builtin.set_fact:
+        idm_existing_user_numbers: >-
+          {{
+            idm_existing_user_numbers
+            +
+            [
+              (
+                item
+                | regex_replace(
+                    '^' ~ idm_user_prefix,
+                    ''
+                  )
+                | int
+              )
+            ]
+          }}
+      loop: "{{ idm_existing_numbered_users }}"
+      loop_control:
+        label: "{{ item }}"
+
+    ###########################################################################
+    # PHASE 06
+    # Determine highest existing user number
+    #
+    # If no user<number> accounts currently exist:
+    #
+    #   highest = 0
+    #
+    # Therefore the first created account becomes:
+    #
+    #   user01
+    ###########################################################################
+
+    - name: Determine highest existing lab user number
+      ansible.builtin.set_fact:
+        idm_highest_user_number: >-
+          {{
+            (
+              idm_existing_user_numbers
+              | max
+            )
+            if idm_existing_user_numbers | length > 0
+            else 0
+          }}
+
+    ###########################################################################
+    # PHASE 07
+    # Determine next user number
+    ###########################################################################
+
+    - name: Determine starting number for new users
+      ansible.builtin.set_fact:
+        idm_next_user_number: >-
+          {{
+            (idm_highest_user_number | int) + 1
+          }}
+
+    ###########################################################################
+    # PHASE 08
+    # Build list of new user numbers
+    #
+    # Example:
+    #
+    # highest existing:       10
+    # number_of_users_var:     5
+    #
+    # result:
+    #
+    # 11
+    # 12
+    # 13
+    # 14
+    # 15
+    ###########################################################################
+
+    - name: Build additional user number range
+      ansible.builtin.set_fact:
+        idm_new_user_numbers: >-
+          {{
+            range(
+              idm_next_user_number | int,
+              (
+                idm_next_user_number | int
+                +
+                number_of_users_var | int
+              )
+            )
+            | list
+          }}
+
+    ###########################################################################
+    # PHASE 09
+    # Build IdM user definitions
+    ###########################################################################
+
+    - name: Initialize new IdM user definitions
+      ansible.builtin.set_fact:
+        idm_new_users: []
+
+    - name: Build new IdM user definitions
+      ansible.builtin.set_fact:
+        idm_new_users: >-
+          {{
+            idm_new_users
+            +
+            [
+              {
+                'name':
+                  idm_user_prefix
+                  ~
+                  (
+                    '%0*d'
+                    %
+                    [
+                      idm_user_number_width | int,
+                      item | int
+                    ]
+                  ),
+                'first': 'User',
+                'last':
+                  (
+                    '%0*d'
+                    %
+                    [
+                      idm_user_number_width | int,
+                      item | int
+                    ]
+                  ),
+                'password': idm_new_user_password
+              }
+            ]
+          }}
+      loop: "{{ idm_new_user_numbers }}"
+      loop_control:
+        label: >-
+          {{
+            idm_user_prefix
+            ~
+            (
+              '%0*d'
+              %
+              [
+                idm_user_number_width | int,
+                item | int
+              ]
+            )
+          }}
+      no_log: true
+
+    ###########################################################################
+    # PHASE 10
+    # Display discovery results
+    ###########################################################################
+
+    - name: Display existing numbered IdM users
+      ansible.builtin.debug:
+        msg:
+          - "Existing numbered users: {{ idm_existing_numbered_users }}"
+          - "Highest existing user number: {{ idm_highest_user_number }}"
+          - "Next available user number: {{ idm_next_user_number }}"
+
+    - name: Display users that will be created
+      ansible.builtin.debug:
+        msg: >-
+          Creating {{
+            idm_new_users
+            | map(attribute='name')
+            | list
+          }}
+
+    ###########################################################################
+    # PHASE 11
+    # Create new IdM users
+    #
+    # update_password: on_create prevents the playbook from resetting a user's
+    # password on subsequent runs.
+    ###########################################################################
+
+    - name: Create additional IdM lab users
+      freeipa.ansible_freeipa.ipauser:
+        ipaadmin_password: "{{ ipaadmin_password }}"
+        users: "{{ idm_new_users }}"
+        update_password: on_create
+        state: present
+      no_log: true
+
+    ###########################################################################
+    # PHASE 12
+    # Display final result
+    ###########################################################################
+
+    - name: Display created IdM users
+      ansible.builtin.debug:
+        msg:
+          - "Previous highest user: {{ idm_user_prefix }}{{ '%0*d' | format(idm_user_number_width | int, idm_highest_user_number | int) }}"
+          - >-
+            New users: {{
+              idm_new_users
+              | map(attribute='name')
+              | list
+            }}
+          - >-
+            New highest user: {{
+              idm_user_prefix
+              ~
+              (
+                '%0*d'
+                %
+                [
+                  idm_user_number_width | int,
+                  (
+                    idm_next_user_number | int
+                    +
+                    number_of_users_var | int
+                    -
+                    1
+                  )
+                ]
+              )
+            }}

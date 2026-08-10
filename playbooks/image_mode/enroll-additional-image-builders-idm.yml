@@ -1,0 +1,458 @@
+---
+###############################################################################
+# Enroll newly provisioned staged Image Builder hosts into Red Hat IdM.
+#
+# This playbook runs against the Staged Image Builders inventory.
+#
+# Required credentials:
+#
+#   Image Mode Machine Credential
+#   Image Mode IdM Administrator Credential
+###############################################################################
+
+- name: Enroll additional Image Builder hosts into Red Hat IdM
+  hosts: all
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    idm_connection_timeout: 900
+
+  pre_tasks:
+    ###########################################################################
+    # Wait for newly created EC2 instances
+    #
+    # gather_facts is deliberately disabled at the play level because facts
+    # would otherwise be gathered before wait_for_connection can run.
+    ###########################################################################
+
+    - name: Wait for SSH connectivity
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        sleep: 10
+        timeout: "{{ idm_connection_timeout }}"
+
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command:
+        argv:
+          - cloud-init
+          - status
+          - --wait
+      register: image_builder_cloud_init_status
+      changed_when: false
+      failed_when:
+        - image_builder_cloud_init_status.rc not in [0, 2]
+
+    - name: Gather host facts after SSH readiness
+      ansible.builtin.setup:
+
+    ###########################################################################
+    # Resolve IdM configuration
+    #
+    # Prefer inventory variables. Fall back to the domain artifact published
+    # by the provisioning workflow.
+    ###########################################################################
+
+    - name: Resolve IdM enrollment configuration
+      ansible.builtin.set_fact:
+        resolved_idm_domain: >-
+          {{
+            idm_domain_name
+            | default(
+                image_builder_workflow_domain | default(''),
+                true
+              )
+            | string
+            | trim
+          }}
+
+        resolved_idm_enroll_user: >-
+          {{
+            idm_admin_username
+            | default(
+                ipaadmin_principal | default('admin'),
+                true
+              )
+            | string
+            | trim
+          }}
+
+        resolved_idm_enroll_password: >-
+          {{
+            idm_admin_password
+            | default(
+                ipaadmin_password | default(''),
+                true
+              )
+          }}
+      no_log: true
+
+    - name: Resolve IdM realm and server
+      ansible.builtin.set_fact:
+        resolved_idm_realm: >-
+          {{
+            idm_realm_name
+            | default(
+                resolved_idm_domain | upper,
+                true
+              )
+            | string
+            | trim
+          }}
+
+        resolved_idm_server: >-
+          {{
+            idm_server_fqdn
+            | default(
+                'idm-1.' ~ resolved_idm_domain,
+                true
+              )
+            | string
+            | trim
+          }}
+
+        resolved_idm_client_hostname: "{{ inventory_hostname }}"
+
+        resolved_idm_validation_user: >-
+          {{
+            (
+              idm_users
+              | default([])
+              | first
+              | default('', true)
+            )
+            | default(
+                resolved_idm_enroll_user,
+                true
+              )
+          }}
+      no_log: true
+
+    - name: Validate IdM enrollment configuration
+      ansible.builtin.assert:
+        that:
+          - resolved_idm_domain | length > 0
+          - resolved_idm_domain is match('^[A-Za-z0-9.-]+$')
+
+          - resolved_idm_realm | length > 0
+          - resolved_idm_server | length > 0
+          - resolved_idm_client_hostname | length > 0
+
+          - resolved_idm_enroll_user | length > 0
+          - resolved_idm_enroll_password | length > 0
+          - resolved_idm_validation_user | length > 0
+
+          - ansible_facts.os_family == "RedHat"
+        fail_msg: >-
+          The IdM configuration or AAP IdM administrator credential is
+          missing for {{ inventory_hostname }}.
+
+          Domain source:
+          {{ idm_domain_name | default(image_builder_workflow_domain | default('UNDEFINED')) }}
+
+          Verify that the job template has these credentials attached:
+
+            Image Mode Machine Credential
+            Image Mode IdM Administrator Credential
+      no_log: true
+
+    ###########################################################################
+    # Validate DNS before package installation and enrollment
+    ###########################################################################
+
+    - name: Verify IdM server DNS resolution
+      ansible.builtin.command:
+        argv:
+          - getent
+          - ahostsv4
+          - "{{ resolved_idm_server }}"
+      register: image_builder_idm_dns_check
+      changed_when: false
+      failed_when: image_builder_idm_dns_check.rc != 0
+
+    - name: Verify IdM server HTTPS connectivity
+      ansible.builtin.uri:
+        url: "https://{{ resolved_idm_server }}/ipa/config/ca.crt"
+        method: GET
+        validate_certs: false
+        return_content: false
+        status_code: 200
+        timeout: 30
+      register: image_builder_idm_https_check
+
+  tasks:
+    ###########################################################################
+    # Install IdM client prerequisites
+    ###########################################################################
+
+    - name: Install required IdM client packages
+      ansible.builtin.dnf:
+        name:
+          - ipa-client
+          - oddjob
+          - oddjob-mkhomedir
+          - sssd
+          - sssd-tools
+          - bind-utils
+          - chrony
+          - ca-certificates
+        state: present
+      register: image_builder_idm_packages
+      retries: 12
+      delay: 10
+      until: image_builder_idm_packages is succeeded
+
+    ###########################################################################
+    # Install IdM CA
+    ###########################################################################
+
+    - name: Download IdM CA certificate
+      ansible.builtin.get_url:
+        url: "https://{{ resolved_idm_server }}/ipa/config/ca.crt"
+        dest: /etc/pki/ca-trust/source/anchors/idm-ca.crt
+        owner: root
+        group: root
+        mode: "0644"
+        validate_certs: false
+      register: image_builder_idm_ca
+
+    - name: Update system CA trust
+      ansible.builtin.command:
+        argv:
+          - update-ca-trust
+      when: image_builder_idm_ca.changed
+
+    ###########################################################################
+    # Configure persistent hostname
+    ###########################################################################
+
+    - name: Set persistent client hostname
+      ansible.builtin.hostname:
+        name: "{{ resolved_idm_client_hostname }}"
+
+    - name: Preserve hostname across cloud-init runs
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+        content: |
+          preserve_hostname: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    ###########################################################################
+    # Optional IdM hosts-file fallback
+    ###########################################################################
+
+    - name: Ensure IdM server resolves through hosts-file fallback
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: >-
+          ^\S+\s+{{ resolved_idm_server | regex_escape }}(\s|$)
+        line: "{{ idm_server_ip }} {{ resolved_idm_server }}"
+        state: present
+      when:
+        - idm_server_ip | default('') | length > 0
+
+    ###########################################################################
+    # Inspect current enrollment state
+    ###########################################################################
+
+    - name: Check existing IPA client configuration
+      ansible.builtin.stat:
+        path: /etc/ipa/default.conf
+      register: image_builder_ipa_configuration
+
+    - name: Check existing IdM host keytab
+      ansible.builtin.stat:
+        path: /etc/krb5.keytab
+      register: image_builder_ipa_keytab_before
+
+    - name: Determine whether IdM enrollment is required
+      ansible.builtin.set_fact:
+        image_builder_idm_enrollment_required: >-
+          {{
+            not image_builder_ipa_configuration.stat.exists
+            or
+            not image_builder_ipa_keytab_before.stat.exists
+          }}
+
+    ###########################################################################
+    # Enroll host
+    ###########################################################################
+
+    - name: Enroll Image Builder host into IdM
+      ansible.builtin.command:
+        argv:
+          - ipa-client-install
+          - --unattended
+          - "--principal={{ resolved_idm_enroll_user }}"
+          - "--password={{ resolved_idm_enroll_password }}"
+          - "--domain={{ resolved_idm_domain }}"
+          - "--realm={{ resolved_idm_realm }}"
+          - "--server={{ resolved_idm_server }}"
+          - "--hostname={{ resolved_idm_client_hostname }}"
+          - --mkhomedir
+          - --force-join
+          - --no-ntp
+      when: image_builder_idm_enrollment_required
+      register: image_builder_ipa_enrollment
+      no_log: true
+
+    ###########################################################################
+    # Enforce the interactive shell locally through SSSD
+    #
+    # IdM currently returns /bin/sh for these users. override_shell changes the
+    # effective shell on this client only and does not modify IdM user records.
+    ###########################################################################
+
+    - name: Verify Bash is installed
+      ansible.builtin.stat:
+        path: /bin/bash
+      register: image_builder_bash_binary
+
+    - name: Validate Bash is available
+      ansible.builtin.assert:
+        that:
+          - image_builder_bash_binary.stat.exists
+          - image_builder_bash_binary.stat.isreg
+          - image_builder_bash_binary.stat.executable
+        fail_msg: >-
+          /bin/bash is not available on {{ inventory_hostname }}.
+
+    - name: Configure SSSD to override IdM user shells with Bash
+      ansible.builtin.ini_file:
+        path: /etc/sssd/sssd.conf
+        section: "domain/{{ resolved_idm_domain }}"
+        option: override_shell
+        value: /bin/bash
+        owner: root
+        group: root
+        mode: "0600"
+        no_extra_spaces: true
+        backup: true
+      register: image_builder_sssd_shell_override
+
+    - name: Expire cached SSSD identities
+      ansible.builtin.command:
+        argv:
+          - sss_cache
+          - -E
+      changed_when: false
+
+    - name: Restart SSSD after shell override
+      ansible.builtin.service:
+        name: sssd
+        state: restarted
+        enabled: true
+      when: image_builder_sssd_shell_override.changed
+
+    ###########################################################################
+    # Start client services
+    ###########################################################################
+
+    - name: Enable IdM client services
+      ansible.builtin.service:
+        name: "{{ item }}"
+        state: started
+        enabled: true
+      loop:
+        - oddjobd
+        - sssd
+
+    ###########################################################################
+    # Validate final enrollment
+    ###########################################################################
+
+    - name: Check final IPA client configuration
+      ansible.builtin.stat:
+        path: /etc/ipa/default.conf
+      register: image_builder_ipa_configuration_final
+
+    - name: Check final IdM host keytab
+      ansible.builtin.stat:
+        path: /etc/krb5.keytab
+      register: image_builder_krb5_keytab_final
+
+    - name: Validate IdM enrollment files
+      ansible.builtin.assert:
+        that:
+          - image_builder_ipa_configuration_final.stat.exists
+          - image_builder_krb5_keytab_final.stat.exists
+        fail_msg: >-
+          IdM enrollment validation failed on {{ inventory_hostname }}.
+
+          IPA configuration exists:
+          {{ image_builder_ipa_configuration_final.stat.exists }}
+
+          Host keytab exists:
+          {{ image_builder_krb5_keytab_final.stat.exists }}
+
+    - name: Verify IdM user resolution through SSSD
+      ansible.builtin.command:
+        argv:
+          - getent
+          - passwd
+          - "{{ resolved_idm_validation_user }}"
+      register: image_builder_idm_user_lookup
+      changed_when: false
+      retries: 12
+      delay: 10
+      until:
+        - image_builder_idm_user_lookup.rc == 0
+        - >-
+          image_builder_idm_user_lookup.stdout
+          | trim
+          | length > 0
+
+    - name: Validate effective IdM user shell
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              image_builder_idm_user_lookup.stdout
+              | trim
+            ).split(':')[-1]
+            == '/bin/bash'
+        fail_msg: >-
+          SSSD did not apply the client-side Bash shell override for
+          {{ resolved_idm_validation_user }} on {{ inventory_hostname }}.
+
+          Effective passwd entry:
+
+          {{ image_builder_idm_user_lookup.stdout | trim }}
+
+    ###########################################################################
+    # Publish downstream status
+    ###########################################################################
+
+    - name: Publish IdM enrollment workflow status
+      ansible.builtin.set_stats:
+        aggregate: true
+        per_host: false
+        data:
+          idm_enrolled_hostnames: >-
+            {{
+              (
+                idm_enrolled_hostnames | default([])
+                + [inventory_hostname]
+              )
+              | unique
+            }}
+          idm_enrollment_status: "validated"
+
+    ###########################################################################
+    # Display result
+    ###########################################################################
+
+    - name: Display IdM enrollment result
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "IdM domain: {{ resolved_idm_domain }}"
+          - "IdM realm: {{ resolved_idm_realm }}"
+          - "IdM server: {{ resolved_idm_server }}"
+          - >-
+            Enrollment performed:
+            {{ image_builder_idm_enrollment_required }}
+          - "Enrollment validated successfully."

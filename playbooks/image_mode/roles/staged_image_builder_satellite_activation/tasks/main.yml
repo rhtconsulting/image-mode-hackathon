@@ -1,0 +1,158 @@
+---
+###############################################################################
+# Validate a staged Image Builder host, activate its Satellite subscription
+# through the existing satellite_subscription_activation role, and persist the
+# result in the Staged Image Builders AAP inventory.
+###############################################################################
+
+- name: Validate staged Image Builder activation inputs
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname | length > 0
+      - ansible_host | default('') | length > 0
+      - fqdn | default(inventory_hostname, true) | length > 0
+      - aws_instance_id | default('') | length > 0
+      - image_builder_generation | default('') | length > 0
+      - image_builder_rhel_major_version | default('') | string | length > 0
+      - image_builder_team_id | default('') | length > 0
+      - acm_certificate_arn | default('') | length > 0
+      - >-
+        certificate_status | default('') == 'issued_and_installed'
+    fail_msg: >-
+      {{ inventory_hostname }} is missing staged host or certificate data for
+      RHEL
+      {{ image_builder_rhel_major_version | default('unknown') }}.
+
+- name: Resolve staged host certificate directory
+  ansible.builtin.set_fact:
+    staged_image_builder_resolved_certificate_directory: >-
+      {{ staged_image_builder_certificate_directory }}
+
+- name: Inspect installed certificate files
+  ansible.builtin.stat:
+    path: >-
+      {{
+        staged_image_builder_resolved_certificate_directory
+        ~ '/'
+        ~ item
+      }}
+  loop: "{{ staged_image_builder_required_certificate_files }}"
+  register: staged_image_builder_certificate_file_stats
+  when: staged_image_builder_require_certificate | bool
+
+- name: Validate installed certificate files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - item.stat.size | int > 0
+    fail_msg: >-
+      Required certificate file {{ item.item }} is missing or empty on
+      {{ inventory_hostname }} under
+      {{ staged_image_builder_resolved_certificate_directory }}.
+  loop: "{{ staged_image_builder_certificate_file_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: staged_image_builder_require_certificate | bool
+
+- name: Validate installed certificate hostname
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ staged_image_builder_resolved_certificate_directory }}/tls.crt"
+      - -noout
+      - -checkhost
+      - "{{ public_tls_fqdn | default(fqdn | default(inventory_hostname), true) }}"
+  changed_when: false
+  when: staged_image_builder_require_certificate | bool
+
+- name: Activate staged Image Builder subscription in Satellite
+  ansible.builtin.include_role:
+    name: image_mode_satellite_subscription_activation
+    public: true
+
+- name: Read final Satellite registration identity
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - identity
+  register: staged_image_builder_satellite_identity
+  changed_when: false
+
+- name: Validate final Satellite registration
+  ansible.builtin.assert:
+    that:
+      - staged_image_builder_satellite_identity.rc == 0
+      - >-
+        'org ID: ' ~ satellite_activation_organization_label
+        in staged_image_builder_satellite_identity.stdout
+        or
+        'org name: ' ~ satellite_activation_organization_name
+        in staged_image_builder_satellite_identity.stdout
+    fail_msg: >-
+      {{ inventory_hostname }} did not complete Satellite subscription
+      activation successfully.
+
+###############################################################################
+# Persist the completed stage in AAP. The complete variable map is supplied so
+# existing staged-host metadata is retained when the host record is updated.
+###############################################################################
+
+- name: Persist Satellite activation status in staged inventory
+  ansible.controller.host:
+    name: "{{ inventory_hostname }}"
+    inventory: "{{ staged_image_builder_inventory_name }}"
+    enabled: true
+    state: present
+    variables:
+      ansible_host: "{{ ansible_host }}"
+      ansible_user: "{{ ansible_user | default('ec2-user') }}"
+      fqdn: "{{ fqdn | default(inventory_hostname) }}"
+      private_ip: "{{ private_ip | default(ansible_host) }}"
+      public_ip: "{{ public_ip | default('') }}"
+      aws_instance_id: "{{ aws_instance_id }}"
+      aws_region: "{{ aws_region | default('') }}"
+      vpc_id: "{{ vpc_id | default('') }}"
+      subnet_id: "{{ subnet_id | default('') }}"
+      availability_zone: "{{ availability_zone | default('') }}"
+      image_builder_generation: "{{ image_builder_generation }}"
+      image_builder_rhel_major_version: >-
+        {{ image_builder_rhel_major_version | string }}
+      image_builder_team_id: "{{ image_builder_team_id }}"
+      public_tls_fqdn: >-
+        {{ public_tls_fqdn | default(fqdn | default(inventory_hostname), true) }}
+      acm_certificate_arn: "{{ acm_certificate_arn }}"
+      certificate_directory: >-
+        {{ staged_image_builder_resolved_certificate_directory }}
+      certificate_status: >-
+        {{ certificate_status | default('issued_and_installed', true) }}
+      satellite_registration_status: >-
+        {{ staged_image_builder_activation_status }}
+      satellite_server_fqdn: >-
+        {{ satellite_activation_resolved_server_fqdn }}
+      staging_status: "{{ staged_image_builder_activation_status }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: staged_image_builder_persist_controller_status | bool
+
+- name: Publish Satellite activation workflow data
+  ansible.builtin.set_stats:
+    data:
+      image_builder_satellite_registration_status: >-
+        {{ staged_image_builder_activation_status }}
+      image_builder_satellite_server: >-
+        {{ satellite_activation_resolved_server_fqdn }}
+    per_host: true
+
+- name: Display staged Image Builder activation result
+  ansible.builtin.debug:
+    msg:
+      - "Host: {{ inventory_hostname }}"
+      - "RHEL: {{ image_builder_rhel_major_version }}"
+      - "Satellite: {{ satellite_activation_resolved_server_fqdn }}"
+      - "Organization: {{ satellite_activation_organization_label }}"
+      - "Certificate: {{ acm_certificate_arn }}"
+      - "Status: {{ staged_image_builder_activation_status }}"

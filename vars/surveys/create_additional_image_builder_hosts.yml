@@ -28,4 +28,4 @@ create_additional_image_builder_hosts_survey:
       required: true
       default: 1
       min: 1
-      max: 10
+      max: 26

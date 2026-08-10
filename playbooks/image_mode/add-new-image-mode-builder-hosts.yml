@@ -1,0 +1,17 @@
+---
+###############################################################################
+# Configure RHEL Image Mode builder hosts
+#
+# Recommended inventory group and AAP limit:
+#
+#   image_builder
+###############################################################################
+
+- name: Configure Additional RHEL Image Mode builder hosts
+  hosts: all
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+
+  roles:
+    - role: additional_image_mode_builders

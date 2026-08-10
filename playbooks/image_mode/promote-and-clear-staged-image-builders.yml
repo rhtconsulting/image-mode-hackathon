@@ -1,0 +1,270 @@
+---
+###############################################################################
+# Copy all hosts from Staged Image Builders to Image Builders. Staged records
+# are removed by a separate downstream job after this inventory-bound job has
+# finished, because AAP locks hosts used by running jobs.
+#
+# Required job template credential:
+#   - Red Hat Ansible Controller Credential
+#
+# Run this job template against:
+#   Staged Image Builders
+###############################################################################
+
+- name: Validate all staged Image Builder hosts before promotion
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+
+  tasks:
+    - name: Validate staged host promotion data
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname | length > 0
+          - ansible_host | default('') | length > 0
+          - fqdn | default(inventory_hostname, true) | length > 0
+          - private_ip | default(ansible_host, true) | length > 0
+          - aws_instance_id | default(instance_id | default(''), true) | length > 0
+          - >-
+            image_builder_generation
+            | default(generation | default(''), true)
+            | length > 0
+          - >-
+            image_builder_rhel_major_version
+            | default(rhel_major_version | default(''), true)
+            | string
+            | length > 0
+          - >-
+            image_builder_team_id
+            | default(team_id | default(''), true)
+            | length > 0
+          - acm_certificate_arn | default('') | length > 0
+          - certificate_status | default('') == 'issued_and_installed'
+          - >-
+            satellite_registration_status
+            | default('') == 'satellite_registered'
+        fail_msg: >-
+          Host {{ inventory_hostname }} is not ready for production promotion.
+          It must have complete AWS metadata, an installed ACM certificate,
+          and validated Satellite registration.
+
+
+- name: Promote all staged hosts and clear the staged inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    staged_inventory_name: "Staged Image Builders"
+    production_inventory_name: "Image Builders"
+    image_builder_hosts_to_promote: "{{ groups['all'] | default([]) }}"
+    promotion_controller_host: >-
+      {{
+        aap_hostname
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_HOST'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_HOSTNAME'), true)
+        | trim
+        | regex_replace('/+$', '')
+      }}
+    promotion_controller_username: >-
+      {{
+        aap_username
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_USERNAME'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_USERNAME'), true)
+        | trim
+      }}
+    promotion_controller_password: >-
+      {{
+        aap_password
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_PASSWORD'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_PASSWORD'), true)
+      }}
+    promotion_controller_token: >-
+      {{
+        aap_token
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_OAUTH_TOKEN'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_TOKEN'), true)
+      }}
+    promotion_controller_validate_certs: >-
+      {{
+        aap_validate_certs
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_VERIFY_SSL'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_VALIDATE_CERTS'), true)
+        | default(false, true)
+        | bool
+      }}
+    promotion_controller_request_timeout: >-
+      {{
+        aap_request_timeout
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_REQUEST_TIMEOUT'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_REQUEST_TIMEOUT'), true)
+        | default('30', true)
+        | int
+      }}
+
+  tasks:
+    - name: Validate AAP controller credential injection
+      ansible.builtin.assert:
+        that:
+          - promotion_controller_host | length > 0
+          - promotion_controller_host not in ['https://127.0.0.1', 'http://127.0.0.1']
+          - >-
+            promotion_controller_token | length > 0
+            or
+            (
+              promotion_controller_username | length > 0
+              and promotion_controller_password | length > 0
+            )
+          - promotion_controller_request_timeout | int > 0
+        fail_msg: >-
+          The Red Hat Ansible Controller Credential was not injected. Attach
+          it to the Promote Staged Image Builder Hosts job template and ensure
+          the workflow node does not override the template credentials.
+      no_log: true
+
+    - name: Validate staged inventory contains hosts
+      ansible.builtin.assert:
+        that:
+          - image_builder_hosts_to_promote | length > 0
+        fail_msg: >-
+          {{ staged_inventory_name }} contains no hosts to promote.
+
+    ###########################################################################
+    # Copy every staged host before deleting any staged host records
+    ###########################################################################
+
+    - name: Add staged hosts to production Image Builders inventory
+      ansible.controller.host:
+        name: "{{ item }}"
+        description: >-
+          Production
+          {{
+            hostvars[item].image_builder_generation
+            | default(hostvars[item].generation | default(''))
+          }}
+          Image Builder team
+          {{
+            hostvars[item].image_builder_team_id
+            | default(hostvars[item].team_id | default(''))
+            | upper
+          }}
+        inventory: "{{ production_inventory_name }}"
+        enabled: true
+        state: present
+        controller_host: "{{ promotion_controller_host }}"
+        controller_username: >-
+          {{ promotion_controller_username if promotion_controller_token | length == 0 else omit }}
+        controller_password: >-
+          {{ promotion_controller_password if promotion_controller_token | length == 0 else omit }}
+        aap_token: >-
+          {{ promotion_controller_token if promotion_controller_token | length > 0 else omit }}
+        validate_certs: "{{ promotion_controller_validate_certs }}"
+        request_timeout: "{{ promotion_controller_request_timeout | int }}"
+        variables:
+          ansible_host: "{{ hostvars[item].ansible_host }}"
+          ansible_user: >-
+            {{ hostvars[item].ansible_user | default('ec2-user') }}
+
+          fqdn: "{{ hostvars[item].fqdn | default(item) }}"
+          private_ip: >-
+            {{
+              hostvars[item].private_ip
+              | default(hostvars[item].ansible_host)
+            }}
+          public_ip: "{{ hostvars[item].public_ip | default('') }}"
+
+          aws_instance_id: >-
+            {{
+              hostvars[item].aws_instance_id
+              | default(hostvars[item].instance_id | default(''))
+            }}
+          aws_region: "{{ hostvars[item].aws_region | default('') }}"
+          vpc_id: "{{ hostvars[item].vpc_id | default('') }}"
+          subnet_id: "{{ hostvars[item].subnet_id | default('') }}"
+          availability_zone: >-
+            {{ hostvars[item].availability_zone | default('') }}
+
+          image_builder_generation: >-
+            {{
+              hostvars[item].image_builder_generation
+              | default(hostvars[item].generation | default(''))
+            }}
+          image_builder_rhel_major_version: >-
+            {{
+              hostvars[item].image_builder_rhel_major_version
+              | default(hostvars[item].rhel_major_version | default(''))
+              | string
+            }}
+          image_builder_team_id: >-
+            {{
+              hostvars[item].image_builder_team_id
+              | default(hostvars[item].team_id | default(''))
+              | lower
+            }}
+
+          public_tls_fqdn: >-
+            {{
+              hostvars[item].public_tls_fqdn
+              | default(hostvars[item].fqdn | default(item), true)
+            }}
+          acm_certificate_arn: >-
+            {{ hostvars[item].acm_certificate_arn }}
+          certificate_directory: >-
+            {{
+              hostvars[item].certificate_directory
+              | default('/opt/image-builder/certs', true)
+            }}
+          certificate_status: >-
+            {{ hostvars[item].certificate_status }}
+
+          satellite_registration_status: >-
+            {{ hostvars[item].satellite_registration_status }}
+          satellite_server_fqdn: >-
+            {{ hostvars[item].satellite_server_fqdn | default('') }}
+
+          staging_status: "promoted"
+          production_status: "active"
+      loop: "{{ image_builder_hosts_to_promote }}"
+      loop_control:
+        label: "{{ item }}"
+      register: image_builder_production_host_results
+      no_log: true
+
+    - name: Confirm every production host operation completed
+      ansible.builtin.assert:
+        that:
+          - image_builder_production_host_results.results | length ==
+            image_builder_hosts_to_promote | length
+          - >-
+            image_builder_production_host_results.results
+            | selectattr('failed', 'defined')
+            | selectattr('failed', 'equalto', true)
+            | list
+            | length == 0
+        fail_msg: >-
+          Not every staged host was copied into {{ production_inventory_name }}.
+          No staged host records will be removed.
+
+    - name: Publish promotion workflow results
+      ansible.builtin.set_stats:
+        data:
+          promoted_image_builder_hostnames: >-
+            {{ image_builder_hosts_to_promote }}
+          promoted_image_builder_host_count: >-
+            {{ image_builder_hosts_to_promote | length }}
+          staged_inventory_cleanup_pending: true
+          staged_inventory_cleared: false
+          production_inventory_name: "{{ production_inventory_name }}"
+
+    - name: Display completed inventory promotion
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Promoted {{ image_builder_hosts_to_promote | length }} hosts into
+            {{ production_inventory_name }}.
+          - >-
+            Staged host cleanup is pending and must run in the downstream
+            Clear Promoted Image Builder Hosts From Staged Inventory job.
+          - >-
+            Hosts: {{ image_builder_hosts_to_promote | join(', ') }}

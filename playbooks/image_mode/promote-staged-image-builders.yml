@@ -1,0 +1,182 @@
+---
+###############################################################################
+# Promote fully configured staged Image Builder hosts into production.
+#
+# This job must run against the Staged Image Builders inventory and use the
+# Red Hat Ansible Controller Credential.
+###############################################################################
+
+- name: Promote staged Image Builder hosts
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  serial: 1
+
+  vars:
+    staged_inventory_name: "Staged Image Builders"
+    production_inventory_name: "Image Builders"
+
+    resolved_controller_host: >-
+      {{
+        controller_host
+        | default(aap_hostname | default(''), true)
+      }}
+
+    resolved_controller_username: >-
+      {{
+        controller_username
+        | default(aap_username | default(''), true)
+      }}
+
+    resolved_controller_password: >-
+      {{
+        controller_password
+        | default(aap_password | default(''), true)
+      }}
+
+    resolved_controller_validate_certs: >-
+      {{
+        controller_validate_certs
+        | default(aap_validate_certs | default(false), true)
+        | bool
+      }}
+
+  pre_tasks:
+    - name: Validate AAP controller credential
+      ansible.builtin.assert:
+        that:
+          - resolved_controller_host | string | trim | length > 0
+          - resolved_controller_username | string | trim | length > 0
+          - resolved_controller_password | string | length > 0
+        fail_msg: >-
+          The Red Hat Ansible Controller Credential was not injected into the
+          promotion job.
+      delegate_to: localhost
+      become: false
+      run_once: true
+      no_log: true
+
+    - name: Validate host promotion information
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname | length > 0
+          - ansible_host | default('') | length > 0
+          - fqdn | default('') | length > 0
+          - private_ip | default('') | length > 0
+          - aws_instance_id | default('') | length > 0
+          - image_builder_generation | default('') | length > 0
+          - image_builder_rhel_major_version | default('') | string | length > 0
+          - image_builder_team_id | default('') | length > 0
+          - public_tls_fqdn | default('') | length > 0
+          - acm_certificate_arn | default('') | length > 0
+          - acm_certificate_arn is match(
+              '^arn:aws[a-z-]*:acm:[a-z0-9-]+:[0-9]{12}:certificate/.+$'
+            )
+        fail_msg: >-
+          Host {{ inventory_hostname }} is not ready for promotion. Verify
+          its EC2 metadata, IdM enrollment, Satellite registration, public
+          TLS FQDN, and ACM certificate ARN.
+
+  tasks:
+    - name: Add host to production Image Builders inventory
+      ansible.controller.host:
+        name: "{{ inventory_hostname }}"
+        description: >-
+          Production {{ image_builder_generation }} Image Builder team
+          {{ image_builder_team_id }}
+        inventory: "{{ production_inventory_name }}"
+        enabled: true
+        state: present
+
+        variables:
+          ansible_host: "{{ ansible_host }}"
+          ansible_user: "{{ ansible_user | default('ec2-user') }}"
+
+          fqdn: "{{ fqdn }}"
+          private_ip: "{{ private_ip }}"
+          public_ip: "{{ public_ip | default('', true) }}"
+
+          aws_instance_id: "{{ aws_instance_id }}"
+          image_builder_generation: "{{ image_builder_generation }}"
+          image_builder_rhel_major_version: >-
+            {{ image_builder_rhel_major_version | string }}
+          image_builder_team_id: "{{ image_builder_team_id }}"
+
+          aws_region: "{{ aws_region | default('') }}"
+          public_tls_fqdn: "{{ public_tls_fqdn }}"
+          acm_certificate_arn: "{{ acm_certificate_arn }}"
+
+          idm_enrollment_status: >-
+            {{ idm_enrollment_status | default('validated') }}
+          satellite_registration_status: >-
+            {{ satellite_registration_status | default('validated') }}
+          certificate_staging_status: >-
+            {{ certificate_staging_status | default('validated') }}
+          staging_status: "promoted"
+
+        controller_host: "{{ resolved_controller_host }}"
+        controller_username: "{{ resolved_controller_username }}"
+        controller_password: "{{ resolved_controller_password }}"
+        validate_certs: "{{ resolved_controller_validate_certs }}"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Verify production host record
+      ansible.builtin.uri:
+        url: >-
+          {{
+            resolved_controller_host
+            ~ '/api/controller/v2/hosts/?name='
+            ~ (inventory_hostname | urlencode)
+          }}
+        method: GET
+        user: "{{ resolved_controller_username }}"
+        password: "{{ resolved_controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ resolved_controller_validate_certs }}"
+        status_code: 200
+        return_content: true
+      delegate_to: localhost
+      become: false
+      register: production_host_lookup
+      changed_when: false
+      no_log: true
+
+    - name: Validate production host record
+      ansible.builtin.assert:
+        that:
+          - production_host_lookup.json is defined
+          - production_host_lookup.json.count | int >= 1
+          - >-
+            production_host_lookup.json.results
+            | selectattr('name', 'equalto', inventory_hostname)
+            | list
+            | length >= 1
+        fail_msg: >-
+          Production host {{ inventory_hostname }} could not be verified after
+          creation. It will not be removed from staging.
+
+    - name: Remove promoted host from staged inventory
+      ansible.controller.host:
+        name: "{{ inventory_hostname }}"
+        inventory: "{{ staged_inventory_name }}"
+        state: absent
+        controller_host: "{{ resolved_controller_host }}"
+        controller_username: "{{ resolved_controller_username }}"
+        controller_password: "{{ resolved_controller_password }}"
+        validate_certs: "{{ resolved_controller_validate_certs }}"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Display host promotion
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Promoted {{ inventory_hostname }} from
+            {{ staged_inventory_name }} to {{ production_inventory_name }}.
+          - "Private IP: {{ private_ip }}"
+          - "Generation: {{ image_builder_generation }}"
+          - "Team: {{ image_builder_team_id }}"
+          - "Certificate ARN: {{ acm_certificate_arn }}"

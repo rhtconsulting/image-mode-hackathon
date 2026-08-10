@@ -1,0 +1,37 @@
+---
+# Shell experience
+###########################################################################
+
+- name: Install Image Mode shell profile
+  ansible.builtin.copy:
+    dest: /etc/profile.d/image-mode.sh
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Image Mode development environment
+
+      export IMAGE_MODE_ROOT="{{ image_mode_root }}"
+      export IMAGE_MODE_SOURCES="{{ image_mode_source_directory }}"
+      export IMAGE_MODE_CONTAINERFILES="{{ image_mode_containerfiles_directory }}"
+      export IMAGE_MODE_BLUEPRINTS="{{ image_mode_blueprints_directory }}"
+      export IMAGE_MODE_BUILDS="{{ image_mode_build_directory }}"
+      export IMAGE_MODE_OUTPUT="{{ image_mode_output_directory }}"
+      export IMAGE_MODE_ARTIFACTS="{{ image_mode_artifacts_directory }}"
+      export IMAGE_MODE_CACHE="{{ image_mode_cache_directory }}"
+
+- name: Install Image Mode command aliases
+  ansible.builtin.copy:
+    dest: /etc/profile.d/image-mode-aliases.sh
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      alias im-sources='cd "{{ image_mode_source_directory }}"'
+      alias im-containerfiles='cd "{{ image_mode_containerfiles_directory }}"'
+      alias im-blueprints='cd "{{ image_mode_blueprints_directory }}"'
+      alias im-builds='cd "{{ image_mode_build_directory }}"'
+      alias im-output='cd "{{ image_mode_output_directory }}"'
+      alias im-artifacts='cd "{{ image_mode_artifacts_directory }}"'
+      alias im-images='podman images'
+      alias im-containers='podman ps --all'

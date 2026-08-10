@@ -1,0 +1,298 @@
+---
+###############################################################################
+# Image Mode workspace directories
+#
+# This task file creates the shared Image Mode development workspace, applies
+# group ownership and ACLs, and installs a workspace README.
+#
+# The effective directory list is generated locally when
+# image_mode_workspace_directories is not defined in role defaults.
+###############################################################################
+
+###############################################################################
+# PHASE 0 | Validate workspace variables
+###############################################################################
+
+- name: PHASE 0 | Validate Image Mode workspace variables
+  ansible.builtin.assert:
+    that:
+      - image_mode_root is defined
+      - image_mode_root | string | trim | length > 0
+      - image_mode_group is defined
+      - image_mode_group | string | trim | length > 0
+      - image_mode_source_directory is defined
+      - image_mode_containerfiles_directory is defined
+      - image_mode_blueprints_directory is defined
+      - image_mode_build_directory is defined
+      - image_mode_output_directory is defined
+      - image_mode_artifacts_directory is defined
+      - image_mode_cache_directory is defined
+      - image_mode_registry_auth_directory is defined
+      - image_mode_logs_directory is defined
+      - image_mode_tmp_directory is defined
+    fail_msg: >-
+      The Image Mode workspace configuration is incomplete. Ensure the role
+      defaults define image_mode_root, image_mode_group, and all workspace
+      directory path variables.
+
+###############################################################################
+# PHASE 1 | Build effective workspace directory definition
+###############################################################################
+
+- name: PHASE 1 | Set effective Image Mode workspace directories
+  ansible.builtin.set_fact:
+    image_mode_effective_workspace_directories: >-
+      {{
+        image_mode_workspace_directories
+        | default(
+            [
+              {
+                'path': image_mode_source_directory,
+                'mode': '2775'
+              },
+              {
+                'path': image_mode_containerfiles_directory,
+                'mode': '2775'
+              },
+              {
+                'path': image_mode_blueprints_directory,
+                'mode': '2775'
+              },
+              {
+                'path': image_mode_build_directory,
+                'mode': '2775'
+              },
+              {
+                'path': image_mode_output_directory,
+                'mode': '2775'
+              },
+              {
+                'path': image_mode_artifacts_directory,
+                'mode': '2775'
+              },
+              {
+                'path': image_mode_cache_directory,
+                'mode': '2775'
+              },
+              {
+                'path': image_mode_registry_auth_directory,
+                'mode': '2770'
+              },
+              {
+                'path': image_mode_logs_directory,
+                'mode': '2775'
+              },
+              {
+                'path': image_mode_tmp_directory,
+                'mode': '2775'
+              }
+            ],
+            true
+          )
+      }}
+
+- name: PHASE 1 | Validate effective workspace directory definitions
+  ansible.builtin.assert:
+    that:
+      - image_mode_effective_workspace_directories | length > 0
+      - item.path is defined
+      - item.path | string | trim | length > 0
+      - item.mode is defined
+      - item.mode | string is match('^[0-7]{4}$')
+    fail_msg: >-
+      An invalid Image Mode workspace directory definition was found:
+      {{ item | to_nice_yaml }}
+  loop: "{{ image_mode_effective_workspace_directories }}"
+  loop_control:
+    label: "{{ item.path | default('undefined path') }}"
+
+###############################################################################
+# PHASE 2 | Create workspace directories
+###############################################################################
+
+- name: PHASE 2 | Create Image Mode workspace root
+  ansible.builtin.file:
+    path: "{{ image_mode_root }}"
+    state: directory
+    owner: root
+    group: "{{ image_mode_group }}"
+    mode: "2775"
+
+- name: PHASE 2 | Create organized Image Mode development directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ image_mode_group }}"
+    mode: "{{ item.mode }}"
+  loop: "{{ image_mode_effective_workspace_directories }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+###############################################################################
+# PHASE 3 | Configure workspace ACLs
+###############################################################################
+
+- name: PHASE 3 | Configure active ACL on Image Mode workspace
+  ansible.posix.acl:
+    path: "{{ image_mode_root }}"
+    entity: "{{ image_mode_group }}"
+    etype: group
+    permissions: rwx
+    recursive: true
+    state: present
+
+- name: PHASE 3 | Configure default ACL on Image Mode workspace root
+  ansible.posix.acl:
+    path: "{{ image_mode_root }}"
+    entity: "{{ image_mode_group }}"
+    etype: group
+    permissions: rwx
+    default: true
+    state: present
+
+- name: PHASE 3 | Configure default ACL on Image Mode directories
+  ansible.posix.acl:
+    path: "{{ item.path }}"
+    entity: "{{ image_mode_group }}"
+    etype: group
+    permissions: rwx
+    default: true
+    state: present
+  loop: "{{ image_mode_effective_workspace_directories }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+###############################################################################
+# PHASE 4 | Install workspace documentation
+###############################################################################
+
+- name: PHASE 4 | Create workspace README
+  ansible.builtin.copy:
+    dest: "{{ image_mode_root }}/README.md"
+    owner: root
+    group: "{{ image_mode_group }}"
+    mode: "0664"
+    content: |
+      # Image Mode Builder Workspace
+
+      This host is configured for building RHEL Image Mode container images
+      and bootable operating system artifacts.
+
+      ## Builder host
+
+      `{{ inventory_hostname }}`
+
+      ## Directories
+
+      | Directory | Purpose |
+      |---|---|
+      | `{{ image_mode_source_directory }}` | Cloned Git repositories and source trees |
+      | `{{ image_mode_containerfiles_directory }}` | Shared Containerfiles |
+      | `{{ image_mode_blueprints_directory }}` | RHEL Image Builder TOML blueprints |
+      | `{{ image_mode_build_directory }}` | Active build workspaces |
+      | `{{ image_mode_output_directory }}` | Bootc Image Builder output |
+      | `{{ image_mode_artifacts_directory }}` | Completed images and deliverables |
+      | `{{ image_mode_cache_directory }}` | Build and download cache |
+      | `{{ image_mode_registry_auth_directory }}` | Protected registry authentication data |
+      | `{{ image_mode_logs_directory }}` | Build logs |
+      | `{{ image_mode_tmp_directory }}` | Temporary build data |
+
+      ## Container image tools
+
+      ```bash
+      podman --version
+      buildah --version
+      skopeo --version
+      bootc --version
+      ```
+
+      ## YAML processing
+
+      The Python yq implementation uses jq syntax:
+
+      ```bash
+      yq --version
+      yq '.name' example.yaml
+      ```
+
+      ## Build a bootable disk image
+
+      ```bash
+      sudo image-mode-build \
+        --image quay.example.com/example/rhel-bootc:latest \
+        --type qcow2
+      ```
+
+      ## Build a bootable ISO
+
+      ```bash
+      sudo image-mode-build \
+        --image quay.example.com/example/rhel-bootc:latest \
+        --type anaconda-iso
+      ```
+
+      ## Copy a container image between registries
+
+      ```bash
+      sudo image-mode-registry-copy \
+        docker://registry.redhat.io/rhel9/rhel-bootc:latest \
+        docker://quay.example.com/image-mode/rhel-bootc:latest
+      ```
+
+      ## RHEL Image Builder CLI
+
+      ```bash
+      composer-cli status show
+      composer-cli blueprints list
+      composer-cli compose status
+      ```
+
+      ## Web interface
+
+      Cockpit and RHEL Image Builder are available at:
+
+      ```text
+      https://{{ cockpit_public_tls_fqdn }}:{{ cockpit_port }}
+      ```
+
+      IdM users authenticate through Cockpit. Every current and future IdM
+      account receives Image Builder access through the nested
+      `{{ idm_all_users_group }}` to `{{ image_builder_access_group }}` group
+      mapping.
+
+      ## Open firewall ports
+
+      ```text
+      80/tcp
+      443/tcp
+      {{ cockpit_port }}/tcp
+      ```
+
+###############################################################################
+# PHASE 5 | Verify workspace configuration
+###############################################################################
+
+- name: PHASE 5 | Inspect Image Mode workspace directories
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  loop: "{{ image_mode_effective_workspace_directories }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: image_mode_workspace_directory_stats
+
+- name: PHASE 5 | Verify Image Mode workspace directories
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+      - item.stat.pw_name == 'root'
+      - item.stat.gr_name == image_mode_group
+    fail_msg: >-
+      Workspace directory {{ item.item.path }} is missing or has incorrect
+      ownership. Expected owner root and group {{ image_mode_group }}.
+    success_msg: >-
+      Workspace directory {{ item.item.path }} is configured correctly.
+  loop: "{{ image_mode_workspace_directory_stats.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"

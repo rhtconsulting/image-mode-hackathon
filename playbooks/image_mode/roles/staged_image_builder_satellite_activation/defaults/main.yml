@@ -1,0 +1,19 @@
+---
+###############################################################################
+# Defaults for staged_image_builder_satellite_activation
+###############################################################################
+
+staged_image_builder_inventory_name: "Staged Image Builders"
+staged_image_builder_certificate_directory: >-
+  {{ certificate_directory | default('/opt/image-builder/certs', true) }}
+
+staged_image_builder_required_certificate_files:
+  - tls.crt
+  - tls.key
+  - ca-chain.crt
+  - fullchain.crt
+
+staged_image_builder_require_certificate: true
+staged_image_builder_persist_controller_status: true
+staged_image_builder_activation_status: "satellite_registered"
+

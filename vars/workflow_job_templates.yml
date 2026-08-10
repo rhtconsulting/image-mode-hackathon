@@ -5,6 +5,10 @@
 
 controller_workflows:
 
+  ###########################################################################
+  # Build and deploy sample Image Mode host
+  ###########################################################################
+
   - name: "Image Mode Deploy Sample Image to AWS"
     description: >-
       Build the sample RHEL Image Mode container image, create and register an
@@ -13,6 +17,7 @@ controller_workflows:
       then use Satellite to create and provision the resulting EC2 host.
     organization: "Image Mode Lab"
     destroy_current_nodes: true
+    survey_enabled: false
 
     workflow_nodes:
 
@@ -49,7 +54,7 @@ controller_workflows:
             - identifier: "use_satellite_to_deploy_ec2_instances"
 
       #########################################################################
-      # Use Satellite to Deploy EC2 Instance
+      # Use Satellite to deploy EC2 instances
       #########################################################################
 
       - identifier: "use_satellite_to_deploy_ec2_instances"
@@ -59,3 +64,157 @@ controller_workflows:
           organization:
             name: "Image Mode Lab"
           type: "job_template"
+
+  ###########################################################################
+  # Provision additional Image Builder teams
+  ###########################################################################
+
+  - name: "Provision Additional Image Builder Host with Associated Teams"
+    description: >-
+      Create additional RHEL 9 and RHEL 10 Image Builder hosts, add the newly
+      provisioned hosts to the staged AAP inventory, enroll them in IdM, and
+      retain them in staging until certificate and Satellite configuration
+      have completed successfully.
+    organization: "Image Mode Lab"
+    destroy_current_nodes: true
+
+    survey_enabled: true
+    survey_spec: "{{ create_additional_image_builder_hosts_survey }}"
+
+    workflow_nodes:
+
+      #########################################################################
+      # Create AWS instances
+      #########################################################################
+
+      - identifier: "create_additional_image_builder_hosts"
+
+        unified_job_template:
+          name: "Create Additional Image Builder Hosts"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+
+        related:
+          success_nodes:
+            - identifier: "populate_staged_image_builder_inventory"
+
+      #########################################################################
+      # Populate staged inventory
+      #########################################################################
+
+      - identifier: "populate_staged_image_builder_inventory"
+
+        unified_job_template:
+          name: "Populate Staged Image Builder Inventory"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+
+        related:
+          success_nodes:
+            - identifier: "enroll_additional_image_builders_in_idm"
+
+      #########################################################################
+      # Enroll staged hosts in IdM
+      #########################################################################
+
+      - identifier: "enroll_additional_image_builders_in_idm"
+
+        unified_job_template:
+          name: "Enroll Additional Image Builder Hosts in IdM"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+
+        related:
+          success_nodes:
+            - identifier: "generate_certs_in_aws_for_builders"
+
+      #########################################################################
+      # Generate Certs in AWS - Download to Builder Hosts 
+      #########################################################################
+
+      - identifier: "generate_certs_in_aws_for_builders"
+
+        unified_job_template:
+          name: "Generate and Stage Image Builder AWS Certificates"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+        related:
+          success_nodes:
+            - identifier: "activate_staged_builders_in_satellite"
+
+      #########################################################################
+      # Activate Staged Image Builder Hosts in Satellite
+      #########################################################################
+
+      - identifier: "activate_staged_builders_in_satellite"
+
+        unified_job_template:
+          name: "Activate Staged Image Builder Hosts in Satellite"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+        related:
+          success_nodes:
+            - identifier: "configure_additional_staged_builders"
+
+    #########################################################################
+    # Configure additional staged Image Mode Builder hosts
+    #########################################################################
+
+      - identifier: "configure_additional_staged_builders"
+
+        unified_job_template:
+          name: "Configure Additional Staged Image Mode Builder Hosts"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+        related:
+          success_nodes:
+            - identifier: "promote_new_image_builder_hosts"
+            - identifier: "create_image_builder_teams_and_groups"
+
+      #########################################################################
+      # Create Image Builder teams and inventory groups
+      #########################################################################
+
+      - identifier: "create_image_builder_teams_and_groups"
+        unified_job_template:
+          name: "Create Image Builder Teams and Groups"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+
+
+    #########################################################################
+    # Configure additional staged Image Mode Builder hosts
+    #########################################################################
+
+      - identifier: "promote_new_image_builder_hosts"
+
+        unified_job_template:
+          name: "Clear Out Staged Image Builders - Promote New Image Builder Hosts"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+        related:
+          success_nodes:
+            - identifier: "clear_promoted_builders_from_staged_inventory"
+
+
+
+    #########################################################################
+    # Clear inventory out
+    #########################################################################
+
+      - identifier: "clear_promoted_builders_from_staged_inventory"
+
+        unified_job_template:
+          name: "Clear Promoted Image Builder Hosts From Staged Inventory"
+          organization:
+            name: "Image Mode Lab"
+          type: "job_template"
+

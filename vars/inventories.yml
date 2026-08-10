@@ -45,3 +45,23 @@ controller_inventories:
     source_vars:
       validate_certs: false
     state: present
+
+  - name: "Staged Image Builders"
+    description: >-
+      Newly provisioned Image Builder hosts undergoing IdM, TLS, and Satellite
+      configuration before promotion.
+    organization: "Image Mode Lab"
+    state: present
+    variables:
+      aws_region: "{{ aws_region }}"
+      aws_profile: ""
+      secret_prefix: "{{ secret_prefix }}"
+      parent_domain_name: "{{ parent_domain_name }}"
+      idm_domain_name: "{{ idm_domain_name }}"
+      idm_realm_name: "{{ idm_realm_name }}"
+      idm_server_fqdn: "idm-1.{{ idm_domain_name }}"
+      staging_inventory: true
+
+      image_mode_base_image: "{{ image_mode_base_image }}"
+      image_mode_registry_image: "{{ image_mode_registry_image }}"
+      image_mode_image_tag: "{{ image_mode_image_tag }}"

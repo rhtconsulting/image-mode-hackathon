@@ -1,0 +1,398 @@
+---
+###############################################################################
+# Populate the Staged Image Builders AAP inventory using host data published
+# by the EC2 provisioning job through ansible.builtin.set_stats.
+#
+# Required credential:
+#
+#   Red Hat Ansible Controller Credential
+#
+# Credential-injected variables:
+#
+#   aap_hostname
+#   aap_username
+#   aap_password
+#   aap_validate_certs
+#   aap_request_timeout
+#
+# Required workflow artifact:
+#
+#   staged_image_builder_hosts
+###############################################################################
+
+- name: Populate staged Image Builder inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    aap_organization_name: "Image Mode Lab"
+    staged_inventory_name: "Staged Image Builders"
+
+  pre_tasks:
+    ###########################################################################
+    # Normalize injected AAP controller credential
+    ###########################################################################
+
+    - name: Normalize injected AAP controller credential
+      ansible.builtin.set_fact:
+        resolved_controller_host: >-
+          {{
+            aap_hostname
+            | default(
+                lookup('ansible.builtin.env', 'CONTROLLER_HOST'),
+                true
+              )
+            | string
+            | trim
+          }}
+
+        resolved_controller_username: >-
+          {{
+            aap_username
+            | default(
+                lookup('ansible.builtin.env', 'CONTROLLER_USERNAME'),
+                true
+              )
+            | string
+            | trim
+          }}
+
+        resolved_controller_password: >-
+          {{
+            aap_password
+            | default(
+                lookup('ansible.builtin.env', 'CONTROLLER_PASSWORD'),
+                true
+              )
+          }}
+
+        resolved_controller_validate_certs: >-
+          {{
+            aap_validate_certs
+            | default(
+                lookup(
+                  'ansible.builtin.env',
+                  'CONTROLLER_VERIFY_SSL'
+                ),
+                true
+              )
+            | default(false, true)
+            | bool
+          }}
+
+        resolved_controller_request_timeout: >-
+          {{
+            aap_request_timeout
+            | default(
+                lookup(
+                  'ansible.builtin.env',
+                  'CONTROLLER_REQUEST_TIMEOUT'
+                ),
+                true
+              )
+            | default('30', true)
+            | string
+          }}
+      no_log: true
+
+    - name: Validate injected AAP controller credential
+      ansible.builtin.assert:
+        that:
+          - resolved_controller_host | length > 0
+          - resolved_controller_username | length > 0
+          - resolved_controller_password | length > 0
+          - resolved_controller_request_timeout | int > 0
+        fail_msg: >-
+          The Red Hat Ansible Controller Credential was not injected into the
+          Populate Staged Image Builder Inventory job.
+
+          Verify that the job template has the Red Hat Ansible Controller
+          Credential attached.
+      no_log: true
+
+    ###########################################################################
+    # Validate workflow artifact
+    ###########################################################################
+
+    - name: Validate staged host workflow artifact exists
+      ansible.builtin.assert:
+        that:
+          - staged_image_builder_hosts is defined
+          - staged_image_builder_hosts is sequence
+          - staged_image_builder_hosts | length > 0
+        fail_msg: >-
+          The provisioning workflow did not publish a nonempty
+          staged_image_builder_hosts artifact.
+
+          Verify that Phase 08 uses ansible.builtin.set_stats and that this
+          job is connected to the provisioning job through a success edge.
+
+    - name: Validate each staged host definition
+      ansible.builtin.assert:
+        that:
+          - item is mapping
+
+          - item.name is defined
+          - item.name | string | length > 0
+          - item.name is match(
+              '^image-builder-rhel[0-9]+-[a-z]+-[0-9]+[.].+$'
+            )
+
+          - item.fqdn is defined
+          - item.fqdn | string | length > 0
+          - item.fqdn == item.name
+
+          - item.ansible_host is defined
+          - item.ansible_host | string | length > 0
+
+          - item.private_ip is defined
+          - item.private_ip | string | length > 0
+          - item.ansible_host == item.private_ip
+
+          - item.instance_id is defined
+          - item.instance_id | string | length > 0
+          - item.instance_id is match('^i-[A-Za-z0-9]+$')
+
+          - item.generation is defined
+          - item.generation | string | length > 0
+
+          - item.rhel_major_version is defined
+          - item.rhel_major_version | string | length > 0
+
+          - item.team_id is defined
+          - item.team_id | string | length > 0
+
+          - item.aws_region is defined
+          - item.aws_region | string | length > 0
+
+          - item.state is defined
+          - item.state == "running"
+        fail_msg: >-
+          Invalid staged Image Builder definition:
+
+          {{ item }}
+      loop: "{{ staged_image_builder_hosts }}"
+      loop_control:
+        label: "{{ item.name | default('UNKNOWN') }}"
+
+    - name: Validate staged hostnames are unique
+      ansible.builtin.assert:
+        that:
+          - >-
+            staged_image_builder_hosts
+            | map(attribute='name')
+            | unique
+            | length
+            ==
+            staged_image_builder_hosts
+            | map(attribute='name')
+            | list
+            | length
+        fail_msg: >-
+          The staged_image_builder_hosts artifact contains duplicate hostnames:
+
+          {{
+            staged_image_builder_hosts
+            | map(attribute='name')
+            | list
+          }}
+
+  tasks:
+    ###########################################################################
+    # Ensure staging inventory exists
+    ###########################################################################
+
+    - name: Ensure staged inventory exists
+      ansible.controller.inventory:
+        name: "{{ staged_inventory_name }}"
+        description: >-
+          Newly provisioned Image Builder hosts awaiting IdM, TLS, Satellite,
+          and final validation.
+        organization: "{{ aap_organization_name }}"
+        state: present
+
+        controller_host: "{{ resolved_controller_host }}"
+        controller_username: "{{ resolved_controller_username }}"
+        controller_password: "{{ resolved_controller_password }}"
+        request_timeout: "{{ resolved_controller_request_timeout | int }}"
+        validate_certs: "{{ resolved_controller_validate_certs }}"
+      register: staged_inventory_result
+      no_log: true
+
+    ###########################################################################
+    # Add newly provisioned hosts
+    ###########################################################################
+
+    - name: Add new hosts to staged inventory
+      ansible.controller.host:
+        name: "{{ item.name }}"
+        description: >-
+          Staged {{ item.generation }} Image Builder team {{ item.team_id }}
+        inventory: "{{ staged_inventory_name }}"
+        enabled: true
+        state: present
+
+        variables:
+          ansible_host: "{{ item.ansible_host }}"
+          ansible_user: >-
+            {{ image_builder_ansible_user | default('ec2-user') }}
+
+          fqdn: "{{ item.fqdn }}"
+          private_ip: "{{ item.private_ip }}"
+          public_ip: "{{ item.public_ip | default('', true) }}"
+
+          aws_instance_id: "{{ item.instance_id }}"
+          aws_region: "{{ item.aws_region }}"
+          aws_vpc_id: "{{ item.vpc_id | default('', true) }}"
+          aws_subnet_id: "{{ item.subnet_id | default('', true) }}"
+          aws_availability_zone: >-
+            {{ item.availability_zone | default('', true) }}
+
+          image_builder_generation: "{{ item.generation }}"
+          image_builder_rhel_major_version: >-
+            {{ item.rhel_major_version | string }}
+          image_builder_team_id: "{{ item.team_id }}"
+
+          public_tls_fqdn: >-
+            {{ item.public_tls_fqdn | default(item.fqdn, true) }}
+          acm_certificate_arn: >-
+            {{ item.acm_certificate_arn | default('', true) }}
+
+          idm_enrollment_status: "pending"
+          certificate_generation_status: "pending"
+          certificate_staging_status: "pending"
+          satellite_registration_status: "pending"
+          staging_status: "provisioned"
+
+        controller_host: "{{ resolved_controller_host }}"
+        controller_username: "{{ resolved_controller_username }}"
+        controller_password: "{{ resolved_controller_password }}"
+        request_timeout: "{{ resolved_controller_request_timeout | int }}"
+        validate_certs: "{{ resolved_controller_validate_certs }}"
+      loop: "{{ staged_image_builder_hosts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: staged_host_creation_results
+      no_log: true
+
+    ###########################################################################
+    # Verify staged host records through the controller API
+    ###########################################################################
+
+    - name: Query staged inventory
+      ansible.builtin.uri:
+        url: >-
+          {{
+            resolved_controller_host
+            ~ '/api/controller/v2/inventories/?name='
+            ~ (staged_inventory_name | urlencode)
+            ~ '&organization__name='
+            ~ (aap_organization_name | urlencode)
+          }}
+        method: GET
+        user: "{{ resolved_controller_username }}"
+        password: "{{ resolved_controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ resolved_controller_validate_certs }}"
+        status_code: 200
+        return_content: true
+        timeout: "{{ resolved_controller_request_timeout | int }}"
+      register: staged_inventory_lookup
+      changed_when: false
+      no_log: true
+
+    - name: Validate staged inventory lookup
+      ansible.builtin.assert:
+        that:
+          - staged_inventory_lookup.json is defined
+          - staged_inventory_lookup.json.count | int == 1
+          - staged_inventory_lookup.json.results | length == 1
+        fail_msg: >-
+          Exactly one {{ staged_inventory_name }} inventory was expected in
+          organization {{ aap_organization_name }}.
+
+    - name: Query hosts in staged inventory
+      ansible.builtin.uri:
+        url: >-
+          {{
+            resolved_controller_host
+            ~ '/api/controller/v2/inventories/'
+            ~ (staged_inventory_lookup.json.results[0].id | string)
+            ~ '/hosts/?page_size=200'
+          }}
+        method: GET
+        user: "{{ resolved_controller_username }}"
+        password: "{{ resolved_controller_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ resolved_controller_validate_certs }}"
+        status_code: 200
+        return_content: true
+        timeout: "{{ resolved_controller_request_timeout | int }}"
+      register: staged_inventory_hosts_lookup
+      changed_when: false
+      no_log: true
+
+    - name: Resolve staged inventory hostnames
+      ansible.builtin.set_fact:
+        staged_inventory_hostnames: >-
+          {{
+            staged_inventory_hosts_lookup.json.results
+            | default([])
+            | map(attribute='name')
+            | list
+          }}
+
+    - name: Validate all workflow hosts exist in staging
+      ansible.builtin.assert:
+        that:
+          - item.name in staged_inventory_hostnames
+        fail_msg: >-
+          Host {{ item.name }} was not found in {{ staged_inventory_name }}
+          after the controller host-creation task completed.
+      loop: "{{ staged_image_builder_hosts }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    ###########################################################################
+    # Publish staging results for downstream workflow jobs
+    ###########################################################################
+
+    - name: Publish staged inventory workflow results
+      ansible.builtin.set_stats:
+        aggregate: false
+        per_host: false
+        data:
+          staged_inventory_name: "{{ staged_inventory_name }}"
+          staged_inventory_id: >-
+            {{ staged_inventory_lookup.json.results[0].id }}
+          staged_inventory_hostnames: >-
+            {{
+              staged_image_builder_hosts
+              | map(attribute='name')
+              | list
+            }}
+          staged_inventory_host_count: >-
+            {{ staged_image_builder_hosts | length }}
+
+    ###########################################################################
+    # Display result
+    ###########################################################################
+
+    - name: Display staged inventory population
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Added {{ staged_image_builder_hosts | length }} hosts to
+            {{ staged_inventory_name }}.
+          - >-
+            Hosts:
+            {{
+              staged_image_builder_hosts
+              | map(attribute='name')
+              | join(', ')
+            }}
+          - >-
+            Inventory ID:
+            {{ staged_inventory_lookup.json.results[0].id }}

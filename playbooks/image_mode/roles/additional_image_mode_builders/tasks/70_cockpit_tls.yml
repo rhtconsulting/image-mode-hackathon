@@ -1,0 +1,294 @@
+---
+# Install staged public TLS certificate for Cockpit
+###########################################################################
+
+- name: Inspect staged Cockpit TLS files
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  loop:
+    - path: "{{ cockpit_tls_leaf_certificate_path }}"
+    - path: "{{ cockpit_tls_chain_path }}"
+    - path: "{{ cockpit_tls_private_key_path }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: cockpit_staged_tls_files
+
+- name: Validate staged Cockpit TLS files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - item.stat.size | int > 0
+    fail_msg: |
+      Required staged Cockpit TLS file is missing or empty:
+
+      {{ item.item.path }}
+
+      Host: {{ inventory_hostname }}
+
+      Run the upstream certificate staging playbook before launching the
+      AAP Image Builder configuration job.
+  loop: "{{ cockpit_staged_tls_files.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+- name: Enforce staged Cockpit TLS ownership and permissions
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: file
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ cockpit_tls_leaf_certificate_path }}"
+      mode: "0644"
+    - path: "{{ cockpit_tls_chain_path }}"
+      mode: "0644"
+    - path: "{{ cockpit_tls_private_key_path }}"
+      mode: "0600"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Validate staged Cockpit certificate hostname
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ cockpit_tls_leaf_certificate_path }}"
+      - -noout
+      - -checkhost
+      - "{{ cockpit_public_tls_fqdn }}"
+  register: cockpit_staged_hostname_check
+  changed_when: false
+  failed_when: cockpit_staged_hostname_check.rc != 0
+
+- name: Validate staged Cockpit certificate remaining lifetime
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ cockpit_tls_leaf_certificate_path }}"
+      - -noout
+      - -checkend
+      - "{{ cockpit_tls_minimum_validity_seconds | string }}"
+  register: cockpit_staged_validity_check
+  changed_when: false
+  failed_when: cockpit_staged_validity_check.rc != 0
+
+- name: Validate staged Cockpit private key
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - pkey
+      - -in
+      - "{{ cockpit_tls_private_key_path }}"
+      - -noout
+      - -check
+  register: cockpit_staged_private_key_check
+  changed_when: false
+  failed_when: cockpit_staged_private_key_check.rc != 0
+  no_log: true
+
+- name: Verify staged Cockpit certificate and private key match
+  ansible.builtin.shell: |
+    set -euo pipefail
+    certificate_hash="$(
+      openssl x509 -in "{{ cockpit_tls_leaf_certificate_path }}" -noout -pubkey |
+      openssl pkey -pubin -outform DER |
+      openssl dgst -sha256
+    )"
+    private_key_hash="$(
+      openssl pkey -in "{{ cockpit_tls_private_key_path }}" -pubout -outform DER |
+      openssl dgst -sha256
+    )"
+    test "${certificate_hash}" = "${private_key_hash}"
+  args:
+    executable: /bin/bash
+  register: cockpit_staged_key_pair_check
+  changed_when: false
+  failed_when: cockpit_staged_key_pair_check.rc != 0
+  no_log: true
+
+- name: Build staged Cockpit full chain
+  ansible.builtin.shell: |
+    set -euo pipefail
+    temporary_file="$(mktemp "{{ cockpit_tls_directory }}/.fullchain.XXXXXX")"
+    cat "{{ cockpit_tls_leaf_certificate_path }}" "{{ cockpit_tls_chain_path }}" > "${temporary_file}"
+    chown root:root "${temporary_file}"
+    chmod 0644 "${temporary_file}"
+    if [[ -f "{{ cockpit_tls_fullchain_path }}" ]] && cmp -s "${temporary_file}" "{{ cockpit_tls_fullchain_path }}"; then
+      rm -f "${temporary_file}"
+      printf 'unchanged\n'
+    else
+      mv -f "${temporary_file}" "{{ cockpit_tls_fullchain_path }}"
+      printf 'updated\n'
+    fi
+  args:
+    executable: /bin/bash
+  register: cockpit_fullchain_install
+  changed_when: "'updated' in cockpit_fullchain_install.stdout"
+
+- name: Ensure Cockpit certificate directory exists
+  ansible.builtin.file:
+    path: "{{ cockpit_ws_certificate_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Build Cockpit combined certificate PEM
+  ansible.builtin.shell: |
+    set -euo pipefail
+    temporary_file="$(mktemp "{{ cockpit_ws_certificate_directory }}/.cockpit-acm.XXXXXX")"
+    cat "{{ cockpit_tls_leaf_certificate_path }}" "{{ cockpit_tls_chain_path }}" "{{ cockpit_tls_private_key_path }}" > "${temporary_file}"
+    chown root:root "${temporary_file}"
+    chmod 0600 "${temporary_file}"
+    if [[ -f "{{ cockpit_ws_certificate_path }}" ]] && cmp -s "${temporary_file}" "{{ cockpit_ws_certificate_path }}"; then
+      rm -f "${temporary_file}"
+      printf 'unchanged\n'
+    else
+      mv -f "${temporary_file}" "{{ cockpit_ws_certificate_path }}"
+      printf 'updated\n'
+    fi
+  args:
+    executable: /bin/bash
+  register: cockpit_combined_certificate_install
+  changed_when: "'updated' in cockpit_combined_certificate_install.stdout"
+  no_log: true
+
+- name: Restore SELinux contexts on Cockpit TLS files
+  ansible.builtin.command:
+    argv:
+      - restorecon
+      - -RFv
+      - "{{ cockpit_tls_directory }}"
+      - "{{ cockpit_ws_certificate_directory }}"
+  register: cockpit_tls_restorecon
+  changed_when: cockpit_tls_restorecon.stdout | length > 0
+
+- name: Verify Cockpit combined PEM exists
+  ansible.builtin.stat:
+    path: "{{ cockpit_ws_certificate_path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: cockpit_combined_pem_stat
+
+- name: Assert Cockpit combined PEM exists
+  ansible.builtin.assert:
+    that:
+      - cockpit_combined_pem_stat.stat.exists
+      - cockpit_combined_pem_stat.stat.isreg
+      - cockpit_combined_pem_stat.stat.size | int > 0
+      - cockpit_combined_pem_stat.stat.pw_name == 'root'
+      - cockpit_combined_pem_stat.stat.gr_name == 'root'
+    fail_msg: >-
+      Cockpit combined certificate file {{ cockpit_ws_certificate_path }}
+      is missing, empty, or has incorrect ownership.
+
+- name: Validate Cockpit combined PEM structure
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    certificate_file="{{ cockpit_ws_certificate_path }}"
+
+    certificate_count="$(
+      grep -c -- '-----BEGIN CERTIFICATE-----' "${certificate_file}"
+    )"
+
+    private_key_count="$(
+      grep -Ec -- \
+        '-----BEGIN (RSA |EC |ENCRYPTED )?PRIVATE KEY-----' \
+        "${certificate_file}"
+    )"
+
+    test "${certificate_count}" -ge 1
+    test "${private_key_count}" -ge 1
+  args:
+    executable: /bin/bash
+  register: cockpit_combined_pem_structure
+  changed_when: false
+  failed_when: cockpit_combined_pem_structure.rc != 0
+  no_log: true
+
+- name: Validate certificate embedded in Cockpit PEM
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ cockpit_ws_certificate_path }}"
+      - -noout
+      - -checkhost
+      - "{{ cockpit_public_tls_fqdn }}"
+  register: cockpit_combined_certificate_hostname_check
+  changed_when: false
+  failed_when: cockpit_combined_certificate_hostname_check.rc != 0
+
+- name: Validate private key embedded in Cockpit PEM
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - pkey
+      - -in
+      - "{{ cockpit_ws_certificate_path }}"
+      - -noout
+      - -check
+  register: cockpit_combined_private_key_check
+  changed_when: false
+  failed_when: cockpit_combined_private_key_check.rc != 0
+  no_log: true
+
+- name: Verify certificate and private key in Cockpit PEM match
+  ansible.builtin.shell: |
+    set -euo pipefail
+
+    certificate_hash="$(
+      openssl x509 \
+        -in "{{ cockpit_ws_certificate_path }}" \
+        -noout \
+        -pubkey |
+      openssl pkey \
+        -pubin \
+        -outform DER |
+      openssl dgst -sha256 |
+      awk '{print $NF}'
+    )"
+
+    private_key_hash="$(
+      openssl pkey \
+        -in "{{ cockpit_ws_certificate_path }}" \
+        -pubout \
+        -outform DER |
+      openssl dgst -sha256 |
+      awk '{print $NF}'
+    )"
+
+    test -n "${certificate_hash}"
+    test -n "${private_key_hash}"
+    test "${certificate_hash}" = "${private_key_hash}"
+  args:
+    executable: /bin/bash
+  register: cockpit_combined_key_pair_check
+  changed_when: false
+  failed_when: cockpit_combined_key_pair_check.rc != 0
+  no_log: true
+
+- name: Read staged Cockpit certificate metadata
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ cockpit_tls_leaf_certificate_path }}"
+      - -noout
+      - -subject
+      - -issuer
+      - -serial
+      - -dates
+      - -fingerprint
+      - -sha256
+  register: cockpit_staged_certificate_metadata

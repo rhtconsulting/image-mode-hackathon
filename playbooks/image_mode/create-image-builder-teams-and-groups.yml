@@ -1,0 +1,491 @@
+---
+###############################################################################
+# Discover required team letters from the promoted hostnames, compare them with
+# existing AAP teams, create only the required missing Teams and matching Image
+# Builders inventory groups, and add the current workflow hosts to those groups.
+#
+# Example for hostnames containing team letters A and B:
+#   No existing teams -> create Team A and Team B
+#   Existing Team A   -> create only Team B
+#   Existing A and B  -> create no Teams; ensure groups and assignments exist
+#
+# Required job template credential:
+#   - Red Hat Ansible Controller Credential
+#
+# Required job template inventory:
+#   Staged Image Builders
+#
+# The staged inventory limits this job to hosts created by the current
+# workflow. The playbook manages groups in Image Builders through the AAP API;
+# it does not expect production hosts to be present in the job's hostvars.
+###############################################################################
+
+- name: Create available Image Builder AAP teams and inventory groups
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    image_builder_organization_name: "Image Mode Lab"
+    image_builder_inventory_name: "Image Builders"
+    image_builder_staged_inventory_name: "Staged Image Builders"
+    image_builder_team_count: "{{ generated_number_of_host_var | int }}"
+    image_builder_team_letters:
+      - A
+      - B
+      - C
+      - D
+      - E
+      - F
+      - G
+      - H
+      - I
+      - J
+      - K
+      - L
+      - M
+      - N
+      - O
+      - P
+      - Q
+      - R
+      - S
+      - T
+      - U
+      - V
+      - W
+      - X
+      - Y
+      - Z
+
+    # Promotion publishes this artifact. The inventory fallback supports
+    # standalone testing, but workflow execution should use the artifact.
+    image_builder_hosts_for_current_run: >-
+      {{
+        promoted_image_builder_hostnames
+        | default(image_builder_generated_hostnames | default([], true), true)
+      }}
+
+    # PHASE 08 publishes the complete records. Prefer the staged artifact and
+    # retain the generated-host artifact as a compatibility fallback.
+    image_builder_host_records_for_current_run: >-
+      {{
+        staged_image_builder_hosts
+        | default(image_builder_generated_hosts | default([], true), true)
+      }}
+
+    team_controller_host: >-
+      {{
+        aap_hostname
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_HOST'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_HOSTNAME'), true)
+        | trim
+        | regex_replace('/+$', '')
+      }}
+    team_controller_username: >-
+      {{
+        aap_username
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_USERNAME'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_USERNAME'), true)
+        | trim
+      }}
+    team_controller_password: >-
+      {{
+        aap_password
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_PASSWORD'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_PASSWORD'), true)
+      }}
+    team_controller_token: >-
+      {{
+        aap_token
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_OAUTH_TOKEN'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_TOKEN'), true)
+      }}
+    team_controller_validate_certs: >-
+      {{
+        aap_validate_certs
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_VERIFY_SSL'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_VALIDATE_CERTS'), true)
+        | default(false, true)
+        | bool
+      }}
+    team_controller_request_timeout: >-
+      {{
+        aap_request_timeout
+        | default(lookup('ansible.builtin.env', 'CONTROLLER_REQUEST_TIMEOUT'), true)
+        | default(lookup('ansible.builtin.env', 'AAP_REQUEST_TIMEOUT'), true)
+        | default('30', true)
+        | int
+      }}
+
+  tasks:
+    ###########################################################################
+    # Validate inputs and controller authentication
+    ###########################################################################
+
+    - name: Validate requested Image Builder team allocation
+      ansible.builtin.assert:
+        that:
+          - generated_number_of_host_var is defined
+          - image_builder_team_count | int >= 1
+          - image_builder_team_count | int <= image_builder_team_letters | length
+          - image_builder_hosts_for_current_run | length > 0
+          - image_builder_host_records_for_current_run | length > 0
+          - team_controller_host | length > 0
+          - team_controller_host not in ['https://127.0.0.1', 'http://127.0.0.1']
+          - >-
+            team_controller_token | length > 0
+            or
+            (
+              team_controller_username | length > 0
+              and team_controller_password | length > 0
+            )
+        fail_msg: >-
+          Team allocation requires generated_number_of_host_var between 1 and
+          26, promoted hostnames, and the Red Hat Ansible Controller
+          Credential.
+      no_log: true
+
+    ###########################################################################
+    # Discover existing AAP teams in the Image Mode Lab organization
+    ###########################################################################
+
+    - name: Query the Image Mode Lab organization
+      ansible.builtin.set_fact:
+        image_builder_aap_organization_results: >-
+          {{
+            query(
+              'ansible.controller.controller_api',
+              'organizations',
+              query_params={'name': image_builder_organization_name},
+              host=team_controller_host,
+              username=team_controller_username,
+              password=team_controller_password,
+              aap_token=team_controller_token,
+              verify_ssl=team_controller_validate_certs,
+              request_timeout=team_controller_request_timeout,
+              return_all=true
+            )
+          }}
+      no_log: true
+
+    - name: Validate Image Mode Lab organization discovery
+      ansible.builtin.assert:
+        that:
+          - image_builder_aap_organization_results | length == 1
+        fail_msg: >-
+          Expected exactly one AAP organization named
+          {{ image_builder_organization_name }}, but found
+          {{ image_builder_aap_organization_results | length }}.
+
+    - name: Store Image Mode Lab organization ID
+      ansible.builtin.set_fact:
+        image_builder_aap_organization_id: >-
+          {{ (image_builder_aap_organization_results | first).id }}
+
+    - name: Query existing teams in the Image Mode Lab organization
+      ansible.builtin.set_fact:
+        image_builder_existing_team_objects: >-
+          {{
+            query(
+              'ansible.controller.controller_api',
+              'teams',
+              query_params={
+                'organization': image_builder_aap_organization_id,
+                'name__startswith': 'Team '
+              },
+              host=team_controller_host,
+              username=team_controller_username,
+              password=team_controller_password,
+              aap_token=team_controller_token,
+              verify_ssl=team_controller_validate_certs,
+              request_timeout=team_controller_request_timeout,
+              return_all=true
+            )
+          }}
+      no_log: true
+
+    - name: Store existing single-letter Image Builder teams
+      ansible.builtin.set_fact:
+        image_builder_existing_team_names: >-
+          {{
+            image_builder_existing_team_objects
+            | map(attribute='name')
+            | select('match', '^Team [A-Z]$')
+            | list
+          }}
+        image_builder_existing_team_letters: >-
+          {{
+            image_builder_existing_team_objects
+            | map(attribute='name')
+            | select('match', '^Team [A-Z]$')
+            | map('regex_replace', '^Team ', '')
+            | list
+          }}
+
+    ###########################################################################
+    # Resolve required team letters from the current workflow hostnames
+    ###########################################################################
+
+    - name: Build current workflow host metadata map
+      ansible.builtin.set_fact:
+        image_builder_current_host_records: >-
+          {{
+            image_builder_current_host_records | default({})
+            | combine({item.name: item})
+          }}
+      loop: "{{ image_builder_host_records_for_current_run }}"
+      loop_control:
+        label: "{{ item.name | default('UNKNOWN') }}"
+
+    - name: Validate current hosts exist in the staged workflow artifact
+      ansible.builtin.assert:
+        that:
+          - item in image_builder_current_host_records
+        fail_msg: >-
+          Current workflow host {{ item }} is not present in
+          staged_image_builder_hosts or image_builder_generated_hosts. Ensure
+          this job inherits the provisioning workflow artifacts and uses the
+          {{ image_builder_staged_inventory_name }} job inventory.
+      loop: "{{ image_builder_hosts_for_current_run }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Validate canonical promoted Image Builder hostnames
+      ansible.builtin.assert:
+        that:
+          - >-
+            item is match(
+              '^image-builder-rhel(9|10)-([a-z])-([1-9][0-9]*)[.][A-Za-z0-9.-]+$'
+            )
+        fail_msg: >-
+          Promoted hostname {{ item }} does not follow the required format:
+          image-builder-rhel<9|10>-<team-letter>-<host-number>.<domain>.
+          For example: image-builder-rhel9-a-1.lab.example.com. A hostname such
+          as image-builder-rhel9a-1.lab.example.com is invalid because the
+          separator before the team letter is missing.
+      loop: "{{ image_builder_hosts_for_current_run }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Resolve promoted hostname team letters
+      ansible.builtin.set_fact:
+        image_builder_host_team_map: >-
+          {{
+            image_builder_host_team_map | default({})
+            | combine(
+                {
+                  item: (
+                    (
+                      item
+                      | split('.')
+                      | first
+                      | split('-')
+                    )[3]
+                    | upper
+                  )
+                }
+              )
+          }}
+      loop: "{{ image_builder_hosts_for_current_run }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Validate hostname and staged metadata agree
+      ansible.builtin.assert:
+        that:
+          - >-
+            image_builder_current_host_records[item].image_builder_team_id
+            | default(
+                image_builder_current_host_records[item].team_id
+                | default(''),
+                true
+              )
+            | upper
+            == image_builder_host_team_map[item]
+          - >-
+            image_builder_current_host_records[item].image_builder_rhel_major_version
+            | default(
+                image_builder_current_host_records[item].rhel_major_version
+                | default(''),
+                true
+              )
+            | string
+            ==
+            (
+              item
+              | regex_replace(
+                  '^image-builder-rhel(9|10)-[a-z]-[0-9]+[.].*$',
+                  '\\1'
+                )
+            )
+        fail_msg: >-
+          Hostname {{ item }} resolves to Team
+          {{ image_builder_host_team_map[item] }}, but its persisted inventory
+          metadata contains team
+          {{
+            image_builder_current_host_records[item].image_builder_team_id
+            | default(
+                image_builder_current_host_records[item].team_id
+                | default('UNKNOWN'),
+                true
+              )
+            | upper
+          }} or a different RHEL major version.
+      loop: "{{ image_builder_hosts_for_current_run }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Store required team letters from promoted hostnames
+      ansible.builtin.set_fact:
+        image_builder_required_team_letters: >-
+          {{
+            image_builder_host_team_map.values()
+            | unique
+            | sort
+            | list
+          }}
+
+    - name: Validate hostname team count matches workflow request
+      ansible.builtin.assert:
+        that:
+          - >-
+            image_builder_required_team_letters | length
+            == image_builder_team_count | int
+          - >-
+            image_builder_required_team_letters
+            | difference(image_builder_team_letters)
+            | length == 0
+        fail_msg: >-
+          generated_number_of_host_var={{ image_builder_team_count }} requests
+          that many distinct teams, but the promoted hostnames require
+          {{ image_builder_required_team_letters | length }} teams:
+          {{ image_builder_required_team_letters }}.
+
+    ###########################################################################
+    # Select only required hostname teams that do not already exist in AAP
+    ###########################################################################
+
+    - name: Initialize missing required Image Builder teams
+      ansible.builtin.set_fact:
+        image_builder_missing_team_letters: []
+
+    - name: Build ordered list of required teams missing from AAP
+      ansible.builtin.set_fact:
+        image_builder_missing_team_letters: >-
+          {{ image_builder_missing_team_letters + [item] }}
+      loop: "{{ image_builder_required_team_letters }}"
+      loop_control:
+        label: "Team {{ item }}"
+      when: item not in image_builder_existing_team_letters
+
+    ###########################################################################
+    # Create AAP RBAC teams and matching inventory groups
+    ###########################################################################
+
+    - name: Create required Image Builder AAP teams missing from AAP
+      ansible.controller.team:
+        name: "Team {{ item }}"
+        description: >-
+          Image Mode Builder administrators for Image Builder team {{ item }}.
+        organization: "{{ image_builder_organization_name }}"
+        state: present
+        controller_host: "{{ team_controller_host }}"
+        controller_username: >-
+          {{ team_controller_username if team_controller_token | length == 0 else omit }}
+        controller_password: >-
+          {{ team_controller_password if team_controller_token | length == 0 else omit }}
+        aap_token: >-
+          {{ team_controller_token if team_controller_token | length > 0 else omit }}
+        validate_certs: "{{ team_controller_validate_certs }}"
+        request_timeout: "{{ team_controller_request_timeout | int }}"
+      loop: "{{ image_builder_missing_team_letters }}"
+      loop_control:
+        label: "Team {{ item }}"
+      no_log: true
+
+    - name: Create matching Image Builder inventory groups
+      ansible.controller.group:
+        name: "Team {{ item }}"
+        description: >-
+          Production Image Builder hosts allocated to team {{ item }}.
+        inventory: "{{ image_builder_inventory_name }}"
+        state: present
+        preserve_existing_hosts: true
+        variables:
+          image_builder_team_id: "{{ item | lower }}"
+          image_builder_team_name: "Team {{ item }}"
+        controller_host: "{{ team_controller_host }}"
+        controller_username: >-
+          {{ team_controller_username if team_controller_token | length == 0 else omit }}
+        controller_password: >-
+          {{ team_controller_password if team_controller_token | length == 0 else omit }}
+        aap_token: >-
+          {{ team_controller_token if team_controller_token | length > 0 else omit }}
+        validate_certs: "{{ team_controller_validate_certs }}"
+        request_timeout: "{{ team_controller_request_timeout | int }}"
+      loop: "{{ image_builder_required_team_letters }}"
+      loop_control:
+        label: "Team {{ item }}"
+      no_log: true
+
+    - name: Assign promoted hosts to matching inventory groups
+      ansible.controller.group:
+        name: "Team {{ image_builder_host_team_map[item] }}"
+        inventory: "{{ image_builder_inventory_name }}"
+        state: present
+        hosts:
+          - "{{ item }}"
+        preserve_existing_hosts: true
+        preserve_existing_children: true
+        controller_host: "{{ team_controller_host }}"
+        controller_username: >-
+          {{ team_controller_username if team_controller_token | length == 0 else omit }}
+        controller_password: >-
+          {{ team_controller_password if team_controller_token | length == 0 else omit }}
+        aap_token: >-
+          {{ team_controller_token if team_controller_token | length > 0 else omit }}
+        validate_certs: "{{ team_controller_validate_certs }}"
+        request_timeout: "{{ team_controller_request_timeout | int }}"
+      loop: "{{ image_builder_hosts_for_current_run }}"
+      loop_control:
+        label: >-
+          {{ item }} -> Team {{ image_builder_host_team_map[item] }}
+      no_log: true
+
+    - name: Publish Image Builder team allocation results
+      ansible.builtin.set_stats:
+        data:
+          image_builder_existing_aap_teams: >-
+            {{ image_builder_existing_team_names }}
+          image_builder_required_team_letters: >-
+            {{ image_builder_required_team_letters }}
+          image_builder_missing_team_letters: >-
+            {{ image_builder_missing_team_letters }}
+          image_builder_created_aap_teams: >-
+            {{
+              image_builder_missing_team_letters
+              | map('regex_replace', '^(.*)$', 'Team \\1')
+              | list
+            }}
+          image_builder_host_team_map: "{{ image_builder_host_team_map }}"
+          image_builder_team_count: "{{ image_builder_team_count | int }}"
+
+    - name: Display Image Builder team allocation
+      ansible.builtin.debug:
+        msg:
+          existing_teams: "{{ image_builder_existing_team_names }}"
+          required_teams: >-
+            {{
+              image_builder_required_team_letters
+              | map('regex_replace', '^(.*)$', 'Team \\1')
+              | list
+            }}
+          newly_created_teams: >-
+            {{
+              image_builder_missing_team_letters
+              | map('regex_replace', '^(.*)$', 'Team \\1')
+              | list
+            }}
+          host_assignments: "{{ image_builder_host_team_map }}"

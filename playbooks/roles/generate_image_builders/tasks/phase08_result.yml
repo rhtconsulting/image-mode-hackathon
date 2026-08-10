@@ -2,36 +2,200 @@
 ###############################################################################
 # PHASE 08
 #
-# Generate final workflow results.
+# Generate final workflow results and publish newly provisioned hosts as AAP
+# workflow artifacts.
 ###############################################################################
 
-- name: PHASE 08 | Build generated host result list
+###############################################################################
+# Resolve the hostnames requested by this workflow run
+###############################################################################
+
+- name: PHASE 08 | Resolve requested hostnames
   ansible.builtin.set_fact:
-    image_builder_generated_hosts: >-
+    image_builder_requested_hostnames: >-
       {{
-        image_builder_final_instance_info.instances
-        | map(attribute='tags')
+        image_builder_desired_hosts
+        | map(attribute='name')
         | list
       }}
 
+- name: PHASE 08 | Validate requested hostnames
+  ansible.builtin.assert:
+    that:
+      - image_builder_requested_hostnames | length > 0
+    fail_msg: >-
+      PHASE 08 cannot publish workflow results because no desired Image
+      Builder hostnames were generated.
+
+###############################################################################
+# Build structured host artifact
+###############################################################################
+
+- name: PHASE 08 | Initialize generated host result lists
+  ansible.builtin.set_fact:
+    image_builder_generated_hosts: []
+    staged_image_builder_hosts: []
+
+- name: PHASE 08 | Build generated host result lists
+  ansible.builtin.set_fact:
+    image_builder_generated_hosts: >-
+      {{
+        image_builder_generated_hosts
+        +
+        [
+          {
+            'name': item.tags.Name,
+            'fqdn': item.tags.Name,
+            'ansible_host': item.private_ip_address,
+            'private_ip': item.private_ip_address,
+            'public_ip': (
+              item.public_ip_address
+              | default('', true)
+            ),
+            'instance_id': item.instance_id,
+            'aws_region': image_builder_aws_region,
+            'vpc_id': item.vpc_id,
+            'subnet_id': item.subnet_id,
+            'availability_zone': item.placement.availability_zone,
+            'generation': item.tags.ImageBuilderGeneration,
+            'rhel_major_version': item.tags.RHELVersion,
+            'team_id': item.tags.ImageBuilderTeam,
+            'state': item.state.name,
+            'public_tls_fqdn': item.tags.Name,
+            'acm_certificate_arn': ''
+          }
+        ]
+      }}
+
+    staged_image_builder_hosts: >-
+      {{
+        staged_image_builder_hosts
+        +
+        [
+          {
+            'name': item.tags.Name,
+            'fqdn': item.tags.Name,
+            'ansible_host': item.private_ip_address,
+            'private_ip': item.private_ip_address,
+            'public_ip': (
+              item.public_ip_address
+              | default('', true)
+            ),
+            'instance_id': item.instance_id,
+            'aws_region': image_builder_aws_region,
+            'vpc_id': item.vpc_id,
+            'subnet_id': item.subnet_id,
+            'availability_zone': item.placement.availability_zone,
+            'generation': item.tags.ImageBuilderGeneration,
+            'rhel_major_version': item.tags.RHELVersion,
+            'team_id': item.tags.ImageBuilderTeam,
+            'state': item.state.name,
+            'public_tls_fqdn': item.tags.Name,
+            'acm_certificate_arn': ''
+          }
+        ]
+      }}
+  loop: "{{ image_builder_final_instance_info.instances }}"
+  when:
+    - item.tags is defined
+    - item.tags.Name is defined
+    - item.tags.Name in image_builder_requested_hostnames
+  loop_control:
+    label: "{{ item.tags.Name | default(item.instance_id) }}"
+
+###############################################################################
+# Validate workflow artifact
+###############################################################################
+
+- name: PHASE 08 | Validate generated host results
+  ansible.builtin.assert:
+    that:
+      - image_builder_generated_hosts | length > 0
+      - >-
+        image_builder_generated_hosts | length
+        == image_builder_desired_hosts | length
+      - item.name | length > 0
+      - item.private_ip | length > 0
+      - item.instance_id | length > 0
+      - item.generation | length > 0
+      - item.rhel_major_version | string | length > 0
+      - item.team_id | length > 0
+      - item.state == "running"
+    fail_msg: >-
+      A requested Image Builder host is missing from the final AWS results or
+      is not ready for downstream workflow processing.
+
+      Expected hosts:
+      {{ image_builder_requested_hostnames }}
+
+      Generated hosts:
+      {{
+        image_builder_generated_hosts
+        | map(attribute='name')
+        | list
+      }}
+
+      Current item:
+      {{ item }}
+  loop: "{{ image_builder_generated_hosts }}"
+  loop_control:
+    label: "{{ item.name | default('UNKNOWN') }}"
+
+###############################################################################
+# Publish workflow artifacts
+###############################################################################
+
+- name: PHASE 08 | Publish generated hosts to downstream workflow jobs
+  ansible.builtin.set_stats:
+    aggregate: false
+    per_host: false
+    data:
+      staged_image_builder_hosts: "{{ staged_image_builder_hosts }}"
+      image_builder_generated_hosts: "{{ image_builder_generated_hosts }}"
+      image_builder_generated_hostnames: >-
+        {{
+          image_builder_generated_hosts
+          | map(attribute='name')
+          | list
+        }}
+      image_builder_generated_instance_ids: >-
+        {{
+          image_builder_generated_hosts
+          | map(attribute='instance_id')
+          | list
+        }}
+      image_builder_generated_count: >-
+        {{ image_builder_generated_hosts | length }}
+      image_builder_workflow_domain: "{{ image_builder_domain_name }}"
+      image_builder_workflow_region: "{{ image_builder_aws_region }}"
+
+###############################################################################
+# Display results
+###############################################################################
 
 - name: PHASE 08 | Display generated Image Builder infrastructure
   ansible.builtin.debug:
     msg:
-      - "Hosts per RHEL generation: {{ generated_number_of_host_var }}"
+      - "Requested teams: {{ generated_number_of_host_var }}"
       - "RHEL generations: {{ image_builder_generations | length }}"
-      - "Desired total: {{ image_builder_desired_total_count }}"
-      - "Running managed instances: {{ image_builder_final_instance_info.instances | length }}"
-
+      - "Desired new instances: {{ image_builder_desired_hosts | length }}"
+      - >-
+        Running managed instances:
+        {{ image_builder_final_instance_info.instances | length }}
+      - >-
+        Published workflow hosts:
+        {{ image_builder_generated_hosts | length }}
 
 - name: PHASE 08 | Display generated instances
   ansible.builtin.debug:
     msg:
-      - "Name: {{ item.tags.Name | default('UNKNOWN') }}"
-      - "RHEL: {{ item.tags.RHELVersion | default('UNKNOWN') }}"
+      - "Name: {{ item.name }}"
+      - "RHEL: {{ item.rhel_major_version }}"
+      - "Team: {{ item.team_id }}"
       - "Instance ID: {{ item.instance_id }}"
-      - "Private IP: {{ item.private_ip_address | default('N/A') }}"
-      - "State: {{ item.state.name }}"
-  loop: "{{ image_builder_final_instance_info.instances }}"
+      - "Private IP: {{ item.private_ip }}"
+      - "Public IP: {{ item.public_ip | default('N/A', true) }}"
+      - "State: {{ item.state }}"
+  loop: "{{ image_builder_generated_hosts }}"
   loop_control:
-    label: "{{ item.tags.Name | default(item.instance_id) }}"
+    label: "{{ item.name }}"

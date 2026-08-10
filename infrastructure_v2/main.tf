@@ -322,11 +322,11 @@ locals {
 
 resource "terraform_data" "preflight_cleanup" {
   triggers_replace = [
-    7
+    8
   ]
 
   input = {
-    cleanup_version  = 7
+    cleanup_version  = 8
     environment_name = var.environment_name
     secret_prefix    = var.secret_prefix
     aws_region       = var.aws_region
@@ -386,6 +386,10 @@ resource "terraform_data" "preflight_cleanup" {
       "${var.environment_name}-image-builder-ec2-provisioning"
     )
 
+    image_builder_certificate_policy_name = (
+      "${var.environment_name}-image-builder-certificate-management"
+    )
+
     secrets = local.all_lab_secret_names
   }
 
@@ -432,6 +436,7 @@ resource "terraform_data" "preflight_cleanup" {
       BOOTC_AMI_IMPORT_POLICY_NAME="${var.environment_name}-bootc-ami-import-caller"
       EC2_DISCOVERY_POLICY_NAME="${var.environment_name}-ec2-discovery"
       IMAGE_BUILDER_EC2_PROVISIONING_POLICY_NAME="${var.environment_name}-image-builder-ec2-provisioning"
+      IMAGE_BUILDER_CERTIFICATE_POLICY_NAME="${var.environment_name}-image-builder-certificate-management"
 
       echo "Preflight cleanup: duplicate-prone unmanaged lab resources"
 
@@ -1021,11 +1026,14 @@ EOF_SECRETS
         'aws_iam_policy.image_builder_ec2_provisioning' \
         "$IMAGE_BUILDER_EC2_PROVISIONING_POLICY_NAME"
 
+      cleanup_managed_policy \
+        'aws_iam_policy.image_builder_certificate_management' \
+        "$IMAGE_BUILDER_CERTIFICATE_POLICY_NAME"
+
       echo "Preflight cleanup complete"
     EOT
   }
 }
-
 
 
 
@@ -1552,8 +1560,9 @@ resource "aws_iam_user_policy_attachment" "satellite_provisioner_ec2_discovery" 
 #
 #   aws_iam_policy.ec2_discovery
 #
-# This inline policy contains only permissions that modify or
-# create AWS resources.
+# This inline policy contains permissions required to create,
+# modify, operate, and access the console output of EC2
+# resources managed through Satellite.
 ############################################################
 
 resource "aws_iam_user_policy" "satellite_provisioner" {
@@ -1610,6 +1619,26 @@ resource "aws_iam_user_policy" "satellite_provisioner" {
         ]
 
         Resource = "*"
+      },
+
+      #########################################################################
+      # Read EC2 instance console output and screenshots
+      #
+      # Satellite uses these actions when opening the console for an instance.
+      #########################################################################
+
+      {
+        Sid    = "ReadEC2InstanceConsole"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:GetConsoleOutput",
+          "ec2:GetConsoleScreenshot"
+        ]
+
+        Resource = (
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        )
       },
 
       #########################################################################
@@ -2506,7 +2535,7 @@ resource "aws_iam_instance_profile" "image_builder" {
 # Image Builder EC2 Provisioning Policy
 #
 # Allows the rhel-iam automation user to create and reconcile
-# Image Builder EC2 instances.
+# Image Builder EC2 instances and attach existing security groups.
 ############################################################
 
 resource "aws_iam_policy" "image_builder_ec2_provisioning" {
@@ -2552,21 +2581,53 @@ resource "aws_iam_policy" "image_builder_ec2_provisioning" {
       },
 
       {
-        Sid    = "ReconcileImageBuilderInstances"
+        Sid    = "ReconcileImageBuilderInstanceLifecycle"
         Effect = "Allow"
 
         Action = [
           "ec2:StartInstances",
           "ec2:StopInstances",
           "ec2:RebootInstances",
-          "ec2:TerminateInstances",
-          "ec2:ModifyInstanceAttribute",
+          "ec2:TerminateInstances"
+        ]
+
+        Resource = [
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        ]
+      },
+
+      {
+        Sid    = "ModifyImageBuilderVolumes"
+        Effect = "Allow"
+
+        Action = [
           "ec2:ModifyVolume"
         ]
 
         Resource = [
-          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
           "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:volume/*"
+        ]
+      },
+
+      #########################################################################
+      # Changing an instance's security groups requires authorization for the
+      # instance and every security group included in the replacement list.
+      # Network-interface coverage is included because security-group changes
+      # are applied to the instance's primary network interface.
+      #########################################################################
+
+      {
+        Sid    = "ManageImageBuilderInstanceSecurityGroups"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:ModifyInstanceAttribute"
+        ]
+
+        Resource = [
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:network-interface/*",
+          "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:security-group/*"
         ]
       },
 
@@ -2604,6 +2665,132 @@ resource "aws_iam_policy" "image_builder_ec2_provisioning" {
   }
 }
 
+
+############################################################
+# Image Builder ACM and Route 53 Certificate Management
+#
+# Allows the rhel-iam automation user to request exportable
+# public ACM certificates, create the Route 53 DNS validation
+# records, and export the issued certificate material.
+############################################################
+
+resource "aws_iam_policy" "image_builder_certificate_management" {
+  name = (
+    "${var.environment_name}-image-builder-certificate-management"
+  )
+
+  description = (
+    "Allow Image Mode automation to create, validate, and export Image Builder ACM certificates."
+  )
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      #########################################################################
+      # Route 53 zone discovery
+      #
+      # Route 53 list operations do not support resource-level restrictions.
+      #########################################################################
+
+      {
+        Sid    = "DiscoverPublicRoute53Zones"
+        Effect = "Allow"
+
+        Action = [
+          "route53:ListHostedZones",
+          "route53:ListHostedZonesByName"
+        ]
+
+        Resource = "*"
+      },
+
+      #########################################################################
+      # Route 53 DNS certificate validation
+      #########################################################################
+
+      {
+        Sid    = "ManageImageBuilderCertificateValidationRecords"
+        Effect = "Allow"
+
+        Action = [
+          "route53:GetHostedZone",
+          "route53:ListResourceRecordSets",
+          "route53:ChangeResourceRecordSets"
+        ]
+
+        Resource = (
+          "arn:aws:route53:::hostedzone/${local.public_route53_zone_id}"
+        )
+      },
+
+      {
+        Sid    = "ReadRoute53ChangeStatus"
+        Effect = "Allow"
+
+        Action = [
+          "route53:GetChange"
+        ]
+
+        Resource = "arn:aws:route53:::change/*"
+      },
+
+      #########################################################################
+      # ACM certificate discovery and creation
+      #
+      # RequestCertificate creates a new resource, so it cannot be restricted
+      # to a certificate ARN that does not exist yet.
+      #########################################################################
+
+      {
+        Sid    = "DiscoverAndRequestACMCertificates"
+        Effect = "Allow"
+
+        Action = [
+          "acm:ListCertificates",
+          "acm:RequestCertificate",
+          "acm:AddTagsToCertificate"
+        ]
+
+        Resource = "*"
+      },
+
+      #########################################################################
+      # ACM certificate inspection and export
+      #########################################################################
+
+      {
+        Sid    = "ManageImageBuilderACMCertificates"
+        Effect = "Allow"
+
+        Action = [
+          "acm:DescribeCertificate",
+          "acm:ExportCertificate",
+          "acm:GetCertificate",
+          "acm:ListTagsForCertificate"
+        ]
+
+        Resource = (
+          "arn:aws:acm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:certificate/*"
+        )
+      }
+    ]
+  })
+
+  depends_on = [
+    terraform_data.preflight_cleanup
+  ]
+
+  tags = {
+    Name = (
+      "${var.environment_name}-image-builder-certificate-management"
+    )
+
+    Environment = var.environment_name
+    ManagedBy   = "Terraform"
+    Purpose     = "Manage Image Builder ACM certificates and DNS validation"
+  }
+}
 
 
 ############################################################
@@ -2646,6 +2833,10 @@ resource "aws_iam_user_policy_attachment" "rhel_iam_ec2_provisioning" {
   policy_arn = aws_iam_policy.image_builder_ec2_provisioning.arn
 }
 
+resource "aws_iam_user_policy_attachment" "rhel_iam_certificate_management" {
+  user       = aws_iam_user.rhel_iam.name
+  policy_arn = aws_iam_policy.image_builder_certificate_management.arn
+}
 
 resource "aws_iam_access_key" "rhel_iam" {
   user = aws_iam_user.rhel_iam.name
@@ -2654,11 +2845,70 @@ resource "aws_iam_access_key" "rhel_iam" {
     aws_iam_user_policy_attachment.rhel_iam_artifacts,
     aws_iam_user_policy_attachment.rhel_iam_ami_import,
     aws_iam_user_policy_attachment.rhel_iam_ec2_discovery,
-    aws_iam_user_policy_attachment.rhel_iam_ec2_provisioning
-
+    aws_iam_user_policy_attachment.rhel_iam_ec2_provisioning,
+    aws_iam_user_policy_attachment.rhel_iam_certificate_management,
+    aws_iam_user_policy.rhel_iam_installation_isos_read
   ]
 }
 
+
+###############################################################################
+# rhel-iam access to Image Builder installation ISO media
+###############################################################################
+
+resource "aws_iam_user_policy" "rhel_iam_installation_isos_read" {
+  name = "${var.environment_name}-rhel-iam-installation-isos-read"
+  user = aws_iam_user.rhel_iam.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Sid    = "ReadInstallationISOBucketMetadata"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetBucketLocation"
+        ]
+
+        Resource = "arn:aws:s3:::aap-containerized-installers"
+      },
+      {
+        Sid    = "ListInstallationISOs"
+        Effect = "Allow"
+
+        Action = [
+          "s3:ListBucket"
+        ]
+
+        Resource = "arn:aws:s3:::aap-containerized-installers"
+
+        Condition = {
+          StringLike = {
+            "s3:prefix" = [
+              "rhel-9.8-x86_64-dvd.iso",
+              "rhel-10.2-x86_64-dvd.iso"
+            ]
+          }
+        }
+      },
+      {
+        Sid    = "ReadInstallationISOs"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetObject"
+        ]
+
+        Resource = [
+          "arn:aws:s3:::aap-containerized-installers/rhel-9.8-x86_64-dvd.iso",
+          "arn:aws:s3:::aap-containerized-installers/rhel-10.2-x86_64-dvd.iso"
+        ]
+      }
+    ]
+  })
+}
 
 ############################################################
 # rhel-iam Credentials Secret

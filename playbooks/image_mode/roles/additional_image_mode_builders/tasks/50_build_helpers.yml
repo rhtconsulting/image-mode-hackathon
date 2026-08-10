@@ -1,0 +1,319 @@
+---
+# Image Mode build helper
+###########################################################################
+
+- name: Install image-mode-build helper command
+  ansible.builtin.copy:
+    dest: /usr/local/bin/image-mode-build
+    owner: root
+    group: "{{ image_mode_group }}"
+    mode: "0755"
+    content: |
+      #!/usr/bin/env bash
+
+      set -Eeuo pipefail
+
+      BOOTC_BUILDER_IMAGE="{{ bootc_image_builder_image }}"
+      OUTPUT_ROOT="{{ image_mode_output_directory }}"
+      BUILD_ROOT="{{ image_mode_build_directory }}"
+      AUTH_FILE="{{ root_container_auth_file }}"
+
+      SOURCE_IMAGE=""
+      IMAGE_TYPE="qcow2"
+      OUTPUT_DIRECTORY=""
+      ROOTFS=""
+      LOCAL_BUILDER_STORAGE="false"
+
+      usage() {
+          cat <<'EOF'
+      Usage:
+        image-mode-build --image IMAGE [OPTIONS]
+
+      Required:
+        --image IMAGE
+            Bootc container image to convert.
+
+      Options:
+        --type TYPE
+            Output type. Default: qcow2
+
+            Common values:
+              qcow2
+              raw
+              ami
+              vmdk
+              anaconda-iso
+
+        --output DIRECTORY
+            Output directory. A timestamped directory is used by default.
+
+        --rootfs FILESYSTEM
+            Optional root filesystem, such as xfs or ext4.
+
+        --local-storage
+            Reuse the host Podman container storage.
+
+        --builder-image IMAGE
+            Override the bootc-image-builder container.
+
+        --help
+            Display this help.
+
+      Examples:
+
+        image-mode-build \
+          --image quay.example.com/image-mode/rhel-bootc:latest \
+          --type qcow2
+
+        image-mode-build \
+          --image quay.example.com/image-mode/rhel-bootc:latest \
+          --type anaconda-iso
+
+        image-mode-build \
+          --image localhost/my-bootc-image:latest \
+          --type qcow2 \
+          --local-storage
+      EOF
+      }
+
+      while [[ $# -gt 0 ]]; do
+          case "$1" in
+              --image)
+                  SOURCE_IMAGE="${2:?A value is required for --image}"
+                  shift 2
+                  ;;
+
+              --type)
+                  IMAGE_TYPE="${2:?A value is required for --type}"
+                  shift 2
+                  ;;
+
+              --output)
+                  OUTPUT_DIRECTORY="${2:?A value is required for --output}"
+                  shift 2
+                  ;;
+
+              --rootfs)
+                  ROOTFS="${2:?A value is required for --rootfs}"
+                  shift 2
+                  ;;
+
+              --local-storage)
+                  LOCAL_BUILDER_STORAGE="true"
+                  shift
+                  ;;
+
+              --builder-image)
+                  BOOTC_BUILDER_IMAGE="${2:?A value is required for --builder-image}"
+                  shift 2
+                  ;;
+
+              --help|-h)
+                  usage
+                  exit 0
+                  ;;
+
+              *)
+                  echo "Unknown argument: $1" >&2
+                  usage >&2
+                  exit 2
+                  ;;
+          esac
+      done
+
+      if [[ -z "${SOURCE_IMAGE}" ]]; then
+          echo "ERROR: --image is required." >&2
+          usage >&2
+          exit 2
+      fi
+
+      if [[ "${EUID}" -ne 0 ]]; then
+          echo "ERROR: image-mode-build must be run with sudo." >&2
+          echo \
+              "Example: sudo image-mode-build --image IMAGE --type qcow2" \
+              >&2
+          exit 1
+      fi
+
+      TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+
+      if [[ -z "${OUTPUT_DIRECTORY}" ]]; then
+          SAFE_IMAGE_NAME="$(
+              printf '%s' "${SOURCE_IMAGE}" |
+              tr '/:@' '----' |
+              tr -cd '[:alnum:]._-'
+          )"
+
+          OUTPUT_DIRECTORY="${
+              OUTPUT_ROOT
+          }/${
+              SAFE_IMAGE_NAME
+          }/${
+              IMAGE_TYPE
+          }/${
+              TIMESTAMP
+          }"
+      fi
+
+      # Normalize the generated default path. The individual variable
+      # expansion above is retained for readability in generated files.
+      if [[ -z "${OUTPUT_DIRECTORY}" ]]; then
+          OUTPUT_DIRECTORY="${OUTPUT_ROOT}/${SAFE_IMAGE_NAME}/${IMAGE_TYPE}/${TIMESTAMP}"
+      fi
+
+      WORK_DIRECTORY="${BUILD_ROOT}/${TIMESTAMP}"
+
+      install \
+          -d \
+          -m 2775 \
+          -o root \
+          -g "{{ image_mode_group }}" \
+          "${OUTPUT_DIRECTORY}" \
+          "${WORK_DIRECTORY}"
+
+      PODMAN_ARGUMENTS=(
+          run
+          --rm
+          --privileged
+          --pull=newer
+          --security-opt
+          label=type:unconfined_t
+          --volume
+          "${OUTPUT_DIRECTORY}:/output:Z"
+          --volume
+          "${WORK_DIRECTORY}:/work:Z"
+      )
+
+      if [[ -f "${AUTH_FILE}" ]]; then
+          PODMAN_ARGUMENTS+=(
+              --env
+              "REGISTRY_AUTH_FILE=/run/containers/auth.json"
+              --volume
+              "${AUTH_FILE}:/run/containers/auth.json:ro,Z"
+          )
+      fi
+
+      if [[ "${LOCAL_BUILDER_STORAGE}" == "true" ]]; then
+          PODMAN_ARGUMENTS+=(
+              --volume
+              "/var/lib/containers/storage:/var/lib/containers/storage:Z"
+          )
+      fi
+
+      BUILDER_ARGUMENTS=(
+          --type
+          "${IMAGE_TYPE}"
+      )
+
+      if [[ -n "${ROOTFS}" ]]; then
+          BUILDER_ARGUMENTS+=(
+              --rootfs
+              "${ROOTFS}"
+          )
+      fi
+
+      BUILDER_ARGUMENTS+=(
+          "${SOURCE_IMAGE}"
+      )
+
+      {
+          echo "Image Mode build started"
+          echo "Source image: ${SOURCE_IMAGE}"
+          echo "Output type: ${IMAGE_TYPE}"
+          echo "Builder image: ${BOOTC_BUILDER_IMAGE}"
+          echo "Output directory: ${OUTPUT_DIRECTORY}"
+          echo
+      } | tee "${OUTPUT_DIRECTORY}/build-information.txt"
+
+      podman \
+          "${PODMAN_ARGUMENTS[@]}" \
+          "${BOOTC_BUILDER_IMAGE}" \
+          "${BUILDER_ARGUMENTS[@]}" \
+          2>&1 |
+          tee "${OUTPUT_DIRECTORY}/build.log"
+
+      find \
+          "${OUTPUT_DIRECTORY}" \
+          -mindepth 1 \
+          -maxdepth 3 \
+          -exec chgrp "{{ image_mode_group }}" {} +
+
+      find \
+          "${OUTPUT_DIRECTORY}" \
+          -type d \
+          -exec chmod 2775 {} +
+
+      find \
+          "${OUTPUT_DIRECTORY}" \
+          -type f \
+          -exec chmod 0664 {} +
+
+      echo
+      echo "Build completed."
+      echo "Artifacts: ${OUTPUT_DIRECTORY}"
+
+- name: Correct generated image-mode-build output path expression
+  ansible.builtin.replace:
+    path: /usr/local/bin/image-mode-build
+    regexp: |-
+      OUTPUT_DIRECTORY="\$\{
+      \s+OUTPUT_ROOT
+      \s+\}/\$\{
+      \s+SAFE_IMAGE_NAME
+      \s+\}/\$\{
+      \s+IMAGE_TYPE
+      \s+\}/\$\{
+      \s+TIMESTAMP
+      \s+\}"
+    replace: >-
+      OUTPUT_DIRECTORY="${OUTPUT_ROOT}/${SAFE_IMAGE_NAME}/${IMAGE_TYPE}/${TIMESTAMP}"
+
+- name: Install image-mode-registry-copy helper command
+  ansible.builtin.copy:
+    dest: /usr/local/bin/image-mode-registry-copy
+    owner: root
+    group: "{{ image_mode_group }}"
+    mode: "0755"
+    content: |
+      #!/usr/bin/env bash
+
+      set -Eeuo pipefail
+
+      AUTH_FILE="{{ root_container_auth_file }}"
+
+      if [[ $# -ne 2 ]]; then
+          echo \
+              "Usage: image-mode-registry-copy SOURCE DESTINATION" \
+              >&2
+          echo >&2
+          echo "Example:" >&2
+          echo \
+              "  sudo image-mode-registry-copy \\" \
+              >&2
+          echo \
+              "    docker://registry.redhat.io/rhel9/rhel-bootc:latest \\" \
+              >&2
+          echo \
+              "    docker://quay.example.com/image-mode/rhel-bootc:latest" \
+              >&2
+          exit 2
+      fi
+
+      SOURCE="$1"
+      DESTINATION="$2"
+
+      SKOPEO_ARGUMENTS=(
+          copy
+          --all
+      )
+
+      if [[ -f "${AUTH_FILE}" ]]; then
+          SKOPEO_ARGUMENTS+=(
+              --authfile
+              "${AUTH_FILE}"
+          )
+      fi
+
+      skopeo \
+          "${SKOPEO_ARGUMENTS[@]}" \
+          "${SOURCE}" \

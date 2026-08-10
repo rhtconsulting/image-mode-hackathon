@@ -12,6 +12,7 @@ controller_templates:
       - "Image Mode Red Hat Registry Credential"
       - "Image Mode Quay Registry Credential"
       - "Image Mode IdM Administrator Credential"
+      - "AWS IAM Service Account Credential"
 
 
   - name: "Build Image Mode AMI"
@@ -142,31 +143,316 @@ controller_templates:
       create_satellite_hosts_on_aws_root_password_length: 32
 
 
+
+  ###########################################################################
+  # Provision additional Image Builder hosts
+  ###########################################################################
+
   - name: "Create Additional Image Builder Hosts"
     description: >-
       Add additional Image Mode Builder teams to the existing AWS lab.
       Each requested team receives one RHEL 9 Image Builder host and one
       RHEL 10 Image Builder host. The automation discovers the current lab
-      environment and allocates the next available Image Builder team
-      identifiers before creating the EC2 instances.
-
+      environment, allocates the next available team identifiers, creates
+      the EC2 instances, and publishes their details as workflow artifacts.
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
     inventory: "Image Mode Lab Infrastructure"
     playbook: "playbooks/add-additional-image-builder-hosts.yml"
     execution_environment: "Image Mode EE"
+
     credentials:
       - "AWS IAM Service Account Credential"
       - "Image Mode AMI SSH Public Key Credential"
+
     job_type: "run"
     verbosity: 1
     forks: 1
     timeout: 3600
     allow_simultaneous: false
+
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
     ask_limit_on_launch: false
     ask_variables_on_launch: false
-    survey_enabled: true
+
+    survey_enabled: false
     survey_spec: "{{ create_additional_image_builder_hosts_survey }}"
+
+  ###########################################################################
+  # Populate the staged inventory
+  ###########################################################################
+
+  - name: "Populate Staged Image Builder Inventory"
+    description: >-
+      Read newly provisioned Image Builder host definitions from workflow
+      artifacts and add the hosts to the Staged Image Builders inventory.
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Mode Lab Infrastructure"
+    playbook: >-
+      playbooks/image_mode/populate-staged-image-builder-inventory.yml
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Red Hat Ansible Controller Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 1
+    timeout: 900
+    allow_simultaneous: false
+
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+
+    survey_enabled: false
+
+  ###########################################################################
+  # Enroll staged hosts in IdM
+  ###########################################################################
+
+  - name: "Enroll Additional Image Builder Hosts in IdM"
+    description: >-
+      Enroll post-Terraform Image Builder EC2 instances into the existing
+      Red Hat IdM domain using the IdM administrator credential injected by
+      AAP.
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Staged Image Builders"
+    playbook: >-
+      playbooks/image_mode/enroll-additional-image-builders-idm.yml
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Image Mode Machine Credential"
+      - "Image Mode IdM Administrator Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 10
+    timeout: 3600
+    allow_simultaneous: false
+
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+
+    survey_enabled: false
+
+  ###########################################################################
+  # Promote completed hosts into production inventory
+  ###########################################################################
+
+  - name: "Promote Staged Image Builder Hosts"
+    description: >-
+      Copy successfully configured Image Builder hosts from the Staged Image
+      Builders inventory into the production Image Builders inventory and
+      remove their staged host records.
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Staged Image Builders"
+    playbook: >-
+      playbooks/image_mode/promote-staged-image-builders.yml
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Red Hat Ansible Controller Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 1
+    timeout: 900
+    allow_simultaneous: false
+
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+
+    survey_enabled: false
+
+  
+  ###############################################################################
+  # Activate Image Builder Hosts in Satellite
+  ###############################################################################
+  
+  - name: "Activate Staged Image Builder Hosts in Satellite"
+    description: >-
+      Validate installed ACM certificates, register staged Image Builder hosts
+      with Red Hat Satellite using their RHEL-specific activation keys, verify
+      repository access, and persist activation status in AAP.
+  
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Staged Image Builders"
+    playbook: >-
+      playbooks/image_mode/activate-staged-image-builders-in-satellite.yml
+    execution_environment: "Image Mode EE"
+  
+    credentials:
+    - "Image Mode Machine Credential"
+    - "Red Hat Ansible Controller Credential"
+    job_type: "run"
+    verbosity: 1
+    forks: 2
+    timeout: 3600
+    allow_simultaneous: false
+  
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+  
+    survey_enabled: false
+    state: present
+
+
+
+  ###############################################################################
+  # Generate and stage AWS certificates
+  ###############################################################################
+
+  - name: "Generate and Stage Image Builder AWS Certificates"
+    description: >-
+      Request or reuse exportable AWS Certificate Manager certificates for
+      staged Image Builder hosts, create the required Route 53 DNS validation
+      records, wait for certificate issuance, export the certificate material,
+      install it on each host, and persist the certificate ARN in the staged
+      AAP inventory.
+
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Staged Image Builders"
+    playbook: >-
+      playbooks/image_mode/generate-and-stage-image-builder-aws-certificates.yml
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Image Mode Machine Credential"
+      - "AWS IAM Service Account Credential"
+      - "Red Hat Ansible Controller Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 2
+    timeout: 1800
+    allow_simultaneous: false
+
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+
+    survey_enabled: false
+    state: present
+
+  ###############################################################################
+  # Additional Image Builder Host playbook for configuration hosts in a inventory
+  ###############################################################################
+  - name: Configure Additional Staged Image Mode Builder Hosts
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Staged Image Builders"
+    playbook: playbooks/image_mode/add-new-image-mode-builder-hosts.yml
+    execution_environment: "Image Mode EE"
+    credentials:
+      - "Image Mode Machine Credential"
+      - "Image Mode Red Hat Registry Credential"
+      - "Image Mode Quay Registry Credential"
+      - "Image Mode IdM Administrator Credential"
+      - "AWS IAM Service Account Credential"
+
+  ###############################################################################
+  # Move Image Builder Hosts into main inventory - clear out staged_image_builder_hosts
+  ###############################################################################
+  - name: Clear Out Staged Image Builders - Promote New Image Builder Hosts
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Staged Image Builders"
+    playbook: playbooks/image_mode/promote-and-clear-staged-image-builders.yml
+    execution_environment: "Image Mode EE"
+    credentials:
+      - "Image Mode Machine Credential"
+      - "Image Mode Red Hat Registry Credential"
+      - "Image Mode Quay Registry Credential"
+      - "Image Mode IdM Administrator Credential"
+      - "Red Hat Ansible Controller Credential"
+
+  ###############################################################################
+  # Clear out inventory
+  ###############################################################################
+  - name: "Clear Promoted Image Builder Hosts From Staged Inventory"
+    description: >-
+      Remove successfully promoted Image Builder host records from the staged
+      inventory after the promotion job has completed.
+
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+
+    # Do not use Staged Image Builders here.
+    inventory: "Image Mode Lab Infrastructure"
+
+    playbook: >-
+      playbooks/image_mode/clear-promoted-image-builders-from-staged-inventory.yml
+
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Red Hat Ansible Controller Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 1
+    timeout: 900
+    allow_simultaneous: false
+
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+
+    survey_enabled: false
+    state: present
+
+
+  ###############################################################################
+  # Create Image Builder AAP teams and inventory groups
+  ###############################################################################
+
+  - name: "Create Image Builder Teams and Groups"
+    description: >-
+      Analyze the newly promoted Image Builder hostnames, determine their
+      required team letters, query existing AAP teams, create only missing
+      teams, create matching production inventory groups, and assign each
+      promoted host to its corresponding group.
+
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Staged Image Builders"
+    playbook: >-
+      playbooks/image_mode/create-image-builder-teams-and-groups.yml
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Red Hat Ansible Controller Credential"
+    job_type: "run"
+    verbosity: 1
+    forks: 1
+    timeout: 900
+    allow_simultaneous: false
+
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+
+    survey_enabled: false
+    state: present
+
 
 
   # - name: "Bootstrap Satellite Content"

@@ -474,7 +474,7 @@ controller_templates:
 
     credentials:
       - "Image Mode Machine Credential"
-      - "Image Mode IdM Non-Admin Credential"
+      - "Image Mode IdM Administrator Credential"S
 
     job_type: "run"
     verbosity: 1

@@ -1,618 +1,415 @@
 ---
 ###############################################################################
-# Authenticate to IdM
+# PHASE 75
+#
+# Configure Image Builder hosts to resolve subordinate UID/GID ranges from IdM.
+#
+# The subordinate ranges must already exist in IdM. This phase only configures
+# the Image Builder clients to retrieve those ranges through SSSD.
 ###############################################################################
 
-- name: Authenticate to IdM for identity reconciliation
+
+###############################################################################
+# Install required packages
+###############################################################################
+
+- name: PHASE 75 | Install subordinate-ID client packages
+  ansible.builtin.dnf:
+    name:
+      - authselect
+      - authselect-compat
+      - shadow-utils
+      - shadow-utils-subid
+      - sssd
+      - sssd-client
+      - sssd-common
+      - sssd-ipa
+      - sssd-tools
+    state: present
+
+
+###############################################################################
+# Validate IdM client configuration
+###############################################################################
+
+- name: PHASE 75 | Check IdM client configuration
+  ansible.builtin.stat:
+    path: /etc/ipa/default.conf
+  register: image_builder_subid_ipa_configuration
+
+
+- name: PHASE 75 | Check SSSD configuration
+  ansible.builtin.stat:
+    path: /etc/sssd/sssd.conf
+  register: image_builder_subid_sssd_configuration
+
+
+- name: PHASE 75 | Validate IdM and SSSD client configuration
+  ansible.builtin.assert:
+    that:
+      - image_builder_subid_ipa_configuration.stat.exists
+      - image_builder_subid_sssd_configuration.stat.exists
+    fail_msg: >-
+      {{ inventory_hostname }} is not configured as an IdM client.
+
+      The following files must exist before subordinate-ID reconciliation:
+
+        /etc/ipa/default.conf
+        /etc/sssd/sssd.conf
+
+      Run the IdM client enrollment phase before this phase.
+
+
+###############################################################################
+# Resolve current authselect profile
+###############################################################################
+
+- name: PHASE 75 | Query current authselect profile
   ansible.builtin.command:
     argv:
-      - kinit
-      - admin
-    stdin: "{{ idm_admin_password }}"
+      - authselect
+      - current
+      - -r
+  register: image_builder_subid_authselect_current
   changed_when: false
-  no_log: false
+  failed_when: false
 
 
-###############################################################################
-# Resolve managed-user input
-#
-# Input precedence:
-#
-# 1. idm_managed_users
-# 2. lab_users combined with idm_users
-###############################################################################
-
-- name: Capture supplied IdM user configuration
+- name: PHASE 75 | Resolve authselect profile components
   ansible.builtin.set_fact:
-    idm_managed_users_supplied: >-
+    image_builder_subid_authselect_components: >-
       {{
-        idm_managed_users
-        | default([], true)
-      }}
-    idm_lab_users_supplied: >-
-      {{
-        lab_users
-        | default({}, true)
-      }}
-    idm_administrator_users_supplied: >-
-      {{
-        idm_users
-        | default([], true)
+        (
+          image_builder_subid_authselect_current.stdout
+          | default('')
+          | trim
+          | split
+        )
+        if
+        (
+          image_builder_subid_authselect_current.rc == 0
+          and
+          image_builder_subid_authselect_current.stdout
+          | default('')
+          | trim
+          | length > 0
+        )
+        else
+        [
+          'sssd',
+          'with-mkhomedir',
+          'with-sudo'
+        ]
       }}
 
 
-- name: Validate supplied IdM user variable types
+- name: PHASE 75 | Validate resolved authselect profile
   ansible.builtin.assert:
     that:
-      - (idm_managed_users_supplied | type_debug) == 'list'
-      - (idm_lab_users_supplied | type_debug) == 'dict'
-      - (idm_administrator_users_supplied | type_debug) == 'list'
+      - image_builder_subid_authselect_components | length > 0
+      - image_builder_subid_authselect_components[0] | length > 0
     fail_msg: >-
-      Invalid IdM user variable types.
+      Unable to determine the authselect profile for
+      {{ inventory_hostname }}.
+
+
+###############################################################################
+# Repair authselect ownership when necessary
+#
+# This handles systems where /etc/nsswitch.conf was previously modified
+# directly and is no longer managed as an authselect symbolic link.
+###############################################################################
+
+- name: PHASE 75 | Validate current authselect configuration
+  ansible.builtin.command:
+    argv:
+      - authselect
+      - check
+  register: image_builder_subid_authselect_check
+  changed_when: false
+  failed_when: false
+
+
+- name: PHASE 75 | Restore authselect-managed configuration
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['authselect', 'select']
+        +
+        image_builder_subid_authselect_components
+        +
+        ['--force']
+      }}
+  register: image_builder_subid_authselect_restore
+  changed_when: true
+  when:
+    - image_builder_subid_authselect_check.rc != 0
+
+
+###############################################################################
+# Configure the subordinate-ID NSS database
+###############################################################################
+
+- name: PHASE 75 | Ensure authselect user NSS configuration exists
+  ansible.builtin.file:
+    path: /etc/authselect/user-nsswitch.conf
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+    modification_time: preserve
+    access_time: preserve
+
+
+- name: PHASE 75 | Configure SSSD as the subordinate-ID NSS provider
+  ansible.builtin.lineinfile:
+    path: /etc/authselect/user-nsswitch.conf
+    regexp: '^[[:space:]]*subid[[:space:]]*:'
+    line: 'subid: sss'
+    state: present
+    owner: root
+    group: root
+    mode: "0644"
+  register: image_builder_subid_nss_configuration
+
+
+- name: PHASE 75 | Apply authselect NSS changes
+  ansible.builtin.command:
+    argv:
+      - authselect
+      - apply-changes
+  register: image_builder_subid_authselect_apply
+  changed_when: >-
+    image_builder_subid_nss_configuration.changed
+    or
+    image_builder_subid_authselect_restore.changed
+  when:
+    - >-
+      image_builder_subid_nss_configuration.changed
+      or
+      image_builder_subid_authselect_restore.changed
+
+
+###############################################################################
+# Validate generated NSS configuration
+###############################################################################
+
+- name: PHASE 75 | Check generated nsswitch configuration
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -E
+      - '^[[:space:]]*subid[[:space:]]*:[[:space:]]*sss([[:space:]]|$)'
+      - /etc/nsswitch.conf
+  register: image_builder_subid_nss_validation
+  changed_when: false
+  failed_when: false
+
+
+- name: PHASE 75 | Validate subordinate-ID NSS provider
+  ansible.builtin.assert:
+    that:
+      - image_builder_subid_nss_validation.rc == 0
+    fail_msg: >-
+      The subordinate-ID NSS provider was not written to
+      /etc/nsswitch.conf on {{ inventory_hostname }}.
 
       Expected:
-        idm_managed_users: list
-        lab_users: dictionary
-        idm_users: list
 
-      Received:
-        idm_managed_users:
-        {{ idm_managed_users_supplied | type_debug }}
+        subid: sss
 
-        lab_users:
-        {{ idm_lab_users_supplied | type_debug }}
-
-        idm_users:
-        {{ idm_administrator_users_supplied | type_debug }}
+      Verify the selected authselect profile permits additions from
+      /etc/authselect/user-nsswitch.conf.
 
 
-- name: Initialize resolved managed-user records
-  ansible.builtin.set_fact:
-    idm_managed_users: "{{ idm_managed_users_supplied }}"
-
-
-- name: Build ordinary user records
-  ansible.builtin.set_fact:
-    idm_managed_users: >-
-      {{
-        idm_managed_users
-        +
-        [
-          {
-            'uid': item.key,
-            'first_name':
-              item.value.first_name
-              | default(item.key, true),
-            'last_name':
-              item.value.last_name
-              | default('User', true),
-            'groups':
-              item.value.groups
-              | default([], true),
-            'admin': false
-          }
-        ]
-      }}
-  loop: "{{ idm_lab_users_supplied | dict2items }}"
-  loop_control:
-    label: "{{ item.key }}"
-  when: idm_managed_users_supplied | length == 0
-
-
-- name: Build administrator user records
-  ansible.builtin.set_fact:
-    idm_managed_users: >-
-      {{
-        idm_managed_users
-        +
-        [
-          {
-            'uid': item,
-            'first_name': item,
-            'last_name': 'User',
-            'groups': [idm_admin_group],
-            'admin': true
-          }
-        ]
-      }}
-  loop: "{{ idm_administrator_users_supplied }}"
-  loop_control:
-    label: "{{ item }}"
-  when: idm_managed_users_supplied | length == 0
+- name: PHASE 75 | Validate authselect configuration after changes
+  ansible.builtin.command:
+    argv:
+      - authselect
+      - check
+  register: image_builder_subid_authselect_final_check
+  changed_when: false
+  failed_when:
+    - image_builder_subid_authselect_final_check.rc != 0
 
 
 ###############################################################################
-# Validate managed-user records
+# Restart SSSD and clear cached identity data
 ###############################################################################
 
-- name: Validate managed-user input is not empty
-  ansible.builtin.assert:
-    that:
-      - idm_managed_users | length > 0
-    fail_msg: >-
-      No IdM users were resolved for identity reconciliation.
-
-      Supply either a complete idm_managed_users list or provide
-      lab_users and/or idm_users.
-
-      Resolved input counts:
-
-        idm_managed_users:
-        {{ idm_managed_users_supplied | length }}
-
-        lab_users:
-        {{ idm_lab_users_supplied | length }}
-
-        idm_users:
-        {{ idm_administrator_users_supplied | length }}
+- name: PHASE 75 | Enable and restart SSSD
+  ansible.builtin.systemd:
+    name: sssd
+    enabled: true
+    state: restarted
 
 
-- name: Validate managed-user record structure
-  ansible.builtin.assert:
-    that:
-      - item.uid | default('') | string | trim | length > 0
-      - item.first_name | default('') | string | trim | length > 0
-      - item.last_name | default('') | string | trim | length > 0
-      - item.groups is defined
-      - (item.groups | type_debug) == 'list'
-      - item.admin is defined
-    fail_msg: >-
-      Invalid IdM managed-user record:
-
-      {{ item }}
-  loop: "{{ idm_managed_users }}"
-  loop_control:
-    label: "{{ item.uid | default('UNKNOWN') }}"
+- name: PHASE 75 | Clear SSSD identity cache
+  ansible.builtin.command:
+    argv:
+      - sss_cache
+      - -E
+  changed_when: true
 
 
-- name: Validate unique managed-user IDs
-  ansible.builtin.assert:
-    that:
-      - >-
-        (
-          idm_managed_users
-          | map(attribute='uid')
-          | unique
-          | list
-          | length
-        )
-        ==
-        (
-          idm_managed_users
-          | length
-        )
-    fail_msg: >-
-      Duplicate IdM user IDs were found:
-
-      {{
-        idm_managed_users
-        | map(attribute='uid')
-        | list
-      }}
+- name: PHASE 75 | Wait for SSSD to become active
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - sssd
+  register: image_builder_subid_sssd_status
+  changed_when: false
+  retries: 10
+  delay: 3
+  until:
+    - image_builder_subid_sssd_status.rc == 0
+    - image_builder_subid_sssd_status.stdout | trim == 'active'
 
 
 ###############################################################################
-# Reconcile IdM groups
+# Validate IdM connectivity
 ###############################################################################
 
-- name: Build supplemental group list
+- name: PHASE 75 | Query configured SSSD domains
+  ansible.builtin.command:
+    argv:
+      - sssctl
+      - domain-list
+  register: image_builder_subid_sssd_domains
+  changed_when: false
+  failed_when:
+    - image_builder_subid_sssd_domains.rc != 0
+
+
+- name: PHASE 75 | Build optional validation-user list
   ansible.builtin.set_fact:
-    idm_managed_groups: >-
+    image_builder_subid_users_to_validate: >-
       {{
-        idm_managed_users
-        | map(attribute='groups')
-        | flatten
-        | reject('equalto', '')
+        image_builder_subid_validation_users
+        | default([], true)
         | unique
         | list
       }}
 
 
-- name: Ensure supplemental groups exist
+###############################################################################
+# Validate known IdM users when supplied
+#
+# Example:
+#
+# image_builder_subid_validation_users:
+#   - pduncan
+#   - another_user
+###############################################################################
+
+- name: PHASE 75 | Validate IdM users resolve through SSSD
   ansible.builtin.command:
     argv:
-      - ipa
-      - group-add
+      - getent
+      - passwd
       - "{{ item }}"
-      - "--desc=Ansible-managed IdM group"
-  register: idm_group_create
-  changed_when: idm_group_create.rc == 0
+  register: image_builder_subid_user_resolution
+  changed_when: false
   failed_when:
-    - idm_group_create.rc != 0
-    - >-
-      'already exists'
-      not in (idm_group_create.stdout | default(''))
-    - >-
-      'already exists'
-      not in (idm_group_create.stderr | default(''))
-  loop: "{{ idm_managed_groups }}"
+    - image_builder_subid_user_resolution.rc != 0
+  loop: "{{ image_builder_subid_users_to_validate }}"
   loop_control:
     label: "{{ item }}"
 
 
-###############################################################################
-# Reconcile IdM users
-###############################################################################
-
-- name: Ensure managed users exist
+- name: PHASE 75 | Query subordinate IDs for validation users
   ansible.builtin.command:
     argv:
-      - ipa
-      - user-add
-      - "{{ item.uid }}"
-      - "--first={{ item.first_name }}"
-      - "--last={{ item.last_name }}"
-  register: idm_user_create
-  changed_when: idm_user_create.rc == 0
-  failed_when:
-    - idm_user_create.rc != 0
-    - >-
-      'already exists'
-      not in (idm_user_create.stdout | default(''))
-    - >-
-      'already exists'
-      not in (idm_user_create.stderr | default(''))
-  loop: "{{ idm_managed_users }}"
-  loop_control:
-    label: "{{ item.uid }}"
-
-
-- name: Set initial passwords for newly created users
-  ansible.builtin.command:
-    argv:
-      - ipa
-      - passwd
-      - "{{ item.item.uid }}"
-    stdin: |
-      {{ idm_default_user_password }}
-      {{ idm_default_user_password }}
-  changed_when: true
-  no_log: true
-  loop: "{{ idm_user_create.results | default([]) }}"
-  loop_control:
-    label: "{{ item.item.uid }}"
-  when:
-    - item.rc | default(1) == 0
-
-
-###############################################################################
-# Reconcile subordinate UID/GID ranges for rootless Podman
-###############################################################################
-
-- name: Query subordinate ID ranges for managed users
-  ansible.builtin.command:
-    argv:
-      - ipa
-      - subid-find
-      - "--owner={{ item.uid }}"
-  register: idm_managed_user_subid_query
+      - getsubids
+      - "{{ item }}"
+  register: image_builder_subid_user_ranges
   changed_when: false
-  failed_when: idm_managed_user_subid_query.rc != 0
-  loop: "{{ idm_managed_users }}"
+  failed_when: false
+  loop: "{{ image_builder_subid_users_to_validate }}"
   loop_control:
-    label: "{{ item.uid }}"
-  when:
-    - idm_manage_user_subids | default(true) | bool
+    label: "{{ item }}"
 
 
-- name: Generate missing subordinate ID ranges for managed users
-  ansible.builtin.command:
-    argv:
-      - ipa
-      - subid-generate
-      - "--owner={{ item.item.uid }}"
-  register: idm_managed_user_subid_generate
-  changed_when: idm_managed_user_subid_generate.rc == 0
-  failed_when: idm_managed_user_subid_generate.rc != 0
-  loop: >-
-    {{
-      idm_managed_user_subid_query.results
-      | default([])
-    }}
-  loop_control:
-    label: "{{ item.item.uid }}"
-  when:
-    - not (item.skipped | default(false))
-    - >-
-      (
-        'Number of entries returned 0'
-        in (item.stdout | default(''))
-      )
-      or
-      (
-        '0 subordinate ids matched'
-        in (item.stdout | default(''))
-      )
-
-
-- name: Re-query subordinate ID ranges for managed users
-  ansible.builtin.command:
-    argv:
-      - ipa
-      - subid-find
-      - "--owner={{ item.uid }}"
-  register: idm_managed_user_subid_validation
-  changed_when: false
-  failed_when: idm_managed_user_subid_validation.rc != 0
-  loop: "{{ idm_managed_users }}"
-  loop_control:
-    label: "{{ item.uid }}"
-  when:
-    - idm_manage_user_subids | default(true) | bool
-
-
-- name: Validate subordinate ID ranges for managed users
+- name: PHASE 75 | Validate subordinate IDs for validation users
   ansible.builtin.assert:
     that:
-      - >-
-        'Number of entries returned 0'
-        not in (item.stdout | default(''))
-      - >-
-        '0 subordinate ids matched'
-        not in (item.stdout | default(''))
+      - item.rc == 0
+      - item.stdout | default('') | trim | length > 0
       - >-
         item.stdout
-        is search('SubUID range size:[ ]+[1-9][0-9]*')
-      - >-
-        item.stdout
-        is search('SubGID range size:[ ]+[1-9][0-9]*')
+        is search('^[0-9]+:[ ]+[^ ]+[ ]+[0-9]+[ ]+[1-9][0-9]*')
     fail_msg: >-
-      IdM user {{ item.item.uid }} does not have a valid subordinate
-      UID/GID range after reconciliation.
+      IdM user {{ item.item }} does not have a subordinate UID/GID range
+      available through SSSD on {{ inventory_hostname }}.
 
-      IdM output:
+      Ensure the upstream IdM subordinate-ID generation playbook completed,
+      then verify the user directly with:
+
+        getsubids {{ item.item }}
+
+      Command output:
 
       {{ item.stdout | default('') }}
-  loop: >-
-    {{
-      idm_managed_user_subid_validation.results
-      | default([])
-    }}
+
+      Command error:
+
+      {{ item.stderr | default('') }}
+  loop: "{{ image_builder_subid_user_ranges.results | default([]) }}"
   loop_control:
-    label: "{{ item.item.uid }}"
-  when:
-    - not (item.skipped | default(false))
+    label: "{{ item.item }}"
 
 
 ###############################################################################
-# Reconcile group memberships
+# Migrate existing rootless Podman storage
+#
+# Podman must update its user-namespace mappings after new subordinate ranges
+# become available. This cannot be performed as root for remote IdM users
+# unless the users are explicitly supplied and become_user can resolve them.
 ###############################################################################
 
-- name: Ensure supplemental group memberships
+- name: PHASE 75 | Migrate Podman storage for validation users
   ansible.builtin.command:
     argv:
-      - ipa
-      - group-add-member
-      - "{{ item.1 }}"
-      - "--users={{ item.0.uid }}"
-  register: idm_membership_update
-  changed_when: >-
-    'Number of members added 1'
-    in (idm_membership_update.stdout | default(''))
-  failed_when:
-    - idm_membership_update.rc != 0
-    - >-
-      'already a member'
-      not in
-      (
-        idm_membership_update.stdout
-        | default('')
-        | lower
-      )
-    - >-
-      'already a member'
-      not in
-      (
-        idm_membership_update.stderr
-        | default('')
-        | lower
-      )
-  loop: "{{ idm_managed_users | subelements('groups') }}"
+      - podman
+      - system
+      - migrate
+  become: true
+  become_user: "{{ item }}"
+  register: image_builder_subid_podman_migration
+  changed_when: false
+  failed_when: false
+  loop: "{{ image_builder_subid_users_to_validate }}"
   loop_control:
-    label: "{{ item.0.uid }} -> {{ item.1 }}"
-
-
-- name: Ensure ordinary users are members of ipausers
-  ansible.builtin.command:
-    argv:
-      - ipa
-      - group-add-member
-      - ipausers
-      - "--users={{ item.uid }}"
-  register: idm_ipausers_update
-  changed_when: >-
-    'Number of members added 1'
-    in (idm_ipausers_update.stdout | default(''))
-  failed_when:
-    - idm_ipausers_update.rc != 0
-    - >-
-      'already a member'
-      not in
-      (
-        idm_ipausers_update.stdout
-        | default('')
-        | lower
-      )
-    - >-
-      'already a member'
-      not in
-      (
-        idm_ipausers_update.stderr
-        | default('')
-               | lower
-      )
-  loop: >-
-    {{
-      idm_managed_users
-      | rejectattr('admin')
-      | list
-    }}
-  loop_control:
-    label: "{{ item.uid }}"
-
-
-###############################################################################
-# Reconcile delegated IdM administrators
-###############################################################################
-
-- name: Determine whether delegated administrators are configured
-  ansible.builtin.set_fact:
-    idm_delegated_administrators: >-
-      {{
-        idm_managed_users
-        | selectattr('admin')
-        | list
-      }}
-
-
-- name: Nest delegated administrator group in built-in admins
-  ansible.builtin.command:
-    argv:
-      - ipa
-      - group-add-member
-      - admins
-      - "--groups={{ idm_admin_group }}"
-  register: idm_console_admin_add
-  changed_when: >-
-    'Number of members added 1'
-    in (idm_console_admin_add.stdout | default(''))
-  failed_when:
-    - idm_console_admin_add.rc != 0
-    - >-
-      'already a member'
-      not in
-      (
-        idm_console_admin_add.stdout
-        | default('')
-        | lower
-      )
-    - >-
-      'already a member'
-      not in
-      (
-        idm_console_admin_add.stderr
-        | default('')
-        | lower
-      )
+    label: "{{ item }}"
   when:
-    - idm_delegated_administrators | length > 0
-
-
-###############################################################################
-# Reconcile administrator sudo rule
-###############################################################################
-
-- name: Ensure administrator sudo rule exists
-  ansible.builtin.command:
-    argv:
-      - ipa
-      - sudorule-add
-      - "{{ idm_sudo_rule }}"
-  register: idm_sudo_create
-  changed_when: idm_sudo_create.rc == 0
-  failed_when:
-    - idm_sudo_create.rc != 0
-    - >-
-      'already exists'
-      not in (idm_sudo_create.stdout | default(''))
-    - >-
-      'already exists'
-      not in (idm_sudo_create.stderr | default(''))
-  when:
-    - idm_delegated_administrators | length > 0
-
-
-- name: Configure administrator sudo rule
-  ansible.builtin.command:
-    argv:
-      - ipa
-      - sudorule-mod
-      - "{{ idm_sudo_rule }}"
-      - --hostcat=all
-      - --cmdcat=all
-  register: idm_sudo_modify
-  changed_when: >-
-    'Modified Sudo Rule'
-    in (idm_sudo_modify.stdout | default(''))
-  failed_when:
-    - idm_sudo_modify.rc != 0
-    - >-
-      'no modifications to be performed'
-      not in
-      (
-        idm_sudo_modify.stderr
-        | default('')
-        | lower
-      )
-  when:
-    - idm_delegated_administrators | length > 0
-
-
-- name: Attach delegated administrators to sudo rule
-  ansible.builtin.command:
-    argv:
-      - ipa
-      - sudorule-add-user
-      - "{{ idm_sudo_rule }}"
-      - "--groups={{ idm_admin_group }}"
-  register: idm_sudo_member
-  changed_when: >-
-    'Number of members added 1'
-    in (idm_sudo_member.stdout | default(''))
-  failed_when:
-    - idm_sudo_member.rc != 0
-    - >-
-      'already a member'
-      not in
-      (
-        idm_sudo_member.stdout
-        | default('')
-        | lower
-      )
-    - >-
-      'already a member'
-      not in
-      (
-        idm_sudo_member.stderr
-        | default('')
-        | lower
-      )
-  when:
-    - idm_delegated_administrators | length > 0
+    - image_builder_subid_migrate_podman | default(true) | bool
 
 
 ###############################################################################
 # Results
 ###############################################################################
 
-- name: Display IdM identity reconciliation results
+- name: PHASE 75 | Display subordinate-ID client configuration
   ansible.builtin.debug:
     msg:
+      - "Host: {{ inventory_hostname }}"
+      - "NSS subordinate-ID provider: sss"
       - >-
-        Managed users:
+        Authselect profile:
+        {{ image_builder_subid_authselect_components | join(' ') }}
+      - >-
+        SSSD domains:
         {{
-          idm_managed_users
-          | map(attribute='uid')
+          image_builder_subid_sssd_domains.stdout_lines
+          | default([])
           | join(', ')
         }}
       - >-
-        Supplemental groups:
+        Validated users:
         {{
-          idm_managed_groups
+          image_builder_subid_users_to_validate
           | join(', ')
+          | default('None supplied', true)
         }}
-      - >-
-        Subordinate IDs managed:
-        {{
-          idm_manage_user_subids
-          | default(true)
-          | bool
-        }}
-      - >-
-        Delegated administrators:
-        {{
-          idm_delegated_administrators
-          | map(attribute='uid')
-          | join(', ')
-          | default('None', true)
-        }}
+      - "Status: subordinate-ID client configuration completed"

@@ -1,294 +1,256 @@
 ---
-# Install staged public TLS certificate for Cockpit
-###########################################################################
+- name: Authenticate to IdM for identity reconciliation
+  ansible.builtin.command:
+    argv: [kinit, admin]
+    stdin: "{{ idm_vault_admin_password }}"
+  changed_when: false
+  no_log: true
 
-- name: Inspect staged Cockpit TLS files
-  ansible.builtin.stat:
-    path: "{{ item.path }}"
-    get_checksum: true
-    checksum_algorithm: sha256
-  loop:
-    - path: "{{ cockpit_tls_leaf_certificate_path }}"
-    - path: "{{ cockpit_tls_chain_path }}"
-    - path: "{{ cockpit_tls_private_key_path }}"
-  loop_control:
-    label: "{{ item.path }}"
-  register: cockpit_staged_tls_files
+- name: Initialize managed user records
+  ansible.builtin.set_fact:
+    idm_managed_users: []
 
-- name: Validate staged Cockpit TLS files
+- name: Build ordinary user records
+  ansible.builtin.set_fact:
+    idm_managed_users: >-
+      {{ idm_managed_users + [{
+        'uid': item.key,
+        'first_name': item.value.first_name | default(item.key),
+        'last_name': item.value.last_name | default('User'),
+        'groups': item.value.groups | default([]),
+        'admin': false
+      }] }}
+  loop: "{{ lab_users | default({}) | dict2items }}"
+
+- name: Build administrator user records
+  ansible.builtin.set_fact:
+    idm_managed_users: >-
+      {{ idm_managed_users + [{
+        'uid': item,
+        'first_name': item,
+        'last_name': 'User',
+        'groups': [idm_admin_group],
+        'admin': true
+      }] }}
+  loop: "{{ idm_users | default([]) }}"
+
+- name: Validate unique managed user IDs
   ansible.builtin.assert:
     that:
-      - item.stat.exists
-      - item.stat.isreg
-      - item.stat.size | int > 0
-    fail_msg: |
-      Required staged Cockpit TLS file is missing or empty:
+      - idm_managed_users | length > 0
+      - >-
+        idm_managed_users | map(attribute='uid') | unique | length
+        == idm_managed_users | length
 
-      {{ item.item.path }}
+- name: Build supplemental group list
+  ansible.builtin.set_fact:
+    idm_managed_groups: >-
+      {{ idm_managed_users | map(attribute='groups') | flatten | unique | list }}
 
-      Host: {{ inventory_hostname }}
+- name: Ensure supplemental groups exist
+  ansible.builtin.command:
+    argv: [ipa, group-add, "{{ item }}", "--desc=Ansible-managed IdM group"]
+  register: idm_group_create
+  changed_when: idm_group_create.rc == 0
+  failed_when:
+    - idm_group_create.rc != 0
+    - "'already exists' not in (idm_group_create.stdout | default(''))"
+    - "'already exists' not in (idm_group_create.stderr | default(''))"
+  loop: "{{ idm_managed_groups }}"
 
-      Run the upstream certificate staging playbook before launching the
-      AAP Image Builder configuration job.
-  loop: "{{ cockpit_staged_tls_files.results }}"
+- name: Ensure managed users exist
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - user-add
+      - "{{ item.uid }}"
+      - "--first={{ item.first_name }}"
+      - "--last={{ item.last_name }}"
+  register: idm_user_create
+  changed_when: idm_user_create.rc == 0
+  failed_when:
+    - idm_user_create.rc != 0
+    - "'already exists' not in (idm_user_create.stdout | default(''))"
+    - "'already exists' not in (idm_user_create.stderr | default(''))"
+  loop: "{{ idm_managed_users }}"
   loop_control:
-    label: "{{ item.item.path }}"
+    label: "{{ item.uid }}"
 
-- name: Enforce staged Cockpit TLS ownership and permissions
-  ansible.builtin.file:
-    path: "{{ item.path }}"
-    state: file
-    owner: root
-    group: root
-    mode: "{{ item.mode }}"
-  loop:
-    - path: "{{ cockpit_tls_leaf_certificate_path }}"
-      mode: "0644"
-    - path: "{{ cockpit_tls_chain_path }}"
-      mode: "0644"
-    - path: "{{ cockpit_tls_private_key_path }}"
-      mode: "0600"
+- name: Set initial passwords only for newly created users
+  ansible.builtin.command:
+    argv: [ipa, passwd, "{{ item.item.uid }}"]
+    stdin: |
+      {{ idm_default_user_password }}
+      {{ idm_default_user_password }}
+  no_log: true
+  changed_when: true
+  loop: "{{ idm_user_create.results | default([]) }}"
+  when: item.rc == 0
+
+###############################################################################
+# Reconcile subordinate UID/GID ranges for rootless Podman
+###############################################################################
+
+- name: Query subordinate ID ranges for managed users
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - subid-find
+      - "--owner={{ item.uid }}"
+  register: idm_managed_user_subid_query
+  changed_when: false
+  failed_when: idm_managed_user_subid_query.rc != 0
+  loop: "{{ idm_managed_users }}"
   loop_control:
-    label: "{{ item.path }}"
+    label: "{{ item.uid }}"
+  when: idm_manage_user_subids | default(true) | bool
 
-- name: Validate staged Cockpit certificate hostname
+- name: Generate missing subordinate ID ranges for managed users
   ansible.builtin.command:
     argv:
-      - openssl
-      - x509
-      - -in
-      - "{{ cockpit_tls_leaf_certificate_path }}"
-      - -noout
-      - -checkhost
-      - "{{ cockpit_public_tls_fqdn }}"
-  register: cockpit_staged_hostname_check
-  changed_when: false
-  failed_when: cockpit_staged_hostname_check.rc != 0
+      - ipa
+      - subid-generate
+      - "--owner={{ item.item.uid }}"
+  register: idm_managed_user_subid_generate
+  changed_when: idm_managed_user_subid_generate.rc == 0
+  failed_when: idm_managed_user_subid_generate.rc != 0
+  loop: "{{ idm_managed_user_subid_query.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.uid }}"
+  when:
+    - not item.skipped | default(false)
+    - >-
+      'Number of entries returned 0' in (item.stdout | default(''))
+      or
+      '0 subordinate ids matched' in (item.stdout | default(''))
 
-- name: Validate staged Cockpit certificate remaining lifetime
+- name: Re-query subordinate ID ranges for managed users
   ansible.builtin.command:
     argv:
-      - openssl
-      - x509
-      - -in
-      - "{{ cockpit_tls_leaf_certificate_path }}"
-      - -noout
-      - -checkend
-      - "{{ cockpit_tls_minimum_validity_seconds | string }}"
-  register: cockpit_staged_validity_check
+      - ipa
+      - subid-find
+      - "--owner={{ item.uid }}"
+  register: idm_managed_user_subid_validation
   changed_when: false
-  failed_when: cockpit_staged_validity_check.rc != 0
+  failed_when: idm_managed_user_subid_validation.rc != 0
+  loop: "{{ idm_managed_users }}"
+  loop_control:
+    label: "{{ item.uid }}"
+  when: idm_manage_user_subids | default(true) | bool
 
-- name: Validate staged Cockpit private key
-  ansible.builtin.command:
-    argv:
-      - openssl
-      - pkey
-      - -in
-      - "{{ cockpit_tls_private_key_path }}"
-      - -noout
-      - -check
-  register: cockpit_staged_private_key_check
-  changed_when: false
-  failed_when: cockpit_staged_private_key_check.rc != 0
-  no_log: true
-
-- name: Verify staged Cockpit certificate and private key match
-  ansible.builtin.shell: |
-    set -euo pipefail
-    certificate_hash="$(
-      openssl x509 -in "{{ cockpit_tls_leaf_certificate_path }}" -noout -pubkey |
-      openssl pkey -pubin -outform DER |
-      openssl dgst -sha256
-    )"
-    private_key_hash="$(
-      openssl pkey -in "{{ cockpit_tls_private_key_path }}" -pubout -outform DER |
-      openssl dgst -sha256
-    )"
-    test "${certificate_hash}" = "${private_key_hash}"
-  args:
-    executable: /bin/bash
-  register: cockpit_staged_key_pair_check
-  changed_when: false
-  failed_when: cockpit_staged_key_pair_check.rc != 0
-  no_log: true
-
-- name: Build staged Cockpit full chain
-  ansible.builtin.shell: |
-    set -euo pipefail
-    temporary_file="$(mktemp "{{ cockpit_tls_directory }}/.fullchain.XXXXXX")"
-    cat "{{ cockpit_tls_leaf_certificate_path }}" "{{ cockpit_tls_chain_path }}" > "${temporary_file}"
-    chown root:root "${temporary_file}"
-    chmod 0644 "${temporary_file}"
-    if [[ -f "{{ cockpit_tls_fullchain_path }}" ]] && cmp -s "${temporary_file}" "{{ cockpit_tls_fullchain_path }}"; then
-      rm -f "${temporary_file}"
-      printf 'unchanged\n'
-    else
-      mv -f "${temporary_file}" "{{ cockpit_tls_fullchain_path }}"
-      printf 'updated\n'
-    fi
-  args:
-    executable: /bin/bash
-  register: cockpit_fullchain_install
-  changed_when: "'updated' in cockpit_fullchain_install.stdout"
-
-- name: Ensure Cockpit certificate directory exists
-  ansible.builtin.file:
-    path: "{{ cockpit_ws_certificate_directory }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-
-- name: Build Cockpit combined certificate PEM
-  ansible.builtin.shell: |
-    set -euo pipefail
-    temporary_file="$(mktemp "{{ cockpit_ws_certificate_directory }}/.cockpit-acm.XXXXXX")"
-    cat "{{ cockpit_tls_leaf_certificate_path }}" "{{ cockpit_tls_chain_path }}" "{{ cockpit_tls_private_key_path }}" > "${temporary_file}"
-    chown root:root "${temporary_file}"
-    chmod 0600 "${temporary_file}"
-    if [[ -f "{{ cockpit_ws_certificate_path }}" ]] && cmp -s "${temporary_file}" "{{ cockpit_ws_certificate_path }}"; then
-      rm -f "${temporary_file}"
-      printf 'unchanged\n'
-    else
-      mv -f "${temporary_file}" "{{ cockpit_ws_certificate_path }}"
-      printf 'updated\n'
-    fi
-  args:
-    executable: /bin/bash
-  register: cockpit_combined_certificate_install
-  changed_when: "'updated' in cockpit_combined_certificate_install.stdout"
-  no_log: true
-
-- name: Restore SELinux contexts on Cockpit TLS files
-  ansible.builtin.command:
-    argv:
-      - restorecon
-      - -RFv
-      - "{{ cockpit_tls_directory }}"
-      - "{{ cockpit_ws_certificate_directory }}"
-  register: cockpit_tls_restorecon
-  changed_when: cockpit_tls_restorecon.stdout | length > 0
-
-- name: Verify Cockpit combined PEM exists
-  ansible.builtin.stat:
-    path: "{{ cockpit_ws_certificate_path }}"
-    get_checksum: true
-    checksum_algorithm: sha256
-  register: cockpit_combined_pem_stat
-
-- name: Assert Cockpit combined PEM exists
+- name: Validate subordinate ID ranges for managed users
   ansible.builtin.assert:
     that:
-      - cockpit_combined_pem_stat.stat.exists
-      - cockpit_combined_pem_stat.stat.isreg
-      - cockpit_combined_pem_stat.stat.size | int > 0
-      - cockpit_combined_pem_stat.stat.pw_name == 'root'
-      - cockpit_combined_pem_stat.stat.gr_name == 'root'
+      - >-
+        'Number of entries returned 0' not in (item.stdout | default(''))
+      - >-
+        '0 subordinate ids matched' not in (item.stdout | default(''))
+      - item.stdout is search('SubUID range size:[ ]+[1-9][0-9]*')
+      - item.stdout is search('SubGID range size:[ ]+[1-9][0-9]*')
     fail_msg: >-
-      Cockpit combined certificate file {{ cockpit_ws_certificate_path }}
-      is missing, empty, or has incorrect ownership.
+      IdM user {{ item.item.uid }} does not have a valid subordinate UID/GID
+      range after reconciliation. Output: {{ item.stdout | default('') }}
+  loop: "{{ idm_managed_user_subid_validation.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.uid }}"
+  when: not item.skipped | default(false)
 
-- name: Validate Cockpit combined PEM structure
-  ansible.builtin.shell: |
-    set -euo pipefail
+###############################################################################
+# Group and sudo-rule reconciliation
+###############################################################################
 
-    certificate_file="{{ cockpit_ws_certificate_path }}"
+- name: Ensure supplemental group memberships
+  ansible.builtin.command:
+    argv: [ipa, group-add-member, "{{ item.1 }}", "--users={{ item.0.uid }}"]
+  register: idm_membership_update
+  changed_when: >-
+    'Number of members added 1' in (idm_membership_update.stdout | default(''))
+  failed_when:
+    - idm_membership_update.rc != 0
+    - >-
+      'already a member'
+      not in (idm_membership_update.stdout | default('') | lower)
+    - >-
+      'already a member'
+      not in (idm_membership_update.stderr | default('') | lower)
+  loop: "{{ idm_managed_users | subelements('groups') }}"
+  loop_control:
+    label: "{{ item.0.uid }} -> {{ item.1 }}"
 
-    certificate_count="$(
-      grep -c -- '-----BEGIN CERTIFICATE-----' "${certificate_file}"
-    )"
+# FreeIPA normally adds new accounts to ipausers automatically. Reconcile the
+# membership anyway, treating its rc=1 "already a member" response as success.
+- name: Ensure ordinary users are members of ipausers
+  ansible.builtin.command:
+    argv: [ipa, group-add-member, ipausers, "--users={{ item.uid }}"]
+  register: idm_ipausers_update
+  changed_when: >-
+    'Number of members added 1'
+    in (idm_ipausers_update.stdout | default(''))
+  failed_when:
+    - idm_ipausers_update.rc != 0
+    - >-
+      'already a member'
+      not in (idm_ipausers_update.stdout | default('') | lower)
+    - >-
+      'already a member'
+      not in (idm_ipausers_update.stderr | default('') | lower)
+  loop: "{{ idm_managed_users | rejectattr('admin') | list }}"
+  loop_control:
+    label: "{{ item.uid }}"
 
-    private_key_count="$(
-      grep -Ec -- \
-        '-----BEGIN (RSA |EC |ENCRYPTED )?PRIVATE KEY-----' \
-        "${certificate_file}"
-    )"
+- name: Nest delegated administrators in built-in admins
+  ansible.builtin.command:
+    argv: [ipa, group-add-member, admins, "--groups={{ idm_admin_group }}"]
+  register: idm_console_admin_add
+  changed_when: >-
+    'Number of members added 1' in (idm_console_admin_add.stdout | default(''))
+  failed_when:
+    - idm_console_admin_add.rc != 0
+    - >-
+      'already a member'
+      not in (idm_console_admin_add.stdout | default('') | lower)
+    - >-
+      'already a member'
+      not in (idm_console_admin_add.stderr | default('') | lower)
 
-    test "${certificate_count}" -ge 1
-    test "${private_key_count}" -ge 1
-  args:
-    executable: /bin/bash
-  register: cockpit_combined_pem_structure
-  changed_when: false
-  failed_when: cockpit_combined_pem_structure.rc != 0
-  no_log: true
+- name: Ensure the administrator sudo rule exists
+  ansible.builtin.command:
+    argv: [ipa, sudorule-add, "{{ idm_sudo_rule }}"]
+  register: idm_sudo_create
+  changed_when: idm_sudo_create.rc == 0
+  failed_when:
+    - idm_sudo_create.rc != 0
+    - "'already exists' not in (idm_sudo_create.stdout | default(''))"
+    - "'already exists' not in (idm_sudo_create.stderr | default(''))"
 
-- name: Validate certificate embedded in Cockpit PEM
+- name: Configure the administrator sudo rule
   ansible.builtin.command:
     argv:
-      - openssl
-      - x509
-      - -in
-      - "{{ cockpit_ws_certificate_path }}"
-      - -noout
-      - -checkhost
-      - "{{ cockpit_public_tls_fqdn }}"
-  register: cockpit_combined_certificate_hostname_check
-  changed_when: false
-  failed_when: cockpit_combined_certificate_hostname_check.rc != 0
+      - ipa
+      - sudorule-mod
+      - "{{ idm_sudo_rule }}"
+      - --hostcat=all
+      - --cmdcat=all
+  register: idm_sudo_modify
+  changed_when: "'Modified Sudo Rule' in (idm_sudo_modify.stdout | default(''))"
+  failed_when:
+    - idm_sudo_modify.rc != 0
+    - >-
+      'no modifications to be performed'
+      not in (idm_sudo_modify.stderr | default('') | lower)
 
-- name: Validate private key embedded in Cockpit PEM
+- name: Attach delegated administrators to the sudo rule
   ansible.builtin.command:
     argv:
-      - openssl
-      - pkey
-      - -in
-      - "{{ cockpit_ws_certificate_path }}"
-      - -noout
-      - -check
-  register: cockpit_combined_private_key_check
-  changed_when: false
-  failed_when: cockpit_combined_private_key_check.rc != 0
-  no_log: true
+      - ipa
+      - sudorule-add-user
+      - "{{ idm_sudo_rule }}"
+      - "--groups={{ idm_admin_group }}"
+  register: idm_sudo_member
+  changed_when: >-
+    'Number of members added 1' in (idm_sudo_member.stdout | default(''))
+  failed_when:
+    - idm_sudo_member.rc != 0
+    - "'already a member' not in (idm_sudo_member.stdout | default('') | lower)"
+    - "'already a member' not in (idm_sudo_member.stderr | default('') | lower)"
 
-- name: Verify certificate and private key in Cockpit PEM match
-  ansible.builtin.shell: |
-    set -euo pipefail
-
-    certificate_hash="$(
-      openssl x509 \
-        -in "{{ cockpit_ws_certificate_path }}" \
-        -noout \
-        -pubkey |
-      openssl pkey \
-        -pubin \
-        -outform DER |
-      openssl dgst -sha256 |
-      awk '{print $NF}'
-    )"
-
-    private_key_hash="$(
-      openssl pkey \
-        -in "{{ cockpit_ws_certificate_path }}" \
-        -pubout \
-        -outform DER |
-      openssl dgst -sha256 |
-      awk '{print $NF}'
-    )"
-
-    test -n "${certificate_hash}"
-    test -n "${private_key_hash}"
-    test "${certificate_hash}" = "${private_key_hash}"
-  args:
-    executable: /bin/bash
-  register: cockpit_combined_key_pair_check
-  changed_when: false
-  failed_when: cockpit_combined_key_pair_check.rc != 0
-  no_log: true
-
-- name: Read staged Cockpit certificate metadata
-  ansible.builtin.command:
-    argv:
-      - openssl
-      - x509
-      - -in
-      - "{{ cockpit_tls_leaf_certificate_path }}"
-      - -noout
-      - -subject
-      - -issuer
-      - -serial
-      - -dates
-      - -fingerprint
-      - -sha256
-  register: cockpit_staged_certificate_metadata

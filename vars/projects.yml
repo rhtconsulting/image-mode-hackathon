@@ -4,7 +4,7 @@ controller_projects:
     organization: "Image Mode Lab"
     scm_type: git
     scm_url: "https://github.com/claudiol/image-mode-hackathon.git"
-    scm_branch: "dev"
+    scm_branch: "fix-podman-build-for-standard-users"
     credential: "Git Credential"
     scm_update_on_launch: true
     update_project: true

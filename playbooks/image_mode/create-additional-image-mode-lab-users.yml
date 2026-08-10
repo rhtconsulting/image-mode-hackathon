@@ -2,22 +2,25 @@
 ###############################################################################
 # Create Additional Image Mode Lab Users
 #
-# Credential usage:
+# Workflow:
 #
-# Image Mode IdM Administrator Credential:
-#   idm_admin_username
-#   idm_admin_password
-#   ipaadmin_principal
-#   ipaadmin_password
+# 1. Authenticate with the IdM administrator credential.
+# 2. Confirm the ipausers group exists.
+# 3. Use LDAP to discover all numeric user* accounts in ipausers.
+# 4. Find the highest existing numeric suffix.
+# 5. Allocate the requested number of usernames after that suffix.
+# 6. Verify those usernames do not already exist.
+# 7. Create users using idm_normal_password as their initial password.
+# 8. Generate subordinate UID/GID ranges only when missing.
 #
-# Image Mode IdM Non-Admin Credential:
-#   idm_normal_username
-#   idm_normal_password
+# Required AAP credentials:
 #
-# idm_normal_password is assigned as the initial password for all newly
-# created users.
+#   Image Mode Machine Credential
+#   Image Mode IdM Administrator Credential
+#   Image Mode IdM Non-Admin Credential
 #
 # Required survey variable:
+#
 #   number_of_users_var
 ###############################################################################
 
@@ -30,7 +33,7 @@
   vars:
 
     ###########################################################################
-    # IdM administrator credential
+    # Administrator credential
     ###########################################################################
 
     idm_credential_username: >-
@@ -54,10 +57,10 @@
       }}
 
     ###########################################################################
-    # IdM normal-user credential
+    # Normal-user credential
     #
-    # The password from this credential becomes the initial password for every
-    # newly created numbered user.
+    # idm_normal_password is used as the initial password for every newly
+    # created numbered user.
     ###########################################################################
 
     idm_normal_credential_username: >-
@@ -73,7 +76,7 @@
       }}
 
     ###########################################################################
-    # User configuration
+    # User allocation
     ###########################################################################
 
     idm_user_prefix: "user"
@@ -85,7 +88,7 @@
 
     ###########################################################################
     # PHASE 01
-    # Validate runtime configuration
+    # Validate inputs
     ###########################################################################
 
     - name: PHASE 01 | Validate requested number of users
@@ -131,49 +134,50 @@
       no_log: true
 
 
-    - name: PHASE 01 | Validate IdM administrator credential
+    - name: PHASE 01 | Validate administrator credential
       ansible.builtin.assert:
         that:
           - idm_admin_username_available | bool
           - idm_admin_password_available | bool
         fail_msg: >-
-          The IdM administrator credential was not injected into this job.
+          Image Mode IdM Administrator Credential was not injected.
 
-          Attach Image Mode IdM Administrator Credential. Its credential
-          injector must provide:
+          Required variables:
 
             idm_admin_username
             idm_admin_password
-            ipaadmin_principal
-            ipaadmin_password
 
 
-    - name: PHASE 01 | Validate IdM normal-user credential
+    - name: PHASE 01 | Validate normal-user credential
       ansible.builtin.assert:
         that:
           - idm_normal_username_available | bool
           - idm_normal_password_available | bool
         fail_msg: >-
-          The IdM normal-user credential was not injected into this job.
+          Image Mode IdM Non-Admin Credential was not injected.
 
-          Attach Image Mode IdM Non-Admin Credential. Its credential
-          injector must provide:
+          Required variables:
 
             idm_normal_username
             idm_normal_password
 
-          idm_normal_password is used as the initial password for every
-          newly created Image Mode Lab user.
+
+    - name: PHASE 01 | Install LDAP client utilities
+      ansible.builtin.dnf:
+        name:
+          - openldap-clients
+          - krb5-workstation
+        state: present
 
 
   tasks:
 
     ###########################################################################
     # PHASE 02
-    # Authenticate as the IdM administrator
+    # Authenticate to IdM
     ###########################################################################
 
-    - name: PHASE 02 | Obtain IdM administrator Kerberos authentication
+    - name: PHASE 02 | Obtain administrator Kerberos authentication
       ansible.builtin.command:
         argv:
           - kinit
@@ -186,24 +190,18 @@
       no_log: true
 
 
-    - name: PHASE 02 | Validate IdM administrator authentication
+    - name: PHASE 02 | Validate administrator authentication
       ansible.builtin.assert:
         that:
           - idm_admin_kinit.rc | default(1) == 0
         fail_msg: >-
           Kerberos authentication failed for the injected IdM administrator.
 
-          Verify:
-
-            - Image Mode IdM Administrator Credential is attached
-            - idm_admin_username contains the correct username
-            - idm_admin_password contains the correct password
-            - IdM DNS resolution is working
-            - system time is synchronized
-            - /etc/krb5.conf is configured correctly
+          Verify the administrator credential, DNS resolution, time
+          synchronization, and /etc/krb5.conf.
 
 
-    - name: PHASE 02 | Verify active administrator Kerberos ticket
+    - name: PHASE 02 | Verify active Kerberos ticket
       ansible.builtin.command:
         argv:
           - klist
@@ -213,7 +211,7 @@
       failed_when: false
 
 
-    - name: PHASE 02 | Validate active administrator Kerberos ticket
+    - name: PHASE 02 | Validate active Kerberos ticket
       ansible.builtin.assert:
         that:
           - idm_admin_klist.rc == 0
@@ -224,10 +222,105 @@
 
     ###########################################################################
     # PHASE 03
-    # Query ipausers
+    # Resolve the IdM LDAP environment
     ###########################################################################
 
-    - name: PHASE 03 | Query current ipausers group
+    - name: PHASE 03 | Resolve IdM server hostname
+      ansible.builtin.command:
+        argv:
+          - hostname
+          - -f
+      register: idm_server_hostname_result
+      changed_when: false
+      failed_when:
+        - idm_server_hostname_result.rc != 0
+        - idm_server_hostname_result.stdout | trim | length == 0
+
+
+    - name: PHASE 03 | Query IdM LDAP base DN
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - env
+          - basedn
+      register: idm_environment_result
+      changed_when: false
+      failed_when: false
+
+
+    - name: PHASE 03 | Validate LDAP base-DN query
+      ansible.builtin.assert:
+        that:
+          - idm_environment_result.rc == 0
+          - >-
+            (
+              idm_environment_result.stdout_lines
+              | map('trim')
+              | select('match', '^basedn:[ ]*.+$')
+              | list
+              | length
+            )
+            == 1
+        fail_msg: >-
+          Unable to determine the IdM LDAP base DN.
+
+          Output:
+
+          {{ idm_environment_result.stdout | default('') }}
+
+          Error:
+
+          {{ idm_environment_result.stderr | default('') }}
+
+
+    - name: PHASE 03 | Store IdM LDAP information
+      ansible.builtin.set_fact:
+        idm_server_hostname: >-
+          {{
+            idm_server_hostname_result.stdout
+            | trim
+          }}
+
+        idm_ldap_base_dn: >-
+          {{
+            (
+              idm_environment_result.stdout_lines
+              | map('trim')
+              | select('match', '^basedn:[ ]*.+$')
+              | first
+            )
+            | regex_replace('^basedn:[ ]*', '')
+            | trim
+          }}
+
+
+    - name: PHASE 03 | Build ipausers distinguished name
+      ansible.builtin.set_fact:
+        idm_ipausers_group_dn: >-
+          cn=ipausers,cn=groups,cn=accounts,{{ idm_ldap_base_dn }}
+
+        idm_users_search_base: >-
+          cn=users,cn=accounts,{{ idm_ldap_base_dn }}
+
+
+    - name: PHASE 03 | Validate resolved LDAP information
+      ansible.builtin.assert:
+        that:
+          - idm_server_hostname | length > 0
+          - idm_ldap_base_dn | length > 0
+          - idm_ipausers_group_dn | length > 0
+          - idm_users_search_base | length > 0
+        fail_msg: >-
+          The IdM LDAP server, base DN, ipausers group DN, or users search
+          base could not be resolved.
+
+
+    ###########################################################################
+    # PHASE 04
+    # Confirm ipausers exists
+    ###########################################################################
+
+    - name: PHASE 04 | Query ipausers group
       ansible.builtin.command:
         argv:
           - ipa
@@ -240,15 +333,12 @@
       failed_when: false
 
 
-    - name: PHASE 03 | Validate ipausers group query
+    - name: PHASE 04 | Validate ipausers group
       ansible.builtin.assert:
         that:
           - idm_ipausers_group.rc == 0
         fail_msg: >-
           Unable to query the IdM ipausers group.
-
-          Verify that {{ idm_credential_username }} has permission to read
-          IdM users and groups.
 
           Error:
 
@@ -256,24 +346,72 @@
 
 
     ###########################################################################
-    # PHASE 04
-    # Extract numbered user accounts
+    # PHASE 05
+    # Discover numeric user* accounts in ipausers through LDAP
+    #
+    # LDAP first returns accounts matching user*. Ansible then applies the
+    # stricter user[0-9]+ expression so accounts such as user-service are
+    # ignored.
     ###########################################################################
 
-    - name: PHASE 04 | Extract numbered Image Mode Lab users
+    - name: PHASE 05 | Query numbered ipausers accounts through LDAP
+      ansible.builtin.command:
+        argv:
+          - ldapsearch
+          - -LLL
+          - -o
+          - ldif-wrap=no
+          - -Y
+          - GSSAPI
+          - -H
+          - "ldap://{{ idm_server_hostname }}"
+          - -b
+          - "{{ idm_users_search_base }}"
+          - >-
+            (&(objectClass=posixAccount)
+            (memberOf={{ idm_ipausers_group_dn }})
+            (uid={{ idm_user_prefix }}*))
+          - uid
+      register: idm_numbered_user_ldap_query
+      changed_when: false
+      failed_when: false
+
+
+    - name: PHASE 05 | Validate LDAP user query
+      ansible.builtin.assert:
+        that:
+          - idm_numbered_user_ldap_query.rc == 0
+        fail_msg: >-
+          LDAP could not query numeric user accounts associated with ipausers.
+
+          LDAP server:
+
+          {{ idm_server_hostname }}
+
+          Search base:
+
+          {{ idm_users_search_base }}
+
+          Error:
+
+          {{ idm_numbered_user_ldap_query.stderr | default('') }}
+
+
+    - name: PHASE 05 | Extract numeric Image Mode Lab users
       ansible.builtin.set_fact:
         idm_existing_numbered_users: >-
           {{
-            idm_ipausers_group.stdout_lines
+            idm_numbered_user_ldap_query.stdout_lines
+            | map('trim')
             | select(
                 'match',
-                '^member_user: '
+                '^uid: '
                 ~ idm_user_prefix
                 ~ '[0-9]+$'
               )
             | map(
                 'regex_replace',
-                '^member_user: ',
+                '^uid: ',
                 ''
               )
             | unique
@@ -282,14 +420,14 @@
           }}
 
 
-    - name: PHASE 04 | Display discovered numbered users
+    - name: PHASE 05 | Display discovered numbered users
       ansible.builtin.debug:
         msg:
           - >-
-            Existing numbered users:
+            Numbered users discovered in ipausers:
             {{ idm_existing_numbered_users | length }}
           - >-
-            Usernames:
+            Existing numbered users:
             {{
               idm_existing_numbered_users
               | join(', ')
@@ -298,16 +436,16 @@
 
 
     ###########################################################################
-    # PHASE 05
+    # PHASE 06
     # Extract numeric suffixes
     ###########################################################################
 
-    - name: PHASE 05 | Initialize existing user-number list
+    - name: PHASE 06 | Initialize numeric suffix list
       ansible.builtin.set_fact:
         idm_existing_user_numbers: []
 
 
-    - name: PHASE 05 | Extract numeric suffixes
+    - name: PHASE 06 | Extract existing numeric suffixes
       ansible.builtin.set_fact:
         idm_existing_user_numbers: >-
           {{
@@ -330,11 +468,11 @@
 
 
     ###########################################################################
-    # PHASE 06
-    # Determine the highest existing user
+    # PHASE 07
+    # Find the highest allocated user number
     ###########################################################################
 
-    - name: PHASE 06 | Determine highest existing user number
+    - name: PHASE 07 | Determine highest existing user number
       ansible.builtin.set_fact:
         idm_highest_user_number: >-
           {{
@@ -351,11 +489,6 @@
           }}
 
 
-    ###########################################################################
-    # PHASE 07
-    # Determine the next available number
-    ###########################################################################
-
     - name: PHASE 07 | Determine next available user number
       ansible.builtin.set_fact:
         idm_next_user_number: >-
@@ -366,10 +499,10 @@
 
     ###########################################################################
     # PHASE 08
-    # Build requested numeric range
+    # Allocate the requested user range
     ###########################################################################
 
-    - name: PHASE 08 | Build additional user-number range
+    - name: PHASE 08 | Build requested user-number range
       ansible.builtin.set_fact:
         idm_new_user_numbers: >-
           {{
@@ -385,7 +518,7 @@
           }}
 
 
-    - name: PHASE 08 | Validate generated user-number count
+    - name: PHASE 08 | Validate allocated user-number count
       ansible.builtin.assert:
         that:
           - >-
@@ -393,132 +526,178 @@
             ==
             number_of_users_var | int
         fail_msg: >-
-          The generated user-number count does not match the requested
-          number of users.
+          The allocated user-number count does not match
+          number_of_users_var.
 
 
-    ###############################################################################
+    ###########################################################################
     # PHASE 09
     # Build user definitions
-    ###############################################################################
+    ###########################################################################
 
     - name: PHASE 09 | Initialize new user definitions
       ansible.builtin.set_fact:
         idm_new_users: []
 
+
     - name: PHASE 09 | Build new Image Mode Lab user definitions
       ansible.builtin.set_fact:
         idm_new_users: >-
           {{
-          idm_new_users
-          +
-          [
-          {
-          'name':
-          idm_user_prefix
-          ~
-          idm_formatted_user_number,
-          'first': 'User',
-          'last':
-          idm_formatted_user_number,
-          'password':
-          idm_new_user_initial_password
-          }
-          ]
+            idm_new_users
+            +
+            [
+              {
+                'name':
+                  idm_user_prefix
+                  ~
+                  idm_formatted_user_number,
+                'first': 'User',
+                'last': idm_formatted_user_number,
+                'password': idm_new_user_initial_password
+              }
+            ]
           }}
       vars:
         idm_formatted_user_number: >-
           {{
-          '%0*d'
-          | format(
-          idm_user_number_width | int,
-          item | int
-          )
+            '%0*d'
+            | format(
+                idm_user_number_width | int,
+                item | int
+              )
           }}
       loop: "{{ idm_new_user_numbers }}"
       loop_control:
         label: >-
           {{
-          idm_user_prefix
-          ~
-          (
-          '%0*d'
-          | format(
-          idm_user_number_width | int,
-          item | int
-          )
-          )
+            idm_user_prefix
+            ~
+            (
+              '%0*d'
+              | format(
+                  idm_user_number_width | int,
+                  item | int
+                )
+            )
           }}
       no_log: true
 
-    - name: PHASE 09 | Build safe new-user name list
+
+    - name: PHASE 09 | Build safe username list
       ansible.builtin.set_fact:
         idm_new_usernames: >-
           {{
-          idm_new_users
-          | map(attribute='name')
-          | list
+            idm_new_users
+            | map(attribute='name')
+            | list
           }}
 
-    - name: PHASE 09 | Validate generated user definitions
+
+    - name: PHASE 09 | Validate generated usernames
       ansible.builtin.assert:
         that:
-          - >-
-            idm_new_users | length
-            ==
-            number_of_users_var | int
+          - idm_new_users | length == number_of_users_var | int
           - >-
             idm_new_usernames | unique | length
             ==
             idm_new_usernames | length
           - >-
             (
-            idm_new_usernames
-            | intersect(idm_existing_numbered_users)
-            | length
+              idm_new_usernames
+              | intersect(idm_existing_numbered_users)
+              | length
             )
             == 0
         fail_msg: >-
-          Generated IdM user definitions are invalid or conflict with existing
-          numbered users.
+          Generated usernames are invalid or already exist.
 
-    - name: PHASE 09 | Display generated usernames
-      ansible.builtin.debug:
-        msg:
-          - >-
-            Generated user count:
-            {{ idm_new_usernames | length }}
-          - >-
-            Generated usernames:
-            {{ idm_new_usernames }}
 
     ###########################################################################
     # PHASE 10
-    # Display user-allocation plan
+    # Verify names are still available
+    #
+    # This protects against an account being created after the LDAP discovery
+    # but before this job reaches the creation phase.
     ###########################################################################
 
-    - name: PHASE 10 | Display current user allocation
+    - name: PHASE 10 | Check generated usernames for conflicts
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - user-show
+          - "{{ item }}"
+          - --raw
+      register: idm_new_username_conflict_queries
+      changed_when: false
+      failed_when: false
+      loop: "{{ idm_new_usernames }}"
+      loop_control:
+        label: "{{ item }}"
+
+
+    - name: PHASE 10 | Validate generated usernames are available
+      ansible.builtin.assert:
+        that:
+          - item.rc != 0
+          - >-
+            'not found'
+            in
+            (
+              (
+                item.stdout
+                | default('')
+              )
+              ~
+              (
+                item.stderr
+                | default('')
+              )
+              | lower
+            )
+        fail_msg: >-
+          Generated username {{ item.item }} already exists or its
+          availability could not be verified.
+
+          The job will not modify an existing IdM account.
+
+          Output:
+
+          {{ item.stdout | default('') }}
+
+          Error:
+
+          {{ item.stderr | default('') }}
+      loop: "{{ idm_new_username_conflict_queries.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+
+    - name: PHASE 10 | Display user-creation plan
       ansible.builtin.debug:
         msg:
           - >-
-            Existing numbered users:
-            {{ idm_existing_numbered_users }}
+            Highest existing numbered user:
+            {{
+              (
+                idm_user_prefix
+                ~
+                (
+                  '%0*d'
+                  | format(
+                      idm_user_number_width | int,
+                      idm_highest_user_number | int
+                    )
+                )
+              )
+              if idm_highest_user_number | int > 0
+              else 'None'
+            }}
           - >-
-            Highest existing user number:
-            {{ idm_highest_user_number }}
-          - >-
-            Next available user number:
-            {{ idm_next_user_number }}
-
-
-    - name: PHASE 10 | Display users to be created
-      ansible.builtin.debug:
-        msg:
-          - >-
-            Number of additional users:
+            Requested new users:
             {{ number_of_users_var | int }}
           - >-
-            Users to create:
+            Usernames to create:
             {{ idm_new_usernames }}
 
 
@@ -545,24 +724,26 @@
         - name: PHASE 11 | Report IdM user-creation failure
           ansible.builtin.fail:
             msg: >-
-              The IdM user-creation operation failed.
-
-              Kerberos authentication and ipausers discovery completed, but
-              freeipa.ansible_freeipa.ipauser could not create the requested
-              users.
+              IdM user creation failed.
 
               Verify:
 
                 - both IdM credentials are attached
-                - freeipa.ansible_freeipa is installed in the execution environment
+                - freeipa.ansible_freeipa is installed
                 - idm_normal_password satisfies the IdM password policy
-                - the generated usernames do not already exist
-                - the IdM administrator has user-creation permission
+                - the generated usernames are still available
+                - the administrator has user-creation permission
 
 
     ###########################################################################
     # PHASE 12
     # Verify created users
+    #
+    # ipa output is indented, for example:
+    #
+    #   "  uid: user02"
+    #
+    # stdout_lines are trimmed before matching.
     ###########################################################################
 
     - name: PHASE 12 | Query newly created users
@@ -586,15 +767,40 @@
         that:
           - item.rc == 0
           - >-
-            item.stdout
-            is search(
-              '(?m)^uid: '
-              ~ item.item
-              ~ '$'
+            (
+              item.stdout_lines
+              | default([])
+              | map('trim')
+              | select(
+                  'equalto',
+                  'uid: ' ~ item.item
+                )
+              | list
+              | length
             )
+            == 1
+          - >-
+            (
+              item.stdout_lines
+              | default([])
+              | map('trim')
+              | select(
+                  'equalto',
+                  'memberof: ' ~ idm_ipausers_group_dn
+                )
+              | list
+              | length
+            )
+            >= 1
         fail_msg: >-
-          IdM user {{ item.item }} was not found after the user-creation
-          operation.
+          IdM user {{ item.item }} was not validated after creation.
+
+          The command returned rc={{ item.rc }}, but the expected uid or
+          ipausers membership was not present.
+
+          Output:
+
+          {{ item.stdout | default('') }}
 
           Error:
 
@@ -606,7 +812,7 @@
 
     ###########################################################################
     # PHASE 13
-    # Query subordinate UID/GID ranges
+    # Query subordinate IDs
     ###########################################################################
 
     - name: PHASE 13 | Query subordinate IDs for new users
@@ -630,7 +836,7 @@
         that:
           - item.rc == 0
         fail_msg: >-
-          Unable to query subordinate IDs for IdM user {{ item.item }}.
+          Unable to query subordinate IDs for {{ item.item }}.
 
           Error:
 
@@ -644,7 +850,7 @@
 
     ###########################################################################
     # PHASE 14
-    # Generate missing subordinate UID/GID ranges
+    # Generate only missing subordinate IDs
     ###########################################################################
 
     - name: PHASE 14 | Generate missing subordinate IDs
@@ -692,7 +898,7 @@
 
     ###########################################################################
     # PHASE 15
-    # Validate subordinate UID/GID ranges
+    # Validate final subordinate-ID assignments
     ###########################################################################
 
     - name: PHASE 15 | Query final subordinate-ID assignments
@@ -735,13 +941,13 @@
             is search('SubGID range size:[ ]+[1-9][0-9]*')
         fail_msg: >-
           IdM user {{ item.item }} does not have a valid subordinate UID/GID
-          range after reconciliation.
+          range.
 
-          IdM output:
+          Output:
 
           {{ item.stdout | default('') }}
 
-          IdM error:
+          Error:
 
           {{ item.stderr | default('') }}
       loop: "{{ idm_new_user_subid_validation.results | default([]) }}"
@@ -753,7 +959,7 @@
 
     ###########################################################################
     # PHASE 16
-    # Determine final user allocation
+    # Publish results
     ###########################################################################
 
     - name: PHASE 16 | Determine final user number
@@ -768,12 +974,7 @@
           }}
 
 
-    ###########################################################################
-    # PHASE 17
-    # Publish workflow results
-    ###########################################################################
-
-    - name: PHASE 17 | Publish created-user workflow artifacts
+    - name: PHASE 16 | Publish user-creation workflow artifacts
       ansible.builtin.set_stats:
         data:
           idm_created_usernames: "{{ idm_new_usernames }}"
@@ -784,7 +985,7 @@
         per_host: false
 
 
-    - name: PHASE 17 | Display final user-creation results
+    - name: PHASE 16 | Display final results
       ansible.builtin.debug:
         msg:
           - >-
@@ -800,11 +1001,10 @@
               ~
               (
                 '%0*d'
-                %
-                [
-                  idm_user_number_width | int,
-                  idm_final_user_number | int
-                ]
+                | format(
+                    idm_user_number_width | int,
+                    idm_final_user_number | int
+                  )
               )
             }}
           - >-
@@ -818,11 +1018,11 @@
   post_tasks:
 
     ###########################################################################
-    # PHASE 18
-    # Remove Kerberos authentication
+    # PHASE 17
+    # Remove administrator Kerberos ticket
     ###########################################################################
 
-    - name: PHASE 18 | Destroy IdM administrator Kerberos authentication
+    - name: PHASE 17 | Destroy administrator Kerberos authentication
       ansible.builtin.command:
         argv:
           - kdestroy

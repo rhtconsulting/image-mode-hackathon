@@ -1,10 +1,10 @@
 ---
 ###############################################################################
-# Create Additional IdM Lab Users
+# Create Additional Image Mode Lab Users
 #
-# Discover existing user* accounts from the ipausers group and create the
+# Discover existing user* accounts from the IdM ipausers group and create the
 # requested number of additional users beginning after the highest existing
-# user number.
+# numbered user.
 #
 # Example:
 #
@@ -22,83 +22,98 @@
 #   user13
 #   user14
 #   user15
+#
+# Required AAP injected variables:
+#
+#   idm_normal_username
+#   idm_normal_password
+#
+# Required survey/runtime variable:
+#
+#   number_of_users_var
 ###############################################################################
 
-- name: Create Additional IdM Lab Users
-  hosts: ipaserver
+- name: Create Additional Image Mode Lab Users
+  hosts: idm
   become: true
   gather_facts: false
 
   vars:
 
     ###########################################################################
-    # Number of additional users to create
+    # IdM credential values
     #
-    # This can instead be supplied by an AAP survey:
-    #
-    #   number_of_users_var: 5
+    # These values are supplied by an attached AAP credential.
+    # No credential values are stored directly in this playbook.
     ###########################################################################
 
-    number_of_users_var: 5
+    idm_credential_username: "{{ idm_normal_username }}"
+    idm_credential_secret: "{{ idm_normal_password }}"
 
     ###########################################################################
-    # IdM administrator
-    ###########################################################################
-
-    ipaadmin_principal: "admin"
-
-    ###########################################################################
-    # Initial password assigned only when the user is created.
-    #
-    # In AAP this should normally come from a credential, vaulted variable,
-    # or other protected source instead of being stored directly here.
-    ###########################################################################
-
-    idm_new_user_password: "ChangeMe123!"
-
-    ###########################################################################
-    # Naming configuration
+    # User naming configuration
     ###########################################################################
 
     idm_user_prefix: "user"
 
-    # user01, user02, ..., user09, user10
+    # Maintains names such as:
+    #
+    # user01
+    # user02
+    # ...
+    # user10
+    #
+    # Values greater than 99 naturally continue as user100, user101, etc.
     idm_user_number_width: 2
 
   tasks:
 
     ###########################################################################
     # PHASE 01
-    # Validate requested user count
+    # Validate runtime variables
     ###########################################################################
 
     - name: Validate requested number of additional users
       ansible.builtin.assert:
         that:
+          - number_of_users_var is defined
           - number_of_users_var | int >= 1
         fail_msg: >-
-          number_of_users_var must be greater than or equal to 1.
+          number_of_users_var must be defined and greater than or equal to 1.
         success_msg: >-
-          Requested creation of {{ number_of_users_var }} additional IdM users.
+          Requested creation of {{ number_of_users_var | int }}
+          additional Image Mode Lab users.
+
+    - name: Validate IdM credential variables are available
+      ansible.builtin.assert:
+        that:
+          - idm_credential_username is defined
+          - idm_credential_username | length > 0
+          - idm_credential_secret is defined
+          - idm_credential_secret | length > 0
+        fail_msg: >-
+          Required IdM credential variables were not supplied by the
+          attached AAP credential.
+      no_log: true
 
     ###########################################################################
     # PHASE 02
     # Authenticate to IdM
     ###########################################################################
 
-    - name: Obtain IdM administrator Kerberos ticket
+    - name: Obtain IdM Kerberos authentication
       ansible.builtin.command:
         argv:
           - kinit
-          - "{{ ipaadmin_principal }}"
-        stdin: "{{ ipaadmin_password }}"
+          - "{{ idm_credential_username }}"
+        stdin: "{{ idm_credential_secret }}"
         stdin_add_newline: true
       changed_when: false
       no_log: true
 
     ###########################################################################
     # PHASE 03
-    # Retrieve ipausers group membership
+    # Query current ipausers membership
     ###########################################################################
 
     - name: Query current ipausers group
@@ -114,24 +129,24 @@
 
     ###########################################################################
     # PHASE 04
-    # Extract user<number> accounts
+    # Extract only numbered user accounts
     #
-    # Example group output:
+    # Example matching values:
     #
-    # member_user: user01
-    # member_user: user02
-    # member_user: user10
+    #   user01
+    #   user02
+    #   user09
+    #   user10
     #
-    # Other accounts such as:
+    # Example ignored values:
     #
-    # admin
-    # svc_account
-    # pduncan
-    #
-    # are ignored.
+    #   admin
+    #   pduncan
+    #   service-account
+    #   image-builder-admin
     ###########################################################################
 
-    - name: Extract numbered lab users from ipausers
+    - name: Extract numbered Image Mode Lab users
       ansible.builtin.set_fact:
         idm_existing_numbered_users: >-
           {{
@@ -152,13 +167,13 @@
 
     ###########################################################################
     # PHASE 05
-    # Extract numeric portions
+    # Extract numeric suffixes
     #
     # Example:
     #
-    # user01 -> 1
-    # user09 -> 9
-    # user10 -> 10
+    #   user01 -> 1
+    #   user09 -> 9
+    #   user10 -> 10
     ###########################################################################
 
     - name: Initialize existing user number list
@@ -188,18 +203,13 @@
 
     ###########################################################################
     # PHASE 06
-    # Determine highest existing user number
+    # Determine highest currently allocated user number
     #
-    # If no user<number> accounts currently exist:
-    #
-    #   highest = 0
-    #
-    # Therefore the first created account becomes:
-    #
-    #   user01
+    # If no user<number> accounts exist, the value defaults to 0 so the first
+    # generated account becomes user01.
     ###########################################################################
 
-    - name: Determine highest existing lab user number
+    - name: Determine highest existing Image Mode Lab user number
       ansible.builtin.set_fact:
         idm_highest_user_number: >-
           {{
@@ -213,10 +223,10 @@
 
     ###########################################################################
     # PHASE 07
-    # Determine next user number
+    # Determine next available user number
     ###########################################################################
 
-    - name: Determine starting number for new users
+    - name: Determine next available Image Mode Lab user number
       ansible.builtin.set_fact:
         idm_next_user_number: >-
           {{
@@ -225,23 +235,25 @@
 
     ###########################################################################
     # PHASE 08
-    # Build list of new user numbers
+    # Build range of new users
     #
     # Example:
     #
-    # highest existing:       10
-    # number_of_users_var:     5
+    # Highest existing user:
+    #   user10
     #
-    # result:
+    # number_of_users_var:
+    #   5
     #
-    # 11
-    # 12
-    # 13
-    # 14
-    # 15
+    # Generated numeric range:
+    #   11
+    #   12
+    #   13
+    #   14
+    #   15
     ###########################################################################
 
-    - name: Build additional user number range
+    - name: Build additional Image Mode Lab user number range
       ansible.builtin.set_fact:
         idm_new_user_numbers: >-
           {{
@@ -261,11 +273,11 @@
     # Build IdM user definitions
     ###########################################################################
 
-    - name: Initialize new IdM user definitions
+    - name: Initialize new Image Mode Lab user definitions
       ansible.builtin.set_fact:
         idm_new_users: []
 
-    - name: Build new IdM user definitions
+    - name: Build new Image Mode Lab user definitions
       ansible.builtin.set_fact:
         idm_new_users: >-
           {{
@@ -294,7 +306,7 @@
                       item | int
                     ]
                   ),
-                'password': idm_new_user_password
+                'password': idm_credential_secret
               }
             ]
           }}
@@ -317,36 +329,49 @@
 
     ###########################################################################
     # PHASE 10
-    # Display discovery results
+    # Display discovery and allocation results
     ###########################################################################
 
-    - name: Display existing numbered IdM users
+    - name: Display current Image Mode Lab user allocation
       ansible.builtin.debug:
         msg:
-          - "Existing numbered users: {{ idm_existing_numbered_users }}"
-          - "Highest existing user number: {{ idm_highest_user_number }}"
-          - "Next available user number: {{ idm_next_user_number }}"
+          - >-
+            Existing numbered users:
+            {{ idm_existing_numbered_users }}
+          - >-
+            Highest existing user number:
+            {{ idm_highest_user_number }}
+          - >-
+            Next available user number:
+            {{ idm_next_user_number }}
 
-    - name: Display users that will be created
+    - name: Display Image Mode Lab users to be created
       ansible.builtin.debug:
-        msg: >-
-          Creating {{
-            idm_new_users
-            | map(attribute='name')
-            | list
-          }}
+        msg:
+          - >-
+            Number of additional users:
+            {{ number_of_users_var | int }}
+          - >-
+            Users to create:
+            {{
+              idm_new_users
+              | map(attribute='name')
+              | list
+            }}
 
     ###########################################################################
     # PHASE 11
-    # Create new IdM users
+    # Create users in IdM
     #
-    # update_password: on_create prevents the playbook from resetting a user's
-    # password on subsequent runs.
+    # update_password: on_create ensures the supplied credential secret is
+    # applied only when a user is initially created and is not reset on
+    # subsequent runs.
     ###########################################################################
 
-    - name: Create additional IdM lab users
+    - name: Create additional Image Mode Lab users
       freeipa.ansible_freeipa.ipauser:
-        ipaadmin_password: "{{ ipaadmin_password }}"
+        ipaadmin_principal: "{{ idm_credential_username }}"
+        ipaadmin_password: "{{ idm_credential_secret }}"
         users: "{{ idm_new_users }}"
         update_password: on_create
         state: present
@@ -354,21 +379,43 @@
 
     ###########################################################################
     # PHASE 12
-    # Display final result
+    # Determine final highest user
     ###########################################################################
 
-    - name: Display created IdM users
+    - name: Determine final Image Mode Lab user number
+      ansible.builtin.set_fact:
+        idm_final_user_number: >-
+          {{
+            (
+              idm_next_user_number | int
+              +
+              number_of_users_var | int
+              -
+              1
+            )
+          }}
+
+    ###########################################################################
+    # PHASE 13
+    # Display final results
+    ###########################################################################
+
+    - name: Display Image Mode Lab user creation results
       ansible.builtin.debug:
         msg:
-          - "Previous highest user: {{ idm_user_prefix }}{{ '%0*d' | format(idm_user_number_width | int, idm_highest_user_number | int) }}"
           - >-
-            New users: {{
+            Previous highest user number:
+            {{ idm_highest_user_number }}
+          - >-
+            Created users:
+            {{
               idm_new_users
               | map(attribute='name')
               | list
             }}
           - >-
-            New highest user: {{
+            Current highest user:
+            {{
               idm_user_prefix
               ~
               (
@@ -376,13 +423,18 @@
                 %
                 [
                   idm_user_number_width | int,
-                  (
-                    idm_next_user_number | int
-                    +
-                    number_of_users_var | int
-                    -
-                    1
-                  )
+                  idm_final_user_number | int
                 ]
               )
             }}
+
+    ###########################################################################
+    # PHASE 14
+    # Remove Kerberos authentication
+    ###########################################################################
+
+    - name: Destroy IdM Kerberos authentication
+      ansible.builtin.command:
+        argv:
+          - kdestroy
+      changed_when: false

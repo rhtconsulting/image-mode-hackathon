@@ -293,6 +293,9 @@ image_mode_core_packages:
   - net-tools
   - lsof
 
+  #OpenLDAP client
+  - openldap-clients
+
 ###############################################################################
 # Workspace directory definitions
 ###############################################################################

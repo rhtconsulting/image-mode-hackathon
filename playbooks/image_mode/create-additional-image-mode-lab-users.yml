@@ -810,10 +810,11 @@
         label: "{{ item.item }}"
 
 
-    ###########################################################################
+
+    ###############################################################################
     # PHASE 13
-    # Query subordinate IDs
-    ###########################################################################
+    # Query current subordinate UID/GID ranges
+    ###############################################################################
 
     - name: PHASE 13 | Query subordinate IDs for new users
       ansible.builtin.command:
@@ -823,44 +824,177 @@
           - "--owner={{ item }}"
       register: idm_new_user_subid_queries
       changed_when: false
-      failed_when: false
+
+      # FreeIPA returns:
+      #
+      # rc=0 when one or more subordinate-ID records are found.
+      # rc=1 when the query succeeds but zero records are found.
+      #
+      # Other return codes are operational failures.
+
+      failed_when:
+        - idm_new_user_subid_queries.rc not in [0, 1]
+
       loop: "{{ idm_new_usernames }}"
       loop_control:
         label: "{{ item }}"
+
       when:
         - idm_generate_user_subids | bool
 
-
-    - name: PHASE 13 | Validate subordinate-ID queries
+    - name: PHASE 13 | Validate subordinate-ID query results
       ansible.builtin.assert:
         that:
-          - item.rc == 0
+          - item.rc in [0, 1]
+
+          # rc=0 represents an existing subordinate-ID assignment.
+          # rc=1 is accepted only when FreeIPA explicitly reports zero matches.
+          - >-
+            (
+              item.rc == 0
+            )
+            or
+            (
+              item.rc == 1
+              and
+              (
+                (
+                  '0 subordinate ids matched'
+                  in (item.stdout | default(''))
+                )
+                or
+                (
+                  'Number of entries returned 0'
+                  in (item.stdout | default(''))
+                )
+              )
+            )
+
         fail_msg: >-
-          Unable to query subordinate IDs for {{ item.item }}.
+          Unable to determine the subordinate-ID state for {{ item.item }}.
+
+          Return code:
+
+          {{ item.rc }}
+
+          Output:
+
+          {{ item.stdout | default('') }}
 
           Error:
 
           {{ item.stderr | default('') }}
+
       loop: "{{ idm_new_user_subid_queries.results | default([]) }}"
       loop_control:
         label: "{{ item.item }}"
+
       when:
         - not (item.skipped | default(false))
 
-
-    ###########################################################################
+    ###############################################################################
     # PHASE 14
-    # Generate only missing subordinate IDs
-    ###########################################################################
+    # Separate existing and missing subordinate-ID assignments
+    ###############################################################################
 
-    - name: PHASE 14 | Generate missing subordinate IDs
+    - name: PHASE 14 | Initialize subordinate-ID result lists
+      ansible.builtin.set_fact:
+        idm_users_with_existing_subids: []
+        idm_users_missing_subids: []
+
+    - name: PHASE 14 | Record users with existing subordinate IDs
+      ansible.builtin.set_fact:
+        idm_users_with_existing_subids: >-
+          {{
+            idm_users_with_existing_subids
+            +
+            [
+              item.item
+            ]
+          }}
+
+      loop: "{{ idm_new_user_subid_queries.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+      when:
+        - not (item.skipped | default(false))
+        - item.rc == 0
+        - >-
+          '0 subordinate ids matched'
+          not in (item.stdout | default(''))
+        - >-
+          'Number of entries returned 0'
+          not in (item.stdout | default(''))
+
+    - name: PHASE 14 | Record users missing subordinate IDs
+      ansible.builtin.set_fact:
+        idm_users_missing_subids: >-
+          {{
+            idm_users_missing_subids
+            +
+            [
+              item.item
+            ]
+          }}
+
+      loop: "{{ idm_new_user_subid_queries.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+      when:
+        - not (item.skipped | default(false))
+        - >-
+          (
+            item.rc == 1
+          )
+          or
+          (
+            '0 subordinate ids matched'
+            in (item.stdout | default(''))
+          )
+          or
+          (
+            'Number of entries returned 0'
+            in (item.stdout | default(''))
+          )
+
+    - name: PHASE 14 | Display subordinate-ID allocation plan
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Users with existing subordinate IDs:
+            {{
+              idm_users_with_existing_subids
+              | join(', ')
+              | default('None', true)
+            }}
+          - >-
+            Users requiring subordinate IDs:
+            {{
+              idm_users_missing_subids
+              | join(', ')
+              | default('None', true)
+            }}
+
+    ###############################################################################
+    # PHASE 15
+    # Generate only missing subordinate UID/GID ranges
+    ###############################################################################
+
+    - name: PHASE 15 | Generate missing subordinate IDs
       ansible.builtin.command:
         argv:
           - ipa
           - subid-generate
-          - "--owner={{ item.item }}"
+          - "--owner={{ item }}"
       register: idm_new_user_subid_generation
-      changed_when: idm_new_user_subid_generation.rc == 0
+      changed_when:
+        - idm_new_user_subid_generation.rc == 0
+
+      # If another process creates the range between the query and this task,
+      # treat "already exists" as a successful reconciliation.
+
       failed_when:
         - idm_new_user_subid_generation.rc != 0
         - >-
@@ -879,29 +1013,17 @@
             | default('')
             | lower
           )
-      loop: "{{ idm_new_user_subid_queries.results | default([]) }}"
+
+      loop: "{{ idm_users_missing_subids }}"
       loop_control:
-        label: "{{ item.item }}"
-      when:
-        - not (item.skipped | default(false))
-        - >-
-          (
-            'Number of entries returned 0'
-            in (item.stdout | default(''))
-          )
-          or
-          (
-            '0 subordinate ids matched'
-            in (item.stdout | default(''))
-          )
+        label: "{{ item }}"
 
+    ###############################################################################
+    # PHASE 16
+    # Validate final subordinate UID/GID ranges
+    ###############################################################################
 
-    ###########################################################################
-    # PHASE 15
-    # Validate final subordinate-ID assignments
-    ###########################################################################
-
-    - name: PHASE 15 | Query final subordinate-ID assignments
+    - name: PHASE 16 | Query final subordinate-ID assignments
       ansible.builtin.command:
         argv:
           - ipa
@@ -910,38 +1032,50 @@
       register: idm_new_user_subid_validation
       changed_when: false
       failed_when: false
+
       loop: "{{ idm_new_usernames }}"
       loop_control:
         label: "{{ item }}"
+
       when:
         - idm_generate_user_subids | bool
 
-
-    - name: PHASE 15 | Validate final subordinate-ID assignments
+    - name: PHASE 16 | Validate final subordinate-ID assignments
       ansible.builtin.assert:
         that:
           - item.rc == 0
-          - >-
-            'Number of entries returned 0'
-            not in (item.stdout | default(''))
+
           - >-
             '0 subordinate ids matched'
             not in (item.stdout | default(''))
+
+          - >-
+            'Number of entries returned 0'
+            not in (item.stdout | default(''))
+
           - >-
             item.stdout
             is search('SubUID range start:[ ]+[0-9]+')
+
           - >-
             item.stdout
             is search('SubUID range size:[ ]+[1-9][0-9]*')
+
           - >-
             item.stdout
             is search('SubGID range start:[ ]+[0-9]+')
+
           - >-
             item.stdout
             is search('SubGID range size:[ ]+[1-9][0-9]*')
+
         fail_msg: >-
           IdM user {{ item.item }} does not have a valid subordinate UID/GID
-          range.
+          range after reconciliation.
+
+          Return code:
+
+          {{ item.rc }}
 
           Output:
 
@@ -950,11 +1084,15 @@
           Error:
 
           {{ item.stderr | default('') }}
+
       loop: "{{ idm_new_user_subid_validation.results | default([]) }}"
       loop_control:
         label: "{{ item.item }}"
+
       when:
         - not (item.skipped | default(false))
+
+
 
 
     ###########################################################################

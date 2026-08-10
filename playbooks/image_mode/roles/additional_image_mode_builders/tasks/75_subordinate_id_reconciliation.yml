@@ -10,7 +10,7 @@
       - admin
     stdin: "{{ idm_admin_password }}"
   changed_when: false
-  no_log: true
+  no_log: false
 
 
 ###############################################################################

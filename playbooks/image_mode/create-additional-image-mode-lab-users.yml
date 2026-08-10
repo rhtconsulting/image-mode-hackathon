@@ -2,23 +2,22 @@
 ###############################################################################
 # Create Additional Image Mode Lab Users
 #
-# Discover existing user<number> accounts from the IdM ipausers group and
-# create the requested number of additional users beginning after the highest
-# allocated number.
+# Credential usage:
 #
-# Required AAP credential variables:
-#
+# Image Mode IdM Administrator Credential:
 #   idm_admin_username
 #   idm_admin_password
 #   ipaadmin_principal
 #   ipaadmin_password
 #
-# Required protected runtime variable:
+# Image Mode IdM Non-Admin Credential:
+#   idm_normal_username
+#   idm_normal_password
 #
-#   idm_default_user_password
+# idm_normal_password is assigned as the initial password for all newly
+# created users.
 #
 # Required survey variable:
-#
 #   number_of_users_var
 ###############################################################################
 
@@ -55,28 +54,30 @@
       }}
 
     ###########################################################################
-    # Initial password for newly created users
+    # IdM normal-user credential
     #
-    # This must be separate from the IdM administrator password.
+    # The password from this credential becomes the initial password for every
+    # newly created numbered user.
     ###########################################################################
+
+    idm_normal_credential_username: >-
+      {{
+        idm_normal_username
+        | default('', true)
+      }}
 
     idm_new_user_initial_password: >-
       {{
-        idm_default_user_password
+        idm_normal_password
         | default('', true)
       }}
 
     ###########################################################################
-    # User naming configuration
+    # User configuration
     ###########################################################################
 
     idm_user_prefix: "user"
     idm_user_number_width: 2
-
-    ###########################################################################
-    # Subordinate-ID configuration
-    ###########################################################################
-
     idm_generate_user_subids: true
 
 
@@ -84,10 +85,10 @@
 
     ###########################################################################
     # PHASE 01
-    # Validate runtime variables
+    # Validate runtime configuration
     ###########################################################################
 
-    - name: PHASE 01 | Validate requested number of additional users
+    - name: PHASE 01 | Validate requested number of users
       ansible.builtin.assert:
         that:
           - number_of_users_var is defined
@@ -114,7 +115,14 @@
             | string
             | length > 0
           }}
-        idm_default_user_password_available: >-
+        idm_normal_username_available: >-
+          {{
+            idm_normal_credential_username
+            | string
+            | trim
+            | length > 0
+          }}
+        idm_normal_password_available: >-
           {{
             idm_new_user_initial_password
             | string
@@ -131,8 +139,8 @@
         fail_msg: >-
           The IdM administrator credential was not injected into this job.
 
-          Attach the Image Mode IdM Administrator Credential. Its injector
-          must provide:
+          Attach Image Mode IdM Administrator Credential. Its credential
+          injector must provide:
 
             idm_admin_username
             idm_admin_password
@@ -140,52 +148,29 @@
             ipaadmin_password
 
 
-    - name: PHASE 01 | Validate initial user password
+    - name: PHASE 01 | Validate IdM normal-user credential
       ansible.builtin.assert:
         that:
-          - idm_default_user_password_available | bool
+          - idm_normal_username_available | bool
+          - idm_normal_password_available | bool
         fail_msg: >-
-          idm_default_user_password was not supplied.
+          The IdM normal-user credential was not injected into this job.
 
-          The initial password for newly created users must be supplied
-          separately from the IdM administrator password.
+          Attach Image Mode IdM Non-Admin Credential. Its credential
+          injector must provide:
 
+            idm_normal_username
+            idm_normal_password
 
-    - name: PHASE 01 | Validate required IdM commands
-      ansible.builtin.command:
-        argv:
-          - command
-          - -v
-          - "{{ item }}"
-      register: idm_required_command_check
-      changed_when: false
-      failed_when: false
-      loop:
-        - kinit
-        - klist
-        - kdestroy
-        - ipa
-      loop_control:
-        label: "{{ item }}"
-
-
-    - name: PHASE 01 | Validate required commands are installed
-      ansible.builtin.assert:
-        that:
-          - item.rc == 0
-        fail_msg: >-
-          Required command {{ item.item }} is not installed on
-          {{ inventory_hostname }}.
-      loop: "{{ idm_required_command_check.results }}"
-      loop_control:
-        label: "{{ item.item }}"
+          idm_normal_password is used as the initial password for every
+          newly created Image Mode Lab user.
 
 
   tasks:
 
     ###########################################################################
     # PHASE 02
-    # Authenticate to IdM
+    # Authenticate as the IdM administrator
     ###########################################################################
 
     - name: PHASE 02 | Obtain IdM administrator Kerberos authentication
@@ -206,20 +191,19 @@
         that:
           - idm_admin_kinit.rc | default(1) == 0
         fail_msg: >-
-          Kerberos authentication failed for the injected IdM administrator
-          account.
+          Kerberos authentication failed for the injected IdM administrator.
 
           Verify:
 
             - Image Mode IdM Administrator Credential is attached
-            - idm_admin_username contains the administrator username
+            - idm_admin_username contains the correct username
             - idm_admin_password contains the correct password
             - IdM DNS resolution is working
             - system time is synchronized
             - /etc/krb5.conf is configured correctly
 
 
-    - name: PHASE 02 | Verify active Kerberos ticket
+    - name: PHASE 02 | Verify active administrator Kerberos ticket
       ansible.builtin.command:
         argv:
           - klist
@@ -229,18 +213,18 @@
       failed_when: false
 
 
-    - name: PHASE 02 | Validate active Kerberos ticket
+    - name: PHASE 02 | Validate active administrator Kerberos ticket
       ansible.builtin.assert:
         that:
           - idm_admin_klist.rc == 0
         fail_msg: >-
-          IdM administrator authentication returned successfully, but no
-          active Kerberos ticket was found.
+          IdM administrator authentication completed, but no active Kerberos
+          ticket was found.
 
 
     ###########################################################################
     # PHASE 03
-    # Query current ipausers membership
+    # Query ipausers
     ###########################################################################
 
     - name: PHASE 03 | Query current ipausers group
@@ -303,10 +287,7 @@
         msg:
           - >-
             Existing numbered users:
-            {{
-              idm_existing_numbered_users
-              | length
-            }}
+            {{ idm_existing_numbered_users | length }}
           - >-
             Usernames:
             {{
@@ -318,7 +299,7 @@
 
     ###########################################################################
     # PHASE 05
-    # Extract existing numeric suffixes
+    # Extract numeric suffixes
     ###########################################################################
 
     - name: PHASE 05 | Initialize existing user-number list
@@ -326,7 +307,7 @@
         idm_existing_user_numbers: []
 
 
-    - name: PHASE 05 | Extract numeric suffixes from existing users
+    - name: PHASE 05 | Extract numeric suffixes
       ansible.builtin.set_fact:
         idm_existing_user_numbers: >-
           {{
@@ -350,7 +331,7 @@
 
     ###########################################################################
     # PHASE 06
-    # Determine highest allocated user number
+    # Determine the highest existing user
     ###########################################################################
 
     - name: PHASE 06 | Determine highest existing user number
@@ -372,7 +353,7 @@
 
     ###########################################################################
     # PHASE 07
-    # Determine next available user number
+    # Determine the next available number
     ###########################################################################
 
     - name: PHASE 07 | Determine next available user number
@@ -385,7 +366,7 @@
 
     ###########################################################################
     # PHASE 08
-    # Build requested user-number range
+    # Build requested numeric range
     ###########################################################################
 
     - name: PHASE 08 | Build additional user-number range
@@ -418,7 +399,7 @@
 
     ###########################################################################
     # PHASE 09
-    # Build new IdM user definitions
+    # Build user definitions
     ###########################################################################
 
     - name: PHASE 09 | Initialize new user definitions
@@ -491,7 +472,10 @@
       ansible.builtin.assert:
         that:
           - idm_new_users | length == number_of_users_var | int
-          - idm_new_usernames | unique | length == idm_new_usernames | length
+          - >-
+            idm_new_usernames | unique | length
+            ==
+            idm_new_usernames | length
           - >-
             (
               idm_new_usernames
@@ -506,7 +490,7 @@
 
     ###########################################################################
     # PHASE 10
-    # Display allocation plan
+    # Display user-allocation plan
     ###########################################################################
 
     - name: PHASE 10 | Display current user allocation
@@ -536,7 +520,7 @@
 
     ###########################################################################
     # PHASE 11
-    # Create users in IdM
+    # Create users
     ###########################################################################
 
     - name: PHASE 11 | Create additional Image Mode Lab users
@@ -565,16 +549,16 @@
 
               Verify:
 
-                - Image Mode IdM Administrator Credential is attached
+                - both IdM credentials are attached
                 - freeipa.ansible_freeipa is installed in the execution environment
-                - idm_default_user_password satisfies the IdM password policy
+                - idm_normal_password satisfies the IdM password policy
                 - the generated usernames do not already exist
                 - the IdM administrator has user-creation permission
 
 
     ###########################################################################
     # PHASE 12
-    # Verify newly created users
+    # Verify created users
     ###########################################################################
 
     - name: PHASE 12 | Query newly created users
@@ -618,7 +602,7 @@
 
     ###########################################################################
     # PHASE 13
-    # Reconcile subordinate UID/GID ranges
+    # Query subordinate UID/GID ranges
     ###########################################################################
 
     - name: PHASE 13 | Query subordinate IDs for new users
@@ -654,7 +638,12 @@
         - not (item.skipped | default(false))
 
 
-    - name: PHASE 13 | Generate missing subordinate IDs
+    ###########################################################################
+    # PHASE 14
+    # Generate missing subordinate UID/GID ranges
+    ###########################################################################
+
+    - name: PHASE 14 | Generate missing subordinate IDs
       ansible.builtin.command:
         argv:
           - ipa
@@ -698,11 +687,11 @@
 
 
     ###########################################################################
-    # PHASE 14
+    # PHASE 15
     # Validate subordinate UID/GID ranges
     ###########################################################################
 
-    - name: PHASE 14 | Query final subordinate-ID assignments
+    - name: PHASE 15 | Query final subordinate-ID assignments
       ansible.builtin.command:
         argv:
           - ipa
@@ -718,7 +707,7 @@
         - idm_generate_user_subids | bool
 
 
-    - name: PHASE 14 | Validate final subordinate-ID assignments
+    - name: PHASE 15 | Validate final subordinate-ID assignments
       ansible.builtin.assert:
         that:
           - item.rc == 0
@@ -759,11 +748,11 @@
 
 
     ###########################################################################
-    # PHASE 15
+    # PHASE 16
     # Determine final user allocation
     ###########################################################################
 
-    - name: PHASE 15 | Determine final user number
+    - name: PHASE 16 | Determine final user number
       ansible.builtin.set_fact:
         idm_final_user_number: >-
           {{
@@ -776,11 +765,11 @@
 
 
     ###########################################################################
-    # PHASE 16
+    # PHASE 17
     # Publish workflow results
     ###########################################################################
 
-    - name: PHASE 16 | Publish created-user workflow artifacts
+    - name: PHASE 17 | Publish created-user workflow artifacts
       ansible.builtin.set_stats:
         data:
           idm_created_usernames: "{{ idm_new_usernames }}"
@@ -791,7 +780,7 @@
         per_host: false
 
 
-    - name: PHASE 16 | Display final user-creation results
+    - name: PHASE 17 | Display final user-creation results
       ansible.builtin.debug:
         msg:
           - >-
@@ -815,6 +804,9 @@
               )
             }}
           - >-
+            Initial password source:
+            Image Mode IdM Non-Admin Credential
+          - >-
             Subordinate IDs reconciled:
             {{ idm_generate_user_subids | bool }}
 
@@ -822,11 +814,11 @@
   post_tasks:
 
     ###########################################################################
-    # PHASE 17
-    # Remove administrator Kerberos authentication
+    # PHASE 18
+    # Remove Kerberos authentication
     ###########################################################################
 
-    - name: PHASE 17 | Destroy IdM administrator Kerberos authentication
+    - name: PHASE 18 | Destroy IdM administrator Kerberos authentication
       ansible.builtin.command:
         argv:
           - kdestroy

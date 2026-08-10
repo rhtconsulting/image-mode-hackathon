@@ -397,96 +397,100 @@
           number of users.
 
 
-    ###########################################################################
+    ###############################################################################
     # PHASE 09
     # Build user definitions
-    ###########################################################################
+    ###############################################################################
 
     - name: PHASE 09 | Initialize new user definitions
       ansible.builtin.set_fact:
         idm_new_users: []
 
-
     - name: PHASE 09 | Build new Image Mode Lab user definitions
       ansible.builtin.set_fact:
         idm_new_users: >-
           {{
-            idm_new_users
-            +
-            [
-              {
-                'name':
-                  idm_user_prefix
-                  ~
-                  (
-                    '%0*d'
-                    %
-                    [
-                      idm_user_number_width | int,
-                      item | int
-                    ]
-                  ),
-                'first': 'User',
-                'last':
-                  (
-                    '%0*d'
-                    %
-                    [
-                      idm_user_number_width | int,
-                      item | int
-                    ]
-                  ),
-                'password': idm_new_user_initial_password
-              }
-            ]
+          idm_new_users
+          +
+          [
+          {
+          'name':
+          idm_user_prefix
+          ~
+          idm_formatted_user_number,
+          'first': 'User',
+          'last':
+          idm_formatted_user_number,
+          'password':
+          idm_new_user_initial_password
+          }
+          ]
+          }}
+      vars:
+        idm_formatted_user_number: >-
+          {{
+          '%0*d'
+          | format(
+          idm_user_number_width | int,
+          item | int
+          )
           }}
       loop: "{{ idm_new_user_numbers }}"
       loop_control:
         label: >-
           {{
-            idm_user_prefix
-            ~
-            (
-              '%0*d'
-              %
-              [
-                idm_user_number_width | int,
-                item | int
-              ]
-            )
+          idm_user_prefix
+          ~
+          (
+          '%0*d'
+          | format(
+          idm_user_number_width | int,
+          item | int
+          )
+          )
           }}
-      no_log: false
-
+      no_log: true
 
     - name: PHASE 09 | Build safe new-user name list
       ansible.builtin.set_fact:
         idm_new_usernames: >-
           {{
-            idm_new_users
-            | map(attribute='name')
-            | list
+          idm_new_users
+          | map(attribute='name')
+          | list
           }}
-
 
     - name: PHASE 09 | Validate generated user definitions
       ansible.builtin.assert:
         that:
-          - idm_new_users | length == number_of_users_var | int
+          - >-
+            idm_new_users | length
+            ==
+            number_of_users_var | int
           - >-
             idm_new_usernames | unique | length
             ==
             idm_new_usernames | length
           - >-
             (
-              idm_new_usernames
-              | intersect(idm_existing_numbered_users)
-              | length
+            idm_new_usernames
+            | intersect(idm_existing_numbered_users)
+            | length
             )
             == 0
         fail_msg: >-
-          Generated IdM user definitions are invalid or conflict with
-          existing numbered users.
+          Generated IdM user definitions are invalid or conflict with existing
+          numbered users.
 
+    - name: PHASE 09 | Display generated usernames
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Generated user count:
+            {{ idm_new_usernames | length }}
+          - >-
+            Generated usernames:
+            {{ idm_new_usernames }}
 
     ###########################################################################
     # PHASE 10

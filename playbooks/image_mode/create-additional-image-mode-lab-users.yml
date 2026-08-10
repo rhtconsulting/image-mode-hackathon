@@ -455,7 +455,7 @@
               ]
             )
           }}
-      no_log: true
+      no_log: false
 
 
     - name: PHASE 09 | Build safe new-user name list

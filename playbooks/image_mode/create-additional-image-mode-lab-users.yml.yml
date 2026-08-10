@@ -34,7 +34,7 @@
 ###############################################################################
 
 - name: Create Additional Image Mode Lab Users
-  hosts: idm
+  hosts: idm-1*
   become: true
   gather_facts: false
 

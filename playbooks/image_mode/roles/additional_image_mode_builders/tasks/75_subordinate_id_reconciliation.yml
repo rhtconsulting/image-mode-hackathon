@@ -4,7 +4,7 @@
     argv: [kinit, admin]
     stdin: "{{ idm_vault_admin_password }}"
   changed_when: false
-  no_log: true
+  no_log: false
 
 - name: Initialize managed user records
   ansible.builtin.set_fact:

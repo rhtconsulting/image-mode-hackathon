@@ -2,7 +2,7 @@
 - name: Authenticate to IdM for identity reconciliation
   ansible.builtin.command:
     argv: [kinit, admin]
-    stdin: "{{ idm_vault_admin_password }}"
+    stdin: "{{ idm_admin_password }}"
   changed_when: false
   no_log: false
 

@@ -1,62 +1,187 @@
 ---
+###############################################################################
+# Authenticate to IdM
+###############################################################################
+
 - name: Authenticate to IdM for identity reconciliation
   ansible.builtin.command:
-    argv: [kinit, admin]
-    stdin: "{{ idm_vault_admin_password }}"
+    argv:
+      - kinit
+      - >-
+        {{
+          idm_admin_username
+          | default(
+              ipaadmin_principal
+              | default('admin', true),
+              true
+            )
+        }}
+    stdin: >-
+      {{
+        idm_admin_password
+        | default(
+            ipaadmin_password
+            | default(
+                idm_vault_admin_password
+                | default('', true),
+                true
+              ),
+            true
+          )
+      }}
+    stdin_add_newline: true
+  register: idm_identity_kinit
   changed_when: false
+  failed_when: false
   no_log: true
+
+
+- name: Validate IdM administrator authentication
+  ansible.builtin.assert:
+    that:
+      - idm_identity_kinit.rc == 0
+    fail_msg: >-
+      Unable to authenticate to IdM using the injected administrator
+      credential.
+
+
+###############################################################################
+# Build explicitly managed users
+###############################################################################
 
 - name: Initialize managed user records
   ansible.builtin.set_fact:
     idm_managed_users: []
 
+
 - name: Build ordinary user records
   ansible.builtin.set_fact:
     idm_managed_users: >-
-      {{ idm_managed_users + [{
-        'uid': item.key,
-        'first_name': item.value.first_name | default(item.key),
-        'last_name': item.value.last_name | default('User'),
-        'groups': item.value.groups | default([]),
-        'admin': false
-      }] }}
-  loop: "{{ lab_users | default({}) | dict2items }}"
+      {{
+        idm_managed_users
+        +
+        [
+          {
+            'uid': item.key,
+            'first_name':
+              item.value.first_name
+              | default(item.key, true),
+            'last_name':
+              item.value.last_name
+              | default('User', true),
+            'groups':
+              item.value.groups
+              | default([], true),
+            'admin': false
+          }
+        ]
+      }}
+  loop: >-
+    {{
+      lab_users
+      | default({}, true)
+      | dict2items
+    }}
+  loop_control:
+    label: "{{ item.key }}"
+
 
 - name: Build administrator user records
   ansible.builtin.set_fact:
     idm_managed_users: >-
-      {{ idm_managed_users + [{
-        'uid': item,
-        'first_name': item,
-        'last_name': 'User',
-        'groups': [idm_admin_group],
-        'admin': true
-      }] }}
-  loop: "{{ idm_users | default([]) }}"
+      {{
+        idm_managed_users
+        +
+        [
+          {
+            'uid': item,
+            'first_name': item,
+            'last_name': 'User',
+            'groups': [idm_admin_group],
+            'admin': true
+          }
+        ]
+      }}
+  loop: "{{ idm_users | default([], true) }}"
+  loop_control:
+    label: "{{ item }}"
+
 
 - name: Validate unique managed user IDs
   ansible.builtin.assert:
     that:
-      - idm_managed_users | length > 0
       - >-
-        idm_managed_users | map(attribute='uid') | unique | length
-        == idm_managed_users | length
+        (
+          idm_managed_users
+          | map(attribute='uid')
+          | unique
+          | list
+          | length
+        )
+        ==
+        (
+          idm_managed_users
+          | length
+        )
+    fail_msg: >-
+      Duplicate managed IdM user IDs were supplied:
+
+      {{
+        idm_managed_users
+        | map(attribute='uid')
+        | list
+      }}
+
+
+###############################################################################
+# Reconcile explicitly managed groups and users
+###############################################################################
 
 - name: Build supplemental group list
   ansible.builtin.set_fact:
     idm_managed_groups: >-
-      {{ idm_managed_users | map(attribute='groups') | flatten | unique | list }}
+      {{
+        idm_managed_users
+        | map(attribute='groups')
+        | flatten
+        | reject('equalto', '')
+        | unique
+        | list
+      }}
+
 
 - name: Ensure supplemental groups exist
   ansible.builtin.command:
-    argv: [ipa, group-add, "{{ item }}", "--desc=Ansible-managed IdM group"]
+    argv:
+      - ipa
+      - group-add
+      - "{{ item }}"
+      - "--desc=Ansible-managed IdM group"
   register: idm_group_create
-  changed_when: idm_group_create.rc == 0
+  changed_when:
+    - idm_group_create.rc == 0
   failed_when:
     - idm_group_create.rc != 0
-    - "'already exists' not in (idm_group_create.stdout | default(''))"
-    - "'already exists' not in (idm_group_create.stderr | default(''))"
+    - >-
+      'already exists'
+      not in
+      (
+        idm_group_create.stdout
+        | default('')
+        | lower
+      )
+    - >-
+      'already exists'
+      not in
+      (
+        idm_group_create.stderr
+        | default('')
+        | lower
+      )
   loop: "{{ idm_managed_groups }}"
+  loop_control:
+    label: "{{ item }}"
+
 
 - name: Ensure managed users exist
   ansible.builtin.command:
@@ -67,163 +192,548 @@
       - "--first={{ item.first_name }}"
       - "--last={{ item.last_name }}"
   register: idm_user_create
-  changed_when: idm_user_create.rc == 0
+  changed_when:
+    - idm_user_create.rc == 0
   failed_when:
     - idm_user_create.rc != 0
-    - "'already exists' not in (idm_user_create.stdout | default(''))"
-    - "'already exists' not in (idm_user_create.stderr | default(''))"
+    - >-
+      'already exists'
+      not in
+      (
+        idm_user_create.stdout
+        | default('')
+        | lower
+      )
+    - >-
+      'already exists'
+      not in
+      (
+        idm_user_create.stderr
+        | default('')
+        | lower
+      )
   loop: "{{ idm_managed_users }}"
   loop_control:
     label: "{{ item.uid }}"
 
-- name: Set initial passwords only for newly created users
+
+- name: Set initial passwords for newly created users
   ansible.builtin.command:
-    argv: [ipa, passwd, "{{ item.item.uid }}"]
+    argv:
+      - ipa
+      - passwd
+      - "{{ item.item.uid }}"
     stdin: |
       {{ idm_default_user_password }}
       {{ idm_default_user_password }}
-  no_log: true
   changed_when: true
+  no_log: true
   loop: "{{ idm_user_create.results | default([]) }}"
-  when: item.rc == 0
-
-###############################################################################
-# Reconcile subordinate UID/GID ranges for rootless Podman
-###############################################################################
-
-- name: Query subordinate ID ranges for managed users
-  ansible.builtin.command:
-    argv:
-      - ipa
-      - subid-find
-      - "--owner={{ item.uid }}"
-  register: idm_managed_user_subid_query
-  changed_when: false
-  failed_when: idm_managed_user_subid_query.rc != 0
-  loop: "{{ idm_managed_users }}"
-  loop_control:
-    label: "{{ item.uid }}"
-  when: idm_manage_user_subids | default(true) | bool
-
-- name: Generate missing subordinate ID ranges for managed users
-  ansible.builtin.command:
-    argv:
-      - ipa
-      - subid-generate
-      - "--owner={{ item.item.uid }}"
-  register: idm_managed_user_subid_generate
-  changed_when: idm_managed_user_subid_generate.rc == 0
-  failed_when: idm_managed_user_subid_generate.rc != 0
-  loop: "{{ idm_managed_user_subid_query.results | default([]) }}"
   loop_control:
     label: "{{ item.item.uid }}"
   when:
-    - not item.skipped | default(false)
-    - >-
-      'Number of entries returned 0' in (item.stdout | default(''))
-      or
-      '0 subordinate ids matched' in (item.stdout | default(''))
+    - item.rc == 0
 
-- name: Re-query subordinate ID ranges for managed users
-  ansible.builtin.command:
-    argv:
-      - ipa
-      - subid-find
-      - "--owner={{ item.uid }}"
-  register: idm_managed_user_subid_validation
-  changed_when: false
-  failed_when: idm_managed_user_subid_validation.rc != 0
-  loop: "{{ idm_managed_users }}"
-  loop_control:
-    label: "{{ item.uid }}"
-  when: idm_manage_user_subids | default(true) | bool
-
-- name: Validate subordinate ID ranges for managed users
-  ansible.builtin.assert:
-    that:
-      - >-
-        'Number of entries returned 0' not in (item.stdout | default(''))
-      - >-
-        '0 subordinate ids matched' not in (item.stdout | default(''))
-      - item.stdout is search('SubUID range size:[ ]+[1-9][0-9]*')
-      - item.stdout is search('SubGID range size:[ ]+[1-9][0-9]*')
-    fail_msg: >-
-      IdM user {{ item.item.uid }} does not have a valid subordinate UID/GID
-      range after reconciliation. Output: {{ item.stdout | default('') }}
-  loop: "{{ idm_managed_user_subid_validation.results | default([]) }}"
-  loop_control:
-    label: "{{ item.item.uid }}"
-  when: not item.skipped | default(false)
 
 ###############################################################################
-# Group and sudo-rule reconciliation
+# Reconcile group memberships
 ###############################################################################
 
 - name: Ensure supplemental group memberships
   ansible.builtin.command:
-    argv: [ipa, group-add-member, "{{ item.1 }}", "--users={{ item.0.uid }}"]
+    argv:
+      - ipa
+      - group-add-member
+      - "{{ item.1 }}"
+      - "--users={{ item.0.uid }}"
   register: idm_membership_update
   changed_when: >-
-    'Number of members added 1' in (idm_membership_update.stdout | default(''))
+    'Number of members added 1'
+    in
+    (
+      idm_membership_update.stdout
+      | default('')
+    )
   failed_when:
     - idm_membership_update.rc != 0
     - >-
       'already a member'
-      not in (idm_membership_update.stdout | default('') | lower)
+      not in
+      (
+        idm_membership_update.stdout
+        | default('')
+        | lower
+      )
     - >-
       'already a member'
-      not in (idm_membership_update.stderr | default('') | lower)
+      not in
+      (
+        idm_membership_update.stderr
+        | default('')
+        | lower
+      )
   loop: "{{ idm_managed_users | subelements('groups') }}"
   loop_control:
     label: "{{ item.0.uid }} -> {{ item.1 }}"
 
-# FreeIPA normally adds new accounts to ipausers automatically. Reconcile the
-# membership anyway, treating its rc=1 "already a member" response as success.
-- name: Ensure ordinary users are members of ipausers
+
+- name: Ensure ordinary managed users are members of ipausers
   ansible.builtin.command:
-    argv: [ipa, group-add-member, ipausers, "--users={{ item.uid }}"]
+    argv:
+      - ipa
+      - group-add-member
+      - ipausers
+      - "--users={{ item.uid }}"
   register: idm_ipausers_update
   changed_when: >-
     'Number of members added 1'
-    in (idm_ipausers_update.stdout | default(''))
+    in
+    (
+      idm_ipausers_update.stdout
+      | default('')
+    )
   failed_when:
     - idm_ipausers_update.rc != 0
     - >-
       'already a member'
-      not in (idm_ipausers_update.stdout | default('') | lower)
+      not in
+      (
+        idm_ipausers_update.stdout
+        | default('')
+        | lower
+      )
     - >-
       'already a member'
-      not in (idm_ipausers_update.stderr | default('') | lower)
-  loop: "{{ idm_managed_users | rejectattr('admin') | list }}"
+      not in
+      (
+        idm_ipausers_update.stderr
+        | default('')
+        | lower
+      )
+  loop: >-
+    {{
+      idm_managed_users
+      | rejectattr('admin')
+      | list
+    }}
   loop_control:
     label: "{{ item.uid }}"
 
+
+###############################################################################
+# Discover every user in ipausers
+#
+# This includes users created:
+#
+# - by this task file;
+# - by Terraform;
+# - by the additional-user workflow;
+# - manually;
+# - by any other IdM automation.
+###############################################################################
+
+- name: Query complete ipausers membership
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - group-show
+      - ipausers
+      - --all
+      - --raw
+  register: idm_all_ipausers_group
+  changed_when: false
+  failed_when:
+    - idm_all_ipausers_group.rc != 0
+
+
+- name: Extract all ipausers usernames
+  ansible.builtin.set_fact:
+    idm_all_ipauser_usernames: >-
+      {{
+        idm_all_ipausers_group.stdout_lines
+        | default([])
+        | map('trim')
+        | select('match', '^member_user:[ ]*[^ ]+$')
+        | map(
+            'regex_replace',
+            '^member_user:[ ]*',
+            ''
+          )
+        | reject('equalto', '')
+        | unique
+        | sort
+        | list
+      }}
+
+
+- name: Validate ipausers discovery
+  ansible.builtin.assert:
+    that:
+      - idm_all_ipauser_usernames | length > 0
+    fail_msg: >-
+      No users were discovered in the IdM ipausers group.
+
+      Output:
+
+      {{ idm_all_ipausers_group.stdout | default('') }}
+
+
+- name: Display discovered ipausers accounts
+  ansible.builtin.debug:
+    msg:
+      - >-
+        Total ipausers accounts:
+        {{ idm_all_ipauser_usernames | length }}
+      - >-
+        Users:
+        {{ idm_all_ipauser_usernames | join(', ') }}
+
+
+###############################################################################
+# Query subordinate UID/GID ranges for every ipausers account
+#
+# FreeIPA returns:
+#
+# rc=0: one or more subordinate-ID records exist
+# rc=1: query succeeded, but no subordinate-ID record exists
+###############################################################################
+
+- name: Query subordinate ID ranges for all ipausers
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - subid-find
+      - "--owner={{ item }}"
+  register: idm_all_ipausers_subid_query
+  changed_when: false
+  failed_when:
+    - idm_all_ipausers_subid_query.rc not in [0, 1]
+  loop: "{{ idm_all_ipauser_usernames }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - idm_manage_user_subids | default(true) | bool
+
+
+- name: Validate subordinate-ID query results
+  ansible.builtin.assert:
+    that:
+      - item.rc in [0, 1]
+      - >-
+        (
+          item.rc == 0
+        )
+        or
+        (
+          item.rc == 1
+          and
+          (
+            (
+              '0 subordinate ids matched'
+              in (item.stdout | default(''))
+            )
+            or
+            (
+              'Number of entries returned 0'
+              in (item.stdout | default(''))
+            )
+          )
+        )
+    fail_msg: >-
+      Unable to determine the subordinate-ID state for {{ item.item }}.
+
+      Return code:
+
+      {{ item.rc }}
+
+      Output:
+
+      {{ item.stdout | default('') }}
+
+      Error:
+
+      {{ item.stderr | default('') }}
+  loop: "{{ idm_all_ipausers_subid_query.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - not (item.skipped | default(false))
+
+
+###############################################################################
+# Classify existing and missing subordinate-ID assignments
+###############################################################################
+
+- name: Initialize subordinate-ID reconciliation lists
+  ansible.builtin.set_fact:
+    idm_ipausers_with_existing_subids: []
+    idm_ipausers_missing_subids: []
+
+
+- name: Record ipausers with existing subordinate IDs
+  ansible.builtin.set_fact:
+    idm_ipausers_with_existing_subids: >-
+      {{
+        idm_ipausers_with_existing_subids
+        +
+        [
+          item.item
+        ]
+      }}
+  loop: "{{ idm_all_ipausers_subid_query.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - not (item.skipped | default(false))
+    - item.rc == 0
+    - >-
+      '0 subordinate ids matched'
+      not in (item.stdout | default(''))
+    - >-
+      'Number of entries returned 0'
+      not in (item.stdout | default(''))
+
+
+- name: Record ipausers missing subordinate IDs
+  ansible.builtin.set_fact:
+    idm_ipausers_missing_subids: >-
+      {{
+        idm_ipausers_missing_subids
+        +
+        [
+          item.item
+        ]
+      }}
+  loop: "{{ idm_all_ipausers_subid_query.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - not (item.skipped | default(false))
+    - >-
+      (
+        item.rc == 1
+      )
+      or
+      (
+        '0 subordinate ids matched'
+        in (item.stdout | default(''))
+      )
+      or
+      (
+        'Number of entries returned 0'
+        in (item.stdout | default(''))
+      )
+
+
+- name: Display subordinate-ID reconciliation plan
+  ansible.builtin.debug:
+    msg:
+      - >-
+        Existing subordinate-ID assignments:
+        {{
+          idm_ipausers_with_existing_subids
+          | length
+        }}
+      - >-
+        Missing subordinate-ID assignments:
+        {{
+          idm_ipausers_missing_subids
+          | length
+        }}
+      - >-
+        Users requiring generation:
+        {{
+          idm_ipausers_missing_subids
+          | join(', ')
+          | default('None', true)
+        }}
+
+
+###############################################################################
+# Generate only missing subordinate-ID ranges
+###############################################################################
+
+- name: Generate missing subordinate ID ranges
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - subid-generate
+      - "--owner={{ item }}"
+  register: idm_ipausers_subid_generation
+  changed_when:
+    - idm_ipausers_subid_generation.rc == 0
+  failed_when:
+    - idm_ipausers_subid_generation.rc != 0
+    - >-
+      'already exists'
+      not in
+      (
+        idm_ipausers_subid_generation.stdout
+        | default('')
+        | lower
+      )
+    - >-
+      'already exists'
+      not in
+      (
+        idm_ipausers_subid_generation.stderr
+        | default('')
+        | lower
+      )
+  loop: "{{ idm_ipausers_missing_subids }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - idm_manage_user_subids | default(true) | bool
+
+
+###############################################################################
+# Validate every ipausers account after reconciliation
+###############################################################################
+
+- name: Query final subordinate ID ranges for all ipausers
+  ansible.builtin.command:
+    argv:
+      - ipa
+      - subid-find
+      - "--owner={{ item }}"
+  register: idm_all_ipausers_subid_validation
+  changed_when: false
+  failed_when: false
+  loop: "{{ idm_all_ipauser_usernames }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - idm_manage_user_subids | default(true) | bool
+
+
+- name: Validate subordinate ID ranges for all ipausers
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - >-
+        '0 subordinate ids matched'
+        not in (item.stdout | default(''))
+      - >-
+        'Number of entries returned 0'
+        not in (item.stdout | default(''))
+      - >-
+        item.stdout
+        is search('SubUID range start:[ ]+[0-9]+')
+      - >-
+        item.stdout
+        is search('SubUID range size:[ ]+[1-9][0-9]*')
+      - >-
+        item.stdout
+        is search('SubGID range start:[ ]+[0-9]+')
+      - >-
+        item.stdout
+        is search('SubGID range size:[ ]+[1-9][0-9]*')
+    fail_msg: >-
+      IdM user {{ item.item }} does not have a valid subordinate UID/GID
+      range after reconciliation.
+
+      Return code:
+
+      {{ item.rc }}
+
+      Output:
+
+      {{ item.stdout | default('') }}
+
+      Error:
+
+      {{ item.stderr | default('') }}
+  loop: "{{ idm_all_ipausers_subid_validation.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - not (item.skipped | default(false))
+
+
+###############################################################################
+# Reconcile delegated administrators and sudo
+###############################################################################
+
+- name: Resolve delegated administrator users
+  ansible.builtin.set_fact:
+    idm_delegated_administrators: >-
+      {{
+        idm_managed_users
+        | selectattr('admin')
+        | list
+      }}
+
+
 - name: Nest delegated administrators in built-in admins
   ansible.builtin.command:
-    argv: [ipa, group-add-member, admins, "--groups={{ idm_admin_group }}"]
+    argv:
+      - ipa
+      - group-add-member
+      - admins
+      - "--groups={{ idm_admin_group }}"
   register: idm_console_admin_add
   changed_when: >-
-    'Number of members added 1' in (idm_console_admin_add.stdout | default(''))
+    'Number of members added 1'
+    in
+    (
+      idm_console_admin_add.stdout
+      | default('')
+    )
   failed_when:
     - idm_console_admin_add.rc != 0
     - >-
       'already a member'
-      not in (idm_console_admin_add.stdout | default('') | lower)
+      not in
+      (
+        idm_console_admin_add.stdout
+        | default('')
+        | lower
+      )
     - >-
       'already a member'
-      not in (idm_console_admin_add.stderr | default('') | lower)
+      not in
+      (
+        idm_console_admin_add.stderr
+        | default('')
+        | lower
+      )
+  when:
+    - idm_delegated_administrators | length > 0
 
-- name: Ensure the administrator sudo rule exists
+
+- name: Ensure administrator sudo rule exists
   ansible.builtin.command:
-    argv: [ipa, sudorule-add, "{{ idm_sudo_rule }}"]
+    argv:
+      - ipa
+      - sudorule-add
+      - "{{ idm_sudo_rule }}"
   register: idm_sudo_create
-  changed_when: idm_sudo_create.rc == 0
+  changed_when:
+    - idm_sudo_create.rc == 0
   failed_when:
     - idm_sudo_create.rc != 0
-    - "'already exists' not in (idm_sudo_create.stdout | default(''))"
-    - "'already exists' not in (idm_sudo_create.stderr | default(''))"
+    - >-
+      'already exists'
+      not in
+      (
+        idm_sudo_create.stdout
+        | default('')
+        | lower
+      )
+    - >-
+      'already exists'
+      not in
+      (
+        idm_sudo_create.stderr
+        | default('')
+        | lower
+      )
+  when:
+    - idm_delegated_administrators | length > 0
 
-- name: Configure the administrator sudo rule
+
+- name: Configure administrator sudo rule
   ansible.builtin.command:
     argv:
       - ipa
@@ -232,14 +742,28 @@
       - --hostcat=all
       - --cmdcat=all
   register: idm_sudo_modify
-  changed_when: "'Modified Sudo Rule' in (idm_sudo_modify.stdout | default(''))"
+  changed_when: >-
+    'Modified Sudo Rule'
+    in
+    (
+      idm_sudo_modify.stdout
+      | default('')
+    )
   failed_when:
     - idm_sudo_modify.rc != 0
     - >-
       'no modifications to be performed'
-      not in (idm_sudo_modify.stderr | default('') | lower)
+      not in
+      (
+        idm_sudo_modify.stderr
+        | default('')
+        | lower
+      )
+  when:
+    - idm_delegated_administrators | length > 0
 
-- name: Attach delegated administrators to the sudo rule
+
+- name: Attach delegated administrators to sudo rule
   ansible.builtin.command:
     argv:
       - ipa
@@ -248,9 +772,75 @@
       - "--groups={{ idm_admin_group }}"
   register: idm_sudo_member
   changed_when: >-
-    'Number of members added 1' in (idm_sudo_member.stdout | default(''))
+    'Number of members added 1'
+    in
+    (
+      idm_sudo_member.stdout
+      | default('')
+    )
   failed_when:
     - idm_sudo_member.rc != 0
-    - "'already a member' not in (idm_sudo_member.stdout | default('') | lower)"
-    - "'already a member' not in (idm_sudo_member.stderr | default('') | lower)"
+    - >-
+      'already a member'
+      not in
+      (
+        idm_sudo_member.stdout
+        | default('')
+        | lower
+      )
+    - >-
+      'already a member'
+      not in
+      (
+        idm_sudo_member.stderr
+        | default('')
+        | lower
+      )
+  when:
+    - idm_delegated_administrators | length > 0
 
+
+###############################################################################
+# Results
+###############################################################################
+
+- name: Publish subordinate-ID reconciliation results
+  ansible.builtin.set_stats:
+    data:
+      idm_ipausers_reconciled: "{{ idm_all_ipauser_usernames }}"
+      idm_ipausers_reconciled_count: >-
+        {{ idm_all_ipauser_usernames | length }}
+      idm_ipausers_existing_subid_count: >-
+        {{ idm_ipausers_with_existing_subids | length }}
+      idm_ipausers_generated_subid_count: >-
+        {{ idm_ipausers_missing_subids | length }}
+      idm_ipausers_generated_subids: "{{ idm_ipausers_missing_subids }}"
+    per_host: false
+
+
+- name: Display subordinate-ID reconciliation results
+  ansible.builtin.debug:
+    msg:
+      - >-
+        ipausers accounts processed:
+        {{ idm_all_ipauser_usernames | length }}
+      - >-
+        Existing subordinate-ID assignments:
+        {{ idm_ipausers_with_existing_subids | length }}
+      - >-
+        New subordinate-ID assignments:
+        {{ idm_ipausers_missing_subids | length }}
+      - "Status: every ipausers account has a validated SubUID/SubGID range"
+
+
+###############################################################################
+# Destroy administrator ticket
+###############################################################################
+
+- name: Destroy IdM administrator Kerberos authentication
+  ansible.builtin.command:
+    argv:
+      - kdestroy
+  changed_when: false
+  failed_when: false
+  no_log: true

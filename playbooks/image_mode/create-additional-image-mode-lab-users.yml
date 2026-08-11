@@ -746,6 +746,70 @@
     # Enforce and validate password expiration
     ###########################################################################
 
+    ###############################################################################
+    # PHASE 12
+    # Enforce password expiration and validate created users
+    ###############################################################################
+
+    - name: PHASE 12 | Enforce future password expiration
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - user-mod
+          - "{{ item }}"
+          - "--password-expiration={{ idm_new_user_password_expiration }}"
+      register: idm_password_expiration_updates
+      changed_when:
+        - idm_password_expiration_updates.rc == 0
+        - >-
+          'Modified user'
+          in
+          (
+            idm_password_expiration_updates.stdout
+            | default('')
+          )
+      failed_when:
+        - idm_password_expiration_updates.rc != 0
+        - >-
+          'no modifications to be performed'
+          not in
+          (
+            idm_password_expiration_updates.stderr
+            | default('')
+            | lower
+          )
+      loop: "{{ idm_new_usernames }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: PHASE 12 | Query newly created users
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - user-show
+          - "{{ item }}"
+          - --all
+          - --raw
+      register: idm_created_user_queries
+      changed_when: false
+      failed_when: false
+      loop: "{{ idm_new_usernames }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: PHASE 12 | Validate user-query task completed
+      ansible.builtin.assert:
+        that:
+          - idm_created_user_queries is defined
+          - idm_created_user_queries.results is defined
+          - >-
+            idm_created_user_queries.results | length
+            ==
+            idm_new_usernames | length
+        fail_msg: >-
+          The newly created IdM user-query task did not return one result for
+          every generated username.
+
     - name: PHASE 12 | Validate newly created users
       ansible.builtin.assert:
         that:
@@ -838,6 +902,10 @@
           Expected password expiration:
 
             {{ idm_new_user_password_expiration }}
+
+          Return code:
+
+            {{ item.rc }}
 
           Output:
 

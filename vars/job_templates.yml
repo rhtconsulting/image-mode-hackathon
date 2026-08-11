@@ -453,6 +453,46 @@ controller_templates:
     survey_enabled: false
     state: present
 
+  ###############################################################################
+  # Create additional Image Mode Lab IdM users
+  ###############################################################################
+
+  - name: "Create Additional Image Mode Lab Users"
+    description: >-
+      Discover existing numbered user accounts in the IdM ipausers group,
+      determine the next available user number, and create the requested
+      number of additional Image Mode Lab users.
+
+    organization: "Image Mode Lab"
+    project: "Image Mode CI/CD"
+    inventory: "Image Mode Lab Infrastructure"
+
+    playbook: >-
+      playbooks/image_mode/create-additional-image-mode-lab-users.yml
+
+    execution_environment: "Image Mode EE"
+
+    credentials:
+      - "Image Mode Machine Credential"
+      - "Image Mode Default IdM User Credential"
+      - "Image Mode IdM Administrator Credential"
+
+    job_type: "run"
+    verbosity: 1
+    forks: 1
+    timeout: 1800
+    allow_simultaneous: false
+
+    ask_inventory_on_launch: false
+    ask_credential_on_launch: false
+    ask_limit_on_launch: false
+    ask_variables_on_launch: false
+
+    survey_enabled: true
+    survey_spec: "{{ create_additional_image_mode_lab_users_survey }}"
+
+    state: present
+
 
 
   # - name: "Bootstrap Satellite Content"

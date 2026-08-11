@@ -1,0 +1,23 @@
+---
+###############################################################################
+# Create Additional Image Mode Lab Users survey
+###############################################################################
+
+create_additional_image_mode_lab_users_survey:
+  name: "Create Additional Image Mode Lab Users"
+  description: >-
+    Select the number of additional numbered users to create in Red Hat IdM.
+    New usernames begin after the highest existing user<number> account.
+
+  spec:
+    - question_name: "Number of additional users"
+      question_description: >-
+        Enter the number of additional Image Mode Lab users to create.
+        For example, if user10 is the highest existing account and 5 is
+        entered, the job creates user11 through user15.
+      variable: "number_of_users_var"
+      type: "integer"
+      required: true
+      default: 1
+      min: 1
+      max: 100

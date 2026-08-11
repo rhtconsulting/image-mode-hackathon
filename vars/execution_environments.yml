@@ -3,7 +3,7 @@ controller_execution_environments:
 
   - name: Image Mode EE
     organization: "Image Mode Lab"
-    image: quay.io/philip860/image-mode:v2
+    image: quay.io/philip860/image-mode:v3
     pull: always
 
 

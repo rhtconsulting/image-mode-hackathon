@@ -1,0 +1,1498 @@
+---
+###############################################################################
+# Create Additional Image Mode Lab Users
+#
+# Required AAP credentials:
+#
+#   Image Mode Machine Credential
+#   Image Mode IdM Administrator Credential
+#   Image Mode Default IdM User Credential
+#
+# Required injected variables:
+#
+#   idm_admin_username
+#   idm_admin_password
+#   idm_default_user_password
+#
+# Required survey variable:
+#
+#   number_of_users_var
+###############################################################################
+
+- name: Create Additional Image Mode Lab Users
+  hosts: idm-1*
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+
+    ###########################################################################
+    # Administrator credential
+    ###########################################################################
+
+    idm_credential_username: >-
+      {{
+        idm_admin_username
+        | default(
+            ipaadmin_principal
+            | default('admin', true),
+            true
+          )
+      }}
+
+    idm_credential_secret: >-
+      {{
+        idm_admin_password
+        | default(
+            ipaadmin_password
+            | default('', true),
+            true
+          )
+      }}
+
+    ###########################################################################
+    # Default password credential for generated users
+    ###########################################################################
+
+    idm_new_user_initial_password: >-
+      {{
+        idm_default_user_password
+        | default('', true)
+      }}
+
+    ###########################################################################
+    # User configuration
+    ###########################################################################
+
+    idm_user_prefix: "user"
+    idm_user_number_width: 2
+
+    ###########################################################################
+    # Group configuration
+    ###########################################################################
+
+    idm_quay_users_group_name: "quay-users"
+
+    ###########################################################################
+    # Password and subordinate-ID configuration
+    ###########################################################################
+
+    idm_new_user_password_validity_days: 3650
+    idm_generate_user_subids: true
+
+
+  pre_tasks:
+
+    ###########################################################################
+    # PHASE 01
+    # Validate inputs and credentials
+    ###########################################################################
+
+    - name: PHASE 01 | Validate requested number of users
+      ansible.builtin.assert:
+        that:
+          - number_of_users_var is defined
+          - number_of_users_var | int >= 1
+        fail_msg: >-
+          number_of_users_var must be defined and greater than or equal to 1.
+        success_msg: >-
+          Requested creation of {{ number_of_users_var | int }}
+          additional Image Mode Lab users.
+
+
+    - name: PHASE 01 | Resolve credential availability
+      ansible.builtin.set_fact:
+        idm_admin_username_available: >-
+          {{
+            idm_credential_username
+            | string
+            | trim
+            | length > 0
+          }}
+
+        idm_admin_password_available: >-
+          {{
+            idm_credential_secret
+            | string
+            | length > 0
+          }}
+
+        idm_default_user_password_available: >-
+          {{
+            idm_new_user_initial_password
+            | string
+            | length > 0
+            and
+            idm_new_user_initial_password != 'None'
+          }}
+
+        idm_default_password_matches_admin: >-
+          {{
+            idm_new_user_initial_password
+            ==
+            idm_credential_secret
+          }}
+      no_log: true
+
+
+    - name: PHASE 01 | Validate IdM administrator credential
+      ansible.builtin.assert:
+        that:
+          - idm_admin_username_available | bool
+          - idm_admin_password_available | bool
+        fail_msg: >-
+          Image Mode IdM Administrator Credential was not injected.
+
+          Required variables:
+
+            idm_admin_username
+            idm_admin_password
+
+
+    - name: PHASE 01 | Validate default IdM user credential
+      ansible.builtin.assert:
+        that:
+          - idm_default_user_password_available | bool
+          - not (idm_default_password_matches_admin | bool)
+        fail_msg: >-
+          Image Mode Default IdM User Credential was not injected, contains
+          an empty value, or unexpectedly matches the IdM administrator
+          password.
+
+          Required variable:
+
+            idm_default_user_password
+
+
+    - name: PHASE 01 | Install required client utilities
+      ansible.builtin.dnf:
+        name:
+          - openldap-clients
+          - krb5-workstation
+        state: present
+
+
+    - name: PHASE 01 | Calculate future password expiration
+      ansible.builtin.command:
+        argv:
+          - date
+          - --utc
+          - "--date=+{{ idm_new_user_password_validity_days | int }} days"
+          - "+%Y%m%d%H%M%SZ"
+      register: idm_password_expiration_command
+      changed_when: false
+
+
+    - name: PHASE 01 | Store future password expiration
+      ansible.builtin.set_fact:
+        idm_new_user_password_expiration: >-
+          {{
+            idm_password_expiration_command.stdout
+            | trim
+          }}
+
+
+    - name: PHASE 01 | Validate password-expiration timestamp
+      ansible.builtin.assert:
+        that:
+          - >-
+            idm_new_user_password_expiration
+            is match('^[0-9]{14}Z$')
+        fail_msg: >-
+          Unable to calculate a valid IdM password-expiration timestamp.
+
+
+  tasks:
+
+    ###########################################################################
+    # PHASE 02
+    # Authenticate to IdM
+    ###########################################################################
+
+    - name: PHASE 02 | Obtain administrator Kerberos ticket
+      ansible.builtin.command:
+        argv:
+          - kinit
+          - "{{ idm_credential_username }}"
+        stdin: "{{ idm_credential_secret }}"
+        stdin_add_newline: true
+      register: idm_admin_kinit
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+
+    - name: PHASE 02 | Validate administrator authentication
+      ansible.builtin.assert:
+        that:
+          - idm_admin_kinit.rc | default(1) == 0
+        fail_msg: >-
+          Kerberos authentication failed for the injected IdM administrator.
+
+          Verify:
+
+            - the administrator credential;
+            - DNS resolution;
+            - time synchronization;
+            - /etc/krb5.conf.
+
+
+    - name: PHASE 02 | Verify active administrator ticket
+      ansible.builtin.command:
+        argv:
+          - klist
+          - -s
+      register: idm_admin_klist
+      changed_when: false
+      failed_when: false
+
+
+    - name: PHASE 02 | Validate active administrator ticket
+      ansible.builtin.assert:
+        that:
+          - idm_admin_klist.rc == 0
+        fail_msg: >-
+          Administrator authentication completed, but no Kerberos ticket
+          was found.
+
+
+    ###########################################################################
+    # PHASE 03
+    # Resolve LDAP environment
+    ###########################################################################
+
+    - name: PHASE 03 | Resolve IdM server hostname
+      ansible.builtin.command:
+        argv:
+          - hostname
+          - -f
+      register: idm_server_hostname_result
+      changed_when: false
+      failed_when:
+        - idm_server_hostname_result.rc != 0
+        - idm_server_hostname_result.stdout | trim | length == 0
+
+
+    - name: PHASE 03 | Query IdM LDAP base DN
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - env
+          - basedn
+      register: idm_environment_result
+      changed_when: false
+      failed_when: false
+
+
+    - name: PHASE 03 | Validate LDAP base-DN query
+      ansible.builtin.assert:
+        that:
+          - idm_environment_result.rc == 0
+          - >-
+            (
+              idm_environment_result.stdout_lines
+              | default([])
+              | map('trim')
+              | select('match', '^basedn:[ ]*.+$')
+              | list
+              | length
+            )
+            == 1
+        fail_msg: >-
+          Unable to determine the IdM LDAP base DN.
+
+          Output:
+
+          {{ idm_environment_result.stdout | default('') }}
+
+          Error:
+
+          {{ idm_environment_result.stderr | default('') }}
+
+
+    - name: PHASE 03 | Store LDAP environment
+      ansible.builtin.set_fact:
+        idm_server_hostname: >-
+          {{
+            idm_server_hostname_result.stdout
+            | trim
+          }}
+
+        idm_ldap_base_dn: >-
+          {{
+            (
+              idm_environment_result.stdout_lines
+              | default([])
+              | map('trim')
+              | select('match', '^basedn:[ ]*.+$')
+              | first
+            )
+            | regex_replace('^basedn:[ ]*', '')
+            | trim
+          }}
+
+
+    - name: PHASE 03 | Build LDAP distinguished names
+      ansible.builtin.set_fact:
+        idm_ipausers_group_dn: >-
+          cn=ipausers,cn=groups,cn=accounts,{{ idm_ldap_base_dn }}
+
+        idm_quay_users_group_dn: >-
+          cn={{ idm_quay_users_group_name }},cn=groups,cn=accounts,{{ idm_ldap_base_dn }}
+
+        idm_users_search_base: >-
+          cn=users,cn=accounts,{{ idm_ldap_base_dn }}
+
+
+    - name: PHASE 03 | Validate LDAP environment
+      ansible.builtin.assert:
+        that:
+          - idm_server_hostname | length > 0
+          - idm_ldap_base_dn | length > 0
+          - idm_ipausers_group_dn | length > 0
+          - idm_quay_users_group_dn | length > 0
+          - idm_users_search_base | length > 0
+        fail_msg: >-
+          The IdM LDAP environment could not be resolved.
+
+
+    ###########################################################################
+    # PHASE 04
+    # Confirm ipausers exists
+    ###########################################################################
+
+    - name: PHASE 04 | Query ipausers group
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - group-show
+          - ipausers
+          - --all
+          - --raw
+      register: idm_ipausers_group
+      changed_when: false
+      failed_when: false
+
+
+    - name: PHASE 04 | Validate ipausers group
+      ansible.builtin.assert:
+        that:
+          - idm_ipausers_group.rc == 0
+        fail_msg: >-
+          Unable to query the IdM ipausers group.
+
+          Error:
+
+          {{ idm_ipausers_group.stderr | default('') }}
+
+
+    ###########################################################################
+    # PHASE 05
+    # Discover existing numbered users
+    ###########################################################################
+
+    - name: PHASE 05 | Query numbered ipausers accounts through LDAP
+      ansible.builtin.command:
+        argv:
+          - ldapsearch
+          - -LLL
+          - -o
+          - ldif-wrap=no
+          - -Y
+          - GSSAPI
+          - -H
+          - "ldap://{{ idm_server_hostname }}"
+          - -b
+          - "{{ idm_users_search_base }}"
+          - >-
+            (&(objectClass=posixAccount)(memberOf={{ idm_ipausers_group_dn }})(uid={{ idm_user_prefix }}*))
+          - uid
+      register: idm_numbered_user_ldap_query
+      changed_when: false
+      failed_when: false
+
+
+    - name: PHASE 05 | Validate numbered-user LDAP query
+      ansible.builtin.assert:
+        that:
+          - idm_numbered_user_ldap_query.rc == 0
+        fail_msg: >-
+          LDAP could not query numbered users associated with ipausers.
+
+          Error:
+
+          {{ idm_numbered_user_ldap_query.stderr | default('') }}
+
+
+    - name: PHASE 05 | Extract numbered users
+      ansible.builtin.set_fact:
+        idm_existing_numbered_users: >-
+          {{
+            idm_numbered_user_ldap_query.stdout_lines
+            | default([])
+            | map('trim')
+            | select(
+                'match',
+                '^uid: '
+                ~ idm_user_prefix
+                ~ '[0-9]+$'
+              )
+            | map(
+                'regex_replace',
+                '^uid: ',
+                ''
+              )
+            | unique
+            | sort
+            | list
+          }}
+
+
+    - name: PHASE 05 | Display discovered numbered users
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Numbered users discovered:
+            {{ idm_existing_numbered_users | length }}
+          - >-
+            Existing users:
+            {{
+              idm_existing_numbered_users
+              | join(', ')
+              | default('None', true)
+            }}
+
+
+    ###########################################################################
+    # PHASE 06
+    # Extract existing numeric suffixes
+    ###########################################################################
+
+    - name: PHASE 06 | Initialize numeric suffix list
+      ansible.builtin.set_fact:
+        idm_existing_user_numbers: []
+
+
+    - name: PHASE 06 | Extract numeric suffixes
+      ansible.builtin.set_fact:
+        idm_existing_user_numbers: >-
+          {{
+            idm_existing_user_numbers
+            +
+            [
+              (
+                item
+                | regex_replace(
+                    '^' ~ idm_user_prefix,
+                    ''
+                  )
+                | int
+              )
+            ]
+          }}
+      loop: "{{ idm_existing_numbered_users }}"
+      loop_control:
+        label: "{{ item }}"
+
+
+    ###########################################################################
+    # PHASE 07
+    # Determine next user allocation
+    ###########################################################################
+
+    - name: PHASE 07 | Determine highest existing user number
+      ansible.builtin.set_fact:
+        idm_highest_user_number: >-
+          {{
+            (
+              idm_existing_user_numbers
+              | max
+            )
+            if
+            (
+              idm_existing_user_numbers
+              | length > 0
+            )
+            else 0
+          }}
+
+
+    - name: PHASE 07 | Determine next user number
+      ansible.builtin.set_fact:
+        idm_next_user_number: >-
+          {{
+            (idm_highest_user_number | int) + 1
+          }}
+
+
+    ###########################################################################
+    # PHASE 08
+    # Allocate requested usernames
+    ###########################################################################
+
+    - name: PHASE 08 | Build requested user-number range
+      ansible.builtin.set_fact:
+        idm_new_user_numbers: >-
+          {{
+            range(
+              idm_next_user_number | int,
+              (
+                (idm_next_user_number | int)
+                +
+                (number_of_users_var | int)
+              )
+            )
+            | list
+          }}
+
+
+    - name: PHASE 08 | Validate allocated user count
+      ansible.builtin.assert:
+        that:
+          - >-
+            idm_new_user_numbers | length
+            ==
+            number_of_users_var | int
+        fail_msg: >-
+          The allocated user count does not match number_of_users_var.
+
+
+    ###########################################################################
+    # PHASE 09
+    # Build user definitions
+    ###########################################################################
+
+    - name: PHASE 09 | Initialize new user definitions
+      ansible.builtin.set_fact:
+        idm_new_users: []
+
+
+    - name: PHASE 09 | Build new user definitions
+      ansible.builtin.set_fact:
+        idm_new_users: >-
+          {{
+            idm_new_users
+            +
+            [
+              {
+                'name':
+                  idm_user_prefix
+                  ~
+                  idm_formatted_user_number,
+                'first': 'User',
+                'last': idm_formatted_user_number,
+                'password': idm_new_user_initial_password,
+                'passwordexpiration':
+                  idm_new_user_password_expiration
+              }
+            ]
+          }}
+      vars:
+        idm_formatted_user_number: >-
+          {{
+            '%0*d'
+            | format(
+                idm_user_number_width | int,
+                item | int
+              )
+          }}
+      loop: "{{ idm_new_user_numbers }}"
+      loop_control:
+        label: >-
+          {{
+            idm_user_prefix
+            ~
+            (
+              '%0*d'
+              | format(
+                  idm_user_number_width | int,
+                  item | int
+                )
+            )
+          }}
+      no_log: true
+
+
+    - name: PHASE 09 | Build safe username list
+      ansible.builtin.set_fact:
+        idm_new_usernames: >-
+          {{
+            idm_new_users
+            | map(attribute='name')
+            | list
+          }}
+
+
+    - name: PHASE 09 | Validate generated usernames
+      ansible.builtin.assert:
+        that:
+          - idm_new_users | length == number_of_users_var | int
+          - >-
+            idm_new_usernames | unique | length
+            ==
+            idm_new_usernames | length
+          - >-
+            (
+              idm_new_usernames
+              | intersect(idm_existing_numbered_users)
+              | length
+            )
+            == 0
+        fail_msg: >-
+          Generated usernames are invalid or already exist.
+
+
+    ###########################################################################
+    # PHASE 10
+    # Guard against concurrent allocation
+    ###########################################################################
+
+    - name: PHASE 10 | Check generated usernames for conflicts
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - user-show
+          - "{{ item }}"
+          - --raw
+      register: idm_new_username_conflict_queries
+      changed_when: false
+      failed_when: false
+      loop: "{{ idm_new_usernames }}"
+      loop_control:
+        label: "{{ item }}"
+
+
+    - name: PHASE 10 | Validate generated usernames are available
+      ansible.builtin.assert:
+        that:
+          - item.rc != 0
+          - >-
+            'not found'
+            in
+            (
+              (
+                (
+                  item.stdout
+                  | default('')
+                )
+                ~
+                (
+                  item.stderr
+                  | default('')
+                )
+              )
+              | lower
+            )
+        fail_msg: >-
+          Generated username {{ item.item }} already exists or availability
+          could not be confirmed.
+
+          Output:
+
+          {{ item.stdout | default('') }}
+
+          Error:
+
+          {{ item.stderr | default('') }}
+      loop: "{{ idm_new_username_conflict_queries.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+
+    - name: PHASE 10 | Display creation plan
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Highest existing user:
+            {{
+              (
+                idm_user_prefix
+                ~
+                (
+                  '%0*d'
+                  | format(
+                      idm_user_number_width | int,
+                      idm_highest_user_number | int
+                    )
+                )
+              )
+              if idm_highest_user_number | int > 0
+              else 'None'
+            }}
+          - >-
+            Requested users:
+            {{ number_of_users_var | int }}
+          - >-
+            Users to create:
+            {{ idm_new_usernames }}
+
+
+    ###########################################################################
+    # PHASE 11
+    # Create users
+    ###########################################################################
+
+    - name: PHASE 11 | Create additional users
+      block:
+
+        - name: PHASE 11 | Run IdM user creation
+          freeipa.ansible_freeipa.ipauser:
+            ipaadmin_principal: "{{ idm_credential_username }}"
+            ipaadmin_password: "{{ idm_credential_secret }}"
+            users: "{{ idm_new_users }}"
+            update_password: on_create
+            state: present
+          register: idm_additional_user_creation
+          no_log: true
+
+      rescue:
+
+        - name: PHASE 11 | Report user-creation failure
+          ansible.builtin.fail:
+            msg: >-
+              IdM user creation failed.
+
+              Verify:
+
+                - Image Mode IdM Administrator Credential is attached
+                - Image Mode Default IdM User Credential is attached
+                - freeipa.ansible_freeipa is installed
+                - idm_default_user_password satisfies the password policy
+                - the generated usernames remain available
+
+
+    ###########################################################################
+    # PHASE 12
+    # Add newly created users to quay-users
+    ###########################################################################
+
+    - name: PHASE 12 | Ensure quay-users group exists
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - group-add
+          - "{{ idm_quay_users_group_name }}"
+          - "--desc=Users authorized to access the Image Mode Quay registry"
+      register: idm_quay_users_group_create
+      changed_when:
+        - idm_quay_users_group_create.rc == 0
+      failed_when:
+        - idm_quay_users_group_create.rc != 0
+        - >-
+          'already exists'
+          not in
+          (
+            idm_quay_users_group_create.stdout
+            | default('')
+            | lower
+          )
+        - >-
+          'already exists'
+          not in
+          (
+            idm_quay_users_group_create.stderr
+            | default('')
+            | lower
+          )
+
+
+    - name: PHASE 12 | Add newly created users to quay-users
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - group-add-member
+          - "{{ idm_quay_users_group_name }}"
+          - "--users={{ item }}"
+      register: idm_quay_users_membership_updates
+      changed_when: >-
+        'Number of members added 1'
+        in
+        (
+          idm_quay_users_membership_updates.stdout
+          | default('')
+        )
+      failed_when:
+        - idm_quay_users_membership_updates.rc != 0
+        - >-
+          'already a member'
+          not in
+          (
+            idm_quay_users_membership_updates.stdout
+            | default('')
+            | lower
+          )
+        - >-
+          'already a member'
+          not in
+          (
+            idm_quay_users_membership_updates.stderr
+            | default('')
+            | lower
+          )
+      loop: "{{ idm_new_usernames }}"
+      loop_control:
+        label: "{{ item }}"
+
+
+    - name: PHASE 12 | Query final quay-users membership
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - group-show
+          - "{{ idm_quay_users_group_name }}"
+          - --all
+          - --raw
+      register: idm_quay_users_group_final
+      changed_when: false
+      failed_when:
+        - idm_quay_users_group_final.rc != 0
+
+
+    - name: PHASE 12 | Extract quay-users members
+      ansible.builtin.set_fact:
+        idm_quay_users_member_usernames: >-
+          {{
+            (
+              idm_quay_users_group_final.stdout
+              | default('')
+              | regex_findall(
+                  '(?m)^[ \t]*member:[ \t]+uid=([^,]+),cn=users,'
+                )
+            )
+            +
+            (
+              idm_quay_users_group_final.stdout
+              | default('')
+              | regex_findall(
+                  '(?m)^[ \t]*member_user:[ \t]*([^ \t\r\n]+)[ \t]*$'
+                )
+            )
+            | reject('equalto', '')
+            | unique
+            | sort
+            | list
+          }}
+
+
+    - name: PHASE 12 | Validate quay-users membership
+      ansible.builtin.assert:
+        that:
+          - item in idm_quay_users_member_usernames
+        fail_msg: >-
+          Newly created IdM user {{ item }} is not a member of
+          {{ idm_quay_users_group_name }}.
+
+          Discovered members:
+
+          {{ idm_quay_users_member_usernames | join(', ') }}
+
+          Raw group output:
+
+          {{ idm_quay_users_group_final.stdout | default('') }}
+      loop: "{{ idm_new_usernames }}"
+      loop_control:
+        label: "{{ item }}"
+
+
+    - name: PHASE 12 | Display quay-users membership
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Newly created users added to quay-users:
+            {{ idm_new_usernames | join(', ') }}
+          - >-
+            Total quay-users members:
+            {{ idm_quay_users_member_usernames | length }}
+
+
+    ###########################################################################
+    # PHASE 13
+    # Enforce password expiration and validate users
+    ###########################################################################
+
+    - name: PHASE 13 | Enforce future password expiration
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - user-mod
+          - "{{ item }}"
+          - "--password-expiration={{ idm_new_user_password_expiration }}"
+      register: idm_password_expiration_updates
+      changed_when:
+        - idm_password_expiration_updates.rc == 0
+        - >-
+          'Modified user'
+          in
+          (
+            idm_password_expiration_updates.stdout
+            | default('')
+          )
+      failed_when:
+        - idm_password_expiration_updates.rc != 0
+        - >-
+          'no modifications to be performed'
+          not in
+          (
+            idm_password_expiration_updates.stderr
+            | default('')
+            | lower
+          )
+      loop: "{{ idm_new_usernames }}"
+      loop_control:
+        label: "{{ item }}"
+
+
+    - name: PHASE 13 | Query newly created users
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - user-show
+          - "{{ item }}"
+          - --all
+          - --raw
+      register: idm_created_user_queries
+      changed_when: false
+      failed_when: false
+      loop: "{{ idm_new_usernames }}"
+      loop_control:
+        label: "{{ item }}"
+
+
+    - name: PHASE 13 | Validate user-query results
+      ansible.builtin.assert:
+        that:
+          - idm_created_user_queries is defined
+          - idm_created_user_queries.results is defined
+          - >-
+            idm_created_user_queries.results | length
+            ==
+            idm_new_usernames | length
+        fail_msg: >-
+          The IdM user-query task did not return one result for every newly
+          created username.
+
+
+    - name: PHASE 13 | Validate newly created users
+      ansible.builtin.assert:
+        that:
+          - item.rc == 0
+
+          - >-
+            (
+              item.stdout_lines
+              | default([])
+              | map('trim')
+              | map('lower')
+              | select(
+                  'equalto',
+                  (
+                    'uid: '
+                    ~ item.item
+                  )
+                  | lower
+                )
+              | list
+              | length
+            )
+            == 1
+
+          - >-
+            (
+              item.stdout_lines
+              | default([])
+              | map('trim')
+              | map('lower')
+              | select(
+                  'equalto',
+                  (
+                    'memberof: '
+                    ~ idm_ipausers_group_dn
+                  )
+                  | lower
+                )
+              | list
+              | length
+            )
+            >= 1
+
+          - >-
+            (
+              item.stdout_lines
+              | default([])
+              | map('trim')
+              | map('lower')
+              | select(
+                  'equalto',
+                  (
+                    'memberof: '
+                    ~ idm_quay_users_group_dn
+                  )
+                  | lower
+                )
+              | list
+              | length
+            )
+            >= 1
+
+          - >-
+            (
+              item.stdout_lines
+              | default([])
+              | map('trim')
+              | map('lower')
+              | select(
+                  'equalto',
+                  (
+                    'krbpasswordexpiration: '
+                    ~ idm_new_user_password_expiration
+                  )
+                  | lower
+                )
+              | list
+              | length
+            )
+            == 1
+
+          - >-
+            (
+              item.stdout_lines
+              | default([])
+              | map('trim')
+              | map('lower')
+              | select(
+                  'equalto',
+                  'has_password: true'
+                )
+              | list
+              | length
+            )
+            == 1
+
+        fail_msg: >-
+          IdM user {{ item.item }} did not pass final user validation.
+
+          Expected:
+
+            UID: {{ item.item }}
+            Group: ipausers
+            Group: {{ idm_quay_users_group_name }}
+            Password: present
+            Password expiration: {{ idm_new_user_password_expiration }}
+
+          Output:
+
+          {{ item.stdout | default('') }}
+
+          Error:
+
+          {{ item.stderr | default('') }}
+      loop: "{{ idm_created_user_queries.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+
+    ###########################################################################
+    # PHASE 14
+    # Validate generated-user passwords
+    ###########################################################################
+
+    - name: PHASE 14 | Test generated-user passwords
+      ansible.builtin.command:
+        argv:
+          - kinit
+          - "{{ item }}"
+        stdin: "{{ idm_new_user_initial_password }}"
+        stdin_add_newline: true
+      environment:
+        KRB5CCNAME: "FILE:/tmp/krb5cc_validate_{{ item }}"
+      register: idm_generated_user_password_tests
+      changed_when: false
+      failed_when: false
+      no_log: true
+      loop: "{{ idm_new_usernames }}"
+      loop_control:
+        label: "{{ item }}"
+
+
+    - name: PHASE 14 | Validate generated-user authentication
+      ansible.builtin.assert:
+        that:
+          - item.rc == 0
+        fail_msg: >-
+          IdM user {{ item.item }} was created but could not authenticate
+          using idm_default_user_password.
+
+          Verify AWS secret:
+
+            image-mode-lab/idm/default_user_password
+
+          Also verify the IdM password policy and password expiration.
+      loop: "{{ idm_generated_user_password_tests.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+
+    - name: PHASE 14 | Remove generated-user Kerberos caches
+      ansible.builtin.file:
+        path: "/tmp/krb5cc_validate_{{ item }}"
+        state: absent
+      loop: "{{ idm_new_usernames }}"
+      loop_control:
+        label: "{{ item }}"
+
+
+    ###########################################################################
+    # PHASE 15
+    # Query subordinate IDs
+    ###########################################################################
+
+    - name: PHASE 15 | Query subordinate IDs
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - subid-find
+          - "--owner={{ item }}"
+      register: idm_new_user_subid_queries
+      changed_when: false
+      failed_when:
+        - idm_new_user_subid_queries.rc not in [0, 1]
+      loop: "{{ idm_new_usernames }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - idm_generate_user_subids | bool
+
+
+    - name: PHASE 15 | Validate subordinate-ID queries
+      ansible.builtin.assert:
+        that:
+          - item.rc in [0, 1]
+          - >-
+            (
+              item.rc == 0
+            )
+            or
+            (
+              item.rc == 1
+              and
+              (
+                (
+                  '0 subordinate ids matched'
+                  in (item.stdout | default(''))
+                )
+                or
+                (
+                  'Number of entries returned 0'
+                  in (item.stdout | default(''))
+                )
+              )
+            )
+        fail_msg: >-
+          Unable to determine subordinate-ID state for {{ item.item }}.
+
+          Return code:
+
+          {{ item.rc }}
+
+          Output:
+
+          {{ item.stdout | default('') }}
+
+          Error:
+
+          {{ item.stderr | default('') }}
+      loop: "{{ idm_new_user_subid_queries.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - not (item.skipped | default(false))
+
+
+    ###########################################################################
+    # PHASE 16
+    # Classify subordinate-ID assignments
+    ###########################################################################
+
+    - name: PHASE 16 | Initialize subordinate-ID result lists
+      ansible.builtin.set_fact:
+        idm_users_with_existing_subids: []
+        idm_users_missing_subids: []
+
+
+    - name: PHASE 16 | Record users with existing subordinate IDs
+      ansible.builtin.set_fact:
+        idm_users_with_existing_subids: >-
+          {{
+            idm_users_with_existing_subids
+            +
+            [
+              item.item
+            ]
+          }}
+      loop: "{{ idm_new_user_subid_queries.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - not (item.skipped | default(false))
+        - item.rc == 0
+        - >-
+          '0 subordinate ids matched'
+          not in (item.stdout | default(''))
+        - >-
+          'Number of entries returned 0'
+          not in (item.stdout | default(''))
+
+
+    - name: PHASE 16 | Record users missing subordinate IDs
+      ansible.builtin.set_fact:
+        idm_users_missing_subids: >-
+          {{
+            idm_users_missing_subids
+            +
+            [
+              item.item
+            ]
+          }}
+      loop: "{{ idm_new_user_subid_queries.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - not (item.skipped | default(false))
+        - >-
+          (
+            item.rc == 1
+          )
+          or
+          (
+            '0 subordinate ids matched'
+            in (item.stdout | default(''))
+          )
+          or
+          (
+            'Number of entries returned 0'
+            in (item.stdout | default(''))
+          )
+
+
+    - name: PHASE 16 | Display subordinate-ID plan
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Existing subordinate IDs:
+            {{
+              idm_users_with_existing_subids
+              | join(', ')
+              | default('None', true)
+            }}
+          - >-
+            Missing subordinate IDs:
+            {{
+              idm_users_missing_subids
+              | join(', ')
+              | default('None', true)
+            }}
+
+
+    ###########################################################################
+    # PHASE 17
+    # Generate missing subordinate IDs
+    ###########################################################################
+
+    - name: PHASE 17 | Generate missing subordinate IDs
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - subid-generate
+          - "--owner={{ item }}"
+      register: idm_new_user_subid_generation
+      changed_when:
+        - idm_new_user_subid_generation.rc == 0
+      failed_when:
+        - idm_new_user_subid_generation.rc != 0
+        - >-
+          'already exists'
+          not in
+          (
+            idm_new_user_subid_generation.stdout
+            | default('')
+            | lower
+          )
+        - >-
+          'already exists'
+          not in
+          (
+            idm_new_user_subid_generation.stderr
+            | default('')
+            | lower
+          )
+      loop: "{{ idm_users_missing_subids }}"
+      loop_control:
+        label: "{{ item }}"
+
+
+    ###########################################################################
+    # PHASE 18
+    # Validate subordinate IDs
+    ###########################################################################
+
+    - name: PHASE 18 | Query final subordinate-ID assignments
+      ansible.builtin.command:
+        argv:
+          - ipa
+          - subid-find
+          - "--owner={{ item }}"
+      register: idm_new_user_subid_validation
+      changed_when: false
+      failed_when: false
+      loop: "{{ idm_new_usernames }}"
+      loop_control:
+        label: "{{ item }}"
+      when:
+        - idm_generate_user_subids | bool
+
+
+    - name: PHASE 18 | Validate final subordinate-ID assignments
+      ansible.builtin.assert:
+        that:
+          - item.rc == 0
+          - >-
+            '0 subordinate ids matched'
+            not in (item.stdout | default(''))
+          - >-
+            'Number of entries returned 0'
+            not in (item.stdout | default(''))
+          - >-
+            item.stdout
+            is search('SubUID range start:[ ]+[0-9]+')
+          - >-
+            item.stdout
+            is search('SubUID range size:[ ]+[1-9][0-9]*')
+          - >-
+            item.stdout
+            is search('SubGID range start:[ ]+[0-9]+')
+          - >-
+            item.stdout
+            is search('SubGID range size:[ ]+[1-9][0-9]*')
+        fail_msg: >-
+          IdM user {{ item.item }} does not have a valid subordinate UID/GID
+          range.
+
+          Return code:
+
+          {{ item.rc }}
+
+          Output:
+
+          {{ item.stdout | default('') }}
+
+          Error:
+
+          {{ item.stderr | default('') }}
+      loop: "{{ idm_new_user_subid_validation.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - not (item.skipped | default(false))
+
+
+    ###########################################################################
+    # PHASE 19
+    # Publish results
+    ###########################################################################
+
+    - name: PHASE 19 | Determine final user number
+      ansible.builtin.set_fact:
+        idm_final_user_number: >-
+          {{
+            (idm_next_user_number | int)
+            +
+            (number_of_users_var | int)
+            -
+            1
+          }}
+
+
+    - name: PHASE 19 | Publish workflow artifacts
+      ansible.builtin.set_stats:
+        data:
+          idm_created_usernames: "{{ idm_new_usernames }}"
+          idm_created_user_count: "{{ idm_new_usernames | length }}"
+
+          idm_previous_highest_user_number: >-
+            {{ idm_highest_user_number }}
+
+          idm_current_highest_user_number: >-
+            {{ idm_final_user_number }}
+
+          idm_quay_users_group: "{{ idm_quay_users_group_name }}"
+
+          idm_quay_users_added: "{{ idm_new_usernames }}"
+
+          idm_subids_reconciled: >-
+            {{ idm_generate_user_subids | bool }}
+
+          idm_default_password_credential_used: true
+
+        per_host: false
+
+
+    - name: PHASE 19 | Display final results
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Previous highest user number:
+            {{ idm_highest_user_number }}
+          - >-
+            Created users:
+            {{ idm_new_usernames }}
+          - >-
+            Current highest user:
+            {{
+              idm_user_prefix
+              ~
+              (
+                '%0*d'
+                | format(
+                    idm_user_number_width | int,
+                    idm_final_user_number | int
+                  )
+              )
+            }}
+          - >-
+            Initial password source:
+            Image Mode Default IdM User Credential
+          - >-
+            Quay group:
+            {{ idm_quay_users_group_name }}
+          - >-
+            Quay members added:
+            {{ idm_new_usernames | join(', ') }}
+          - >-
+            Subordinate IDs reconciled:
+            {{ idm_generate_user_subids | bool }}
+
+
+  post_tasks:
+
+    ###########################################################################
+    # PHASE 20
+    # Cleanup Kerberos credentials
+    ###########################################################################
+
+    - name: PHASE 20 | Destroy administrator Kerberos ticket
+      ansible.builtin.command:
+        argv:
+          - kdestroy
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+
+    - name: PHASE 20 | Remove remaining validation caches
+      ansible.builtin.file:
+        path: "/tmp/krb5cc_validate_{{ item }}"
+        state: absent
+      loop: "{{ idm_new_usernames | default([]) }}"
+      loop_control:
+        label: "{{ item }}"

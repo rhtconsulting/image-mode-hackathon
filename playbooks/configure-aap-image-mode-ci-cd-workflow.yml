@@ -90,6 +90,9 @@
     idm_admin_password_secret_name: >-
       {{ secret_prefix }}/idm/admin_password
 
+    idm_default_user_password_secret_name: >-
+      {{ secret_prefix }}/idm/default_user_password
+
     satellite_admin_password_secret_name: >-
       {{ secret_prefix }}/satellite/admin_password
 
@@ -596,6 +599,65 @@
           Secrets Manager secret
           '{{ idm_admin_password_secret_name }}'.
       no_log: true
+
+    ###############################################################################
+    # Read default IdM user password
+    ###############################################################################
+
+    - name: Read default IdM user password
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ idm_default_user_password_secret_name }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: idm_default_user_password_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Set default IdM user password
+      ansible.builtin.set_fact:
+        idm_default_user_password: >-
+          {{
+            idm_default_user_password_secret_result.stdout
+            | string
+            | trim
+          }}
+      no_log: true
+
+    - name: Resolve default IdM user password availability
+      ansible.builtin.set_fact:
+        idm_default_user_password_available: >-
+          {{
+            idm_default_user_password
+            | string
+            | length > 0
+            and
+            idm_default_user_password != 'None'
+          }}
+      no_log: true
+
+    - name: Validate default IdM user password
+      ansible.builtin.assert:
+        that:
+          - idm_default_user_password_available | bool
+        fail_msg: >-
+          The default IdM user password could not be retrieved from AWS
+          Secrets Manager secret:
+
+          {{ idm_default_user_password_secret_name }}
+
+          Verify that the secret exists and that the CaC AWS identity has
+          secretsmanager:GetSecretValue permission.
 
 
     ###########################################################################

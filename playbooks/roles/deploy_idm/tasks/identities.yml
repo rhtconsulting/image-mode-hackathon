@@ -322,14 +322,6 @@
 
 ###############################################################################
 # Discover every user in ipausers
-#
-# This includes users created:
-#
-# - by this task file;
-# - by Terraform;
-# - by the additional-user workflow;
-# - manually;
-# - by any other IdM automation.
 ###############################################################################
 
 - name: Query complete ipausers membership
@@ -350,15 +342,21 @@
   ansible.builtin.set_fact:
     idm_all_ipauser_usernames: >-
       {{
-        idm_all_ipausers_group.stdout_lines
-        | default([])
-        | map('trim')
-        | select('match', '^member_user:[ ]*[^ ]+$')
-        | map(
-            'regex_replace',
-            '^member_user:[ ]*',
-            ''
-          )
+        (
+          idm_all_ipausers_group.stdout
+          | default('')
+          | regex_findall(
+              '(?m)^[ \t]*member:[ \t]+uid=([^,]+),cn=users,'
+            )
+        )
+        +
+        (
+          idm_all_ipausers_group.stdout
+          | default('')
+          | regex_findall(
+              '(?m)^[ \t]*member_user:[ \t]*([^ \t\r\n]+)[ \t]*$'
+            )
+        )
         | reject('equalto', '')
         | unique
         | sort
@@ -372,6 +370,14 @@
       - idm_all_ipauser_usernames | length > 0
     fail_msg: >-
       No users were discovered in the IdM ipausers group.
+
+      Expected either raw membership records:
+
+        member: uid=user01,cn=users,cn=accounts,...
+
+      Or formatted membership records:
+
+        member_user: user01
 
       Output:
 
@@ -387,7 +393,6 @@
       - >-
         Users:
         {{ idm_all_ipauser_usernames | join(', ') }}
-
 
 ###############################################################################
 # Query subordinate UID/GID ranges for every ipausers account

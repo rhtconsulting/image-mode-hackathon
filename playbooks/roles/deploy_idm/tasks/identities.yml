@@ -836,16 +836,3 @@
         New subordinate-ID assignments:
         {{ idm_ipausers_missing_subids | length }}
       - "Status: every ipausers account has a validated SubUID/SubGID range"
-
-
-###############################################################################
-# Destroy administrator ticket
-###############################################################################
-
-- name: Destroy IdM administrator Kerberos authentication
-  ansible.builtin.command:
-    argv:
-      - kdestroy
-  changed_when: false
-  failed_when: false
-  no_log: true

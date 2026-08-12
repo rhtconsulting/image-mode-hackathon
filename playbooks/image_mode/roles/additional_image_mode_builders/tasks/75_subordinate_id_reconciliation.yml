@@ -170,18 +170,22 @@
     mode: "0644"
     modification_time: preserve
     access_time: preserve
+  when:
+    - ansible_facts.distribution_major_version | int == 9
 
 
 - name: PHASE 75 | Configure SSSD as the subordinate-ID NSS provider
   ansible.builtin.lineinfile:
     path: /etc/authselect/user-nsswitch.conf
-    regexp: '^[[:space:]]*subid[[:space:]]*:'
+    regexp: '^\s*subid\s*:'
     line: 'subid: sss'
     state: present
     owner: root
     group: root
     mode: "0644"
   register: image_builder_subid_nss_configuration
+  when:
+    - ansible_facts.distribution_major_version | int == 9
 
 
 - name: PHASE 75 | Apply authselect NSS changes
@@ -195,10 +199,73 @@
     or
     image_builder_subid_authselect_restore.changed
   when:
+    - ansible_facts.distribution_major_version | int == 9
     - >-
       image_builder_subid_nss_configuration.changed
       or
       image_builder_subid_authselect_restore.changed
+
+
+# RHEL 10 forcefully regenerates /etc/nsswitch.conf from the selected profile.
+# Keep the PAM templates linked to the vendor sssd profile, but own a copy of
+# its nsswitch.conf so the subordinate-ID database survives regeneration.
+- name: PHASE 75 | Create RHEL 10 subordinate-ID authselect profile
+  ansible.builtin.command:
+    argv:
+      - authselect
+      - create-profile
+      - image-builder-subid
+      - -b
+      - sssd
+      - --symlink-meta
+      - --symlink-pam
+    creates: /etc/authselect/custom/image-builder-subid/nsswitch.conf
+  register: image_builder_subid_authselect_profile_created
+  when:
+    - ansible_facts.distribution_major_version | int == 10
+
+
+- name: PHASE 75 | Configure RHEL 10 custom profile for subordinate IDs
+  ansible.builtin.lineinfile:
+    path: /etc/authselect/custom/image-builder-subid/nsswitch.conf
+    regexp: '^\s*subid\s*:'
+    line: 'subid:      sss'
+    state: present
+    owner: root
+    group: root
+    mode: "0644"
+  register: image_builder_subid_custom_nss_configuration
+  when:
+    - ansible_facts.distribution_major_version | int == 10
+
+
+- name: PHASE 75 | Select RHEL 10 subordinate-ID authselect profile
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['authselect', 'select', 'custom/image-builder-subid']
+        +
+        image_builder_subid_authselect_components[1:]
+        +
+        ['--force']
+      }}
+  register: image_builder_subid_authselect_custom_select
+  changed_when: >-
+    image_builder_subid_authselect_profile_created.changed
+    or
+    image_builder_subid_custom_nss_configuration.changed
+    or
+    image_builder_subid_authselect_components[0]
+      != 'custom/image-builder-subid'
+  when:
+    - ansible_facts.distribution_major_version | int == 10
+    - >-
+      image_builder_subid_authselect_profile_created.changed
+      or
+      image_builder_subid_custom_nss_configuration.changed
+      or
+      image_builder_subid_authselect_components[0]
+        != 'custom/image-builder-subid'
 
 
 ###############################################################################

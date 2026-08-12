@@ -17,7 +17,6 @@
   ansible.builtin.dnf:
     name:
       - authselect
-      - authselect-compat
       - shadow-utils
       - shadow-utils-subid
       - sssd
@@ -26,6 +25,18 @@
       - sssd-ipa
       - sssd-tools
     state: present
+
+
+# RHEL 10 no longer provides authselect-compat. The package is retained on
+# RHEL 9 for compatibility with any legacy authconfig consumers on the host;
+# this playbook itself invokes authselect directly.
+- name: PHASE 75 | Install RHEL 9 authselect compatibility package
+  ansible.builtin.dnf:
+    name: authselect-compat
+    state: present
+  when:
+    - ansible_facts.distribution == 'RedHat'
+    - ansible_facts.distribution_major_version | int == 9
 
 
 ###############################################################################

@@ -26,6 +26,10 @@
 
 - name: IMAGE MODE AMI | Synchronize successful build source with GitLab
   ansible.builtin.import_tasks: git_sync.yml
+  when:
+    - image_mode_build_required | bool
+    - automated_build | bool
+    - image_mode_git_sync_enabled | bool
 
 
 - name: IMAGE MODE AMI | Publish final result

@@ -142,6 +142,8 @@ image_mode_vmimport_role_name: "vmimport"
 # Build controls
 ###############################################################################
 
+automated_build: true
+
 image_mode_force_rebuild: false
 image_mode_pull_base_image: true
 image_mode_push_container: true
@@ -168,6 +170,7 @@ image_mode_ami_tags:
 image_mode_base_images:
   "9": "registry.redhat.io/rhel9/rhel-bootc:latest"
   "10": "registry.redhat.io/rhel10/rhel-bootc:latest"
+
 
 ################################################################################
 # GitLab synchronization

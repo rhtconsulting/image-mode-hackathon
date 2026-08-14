@@ -1,4 +1,57 @@
 ---
+###############################################################################
+# Validate Image Mode build prerequisites
+###############################################################################
+
+###############################################################################
+# Build mode
+###############################################################################
+
+- name: IMAGE MODE AMI | Validate automated build setting
+  ansible.builtin.assert:
+    that:
+      - automated_build is defined
+      - (automated_build | string | lower) in ['true', 'false']
+    fail_msg: >-
+      automated_build must be true for an automated clean build or false for
+      a manual build that preserves the existing workspace.
+
+- name: IMAGE MODE AMI | Normalize automated build setting
+  ansible.builtin.set_fact:
+    automated_build: "{{ automated_build | bool }}"
+
+- name: IMAGE MODE AMI | Determine build type
+  ansible.builtin.set_fact:
+    image_mode_build_type: >-
+      {{
+        'AUTOMATED'
+        if automated_build
+        else 'MANUAL'
+      }}
+
+- name: IMAGE MODE AMI | Display build type
+  ansible.builtin.debug:
+    msg:
+      - "Build type: {{ image_mode_build_type }}"
+      - >-
+        Workspace behavior:
+        {{
+          'remove and regenerate the workspace from role templates'
+          if automated_build
+          else 'preserve and build the existing user-managed workspace'
+        }}
+      - >-
+        Git synchronization:
+        {{
+          'enabled when image_mode_git_sync_enabled is true'
+          if automated_build
+          else 'disabled for manual builds'
+        }}
+
+###############################################################################
+# Target operating system
+###############################################################################
+
 - name: IMAGE MODE AMI | Validate target operating system
   ansible.builtin.assert:
     that:
@@ -6,6 +59,10 @@
       - ansible_facts.distribution_major_version | int >= 9
     fail_msg: >-
       This role requires a RHEL 9 or later Image Builder host.
+
+###############################################################################
+# Image configuration
+###############################################################################
 
 - name: IMAGE MODE AMI | Validate image variables
   ansible.builtin.assert:
@@ -24,6 +81,10 @@
     fail_msg: >-
       Supply valid image identity values, image_mode_ssh_public_key, and a
       root disk size such as "40 GiB".
+
+###############################################################################
+# AWS authentication
+###############################################################################
 
 - name: IMAGE MODE AMI | Validate AWS authentication configuration
   ansible.builtin.assert:
@@ -48,7 +109,11 @@
     image_mode_aws_environment: >-
       {{
         image_mode_aws_environment
-        | combine({'AWS_SESSION_TOKEN': image_mode_aws_session_token})
+        | combine(
+            {
+              'AWS_SESSION_TOKEN': image_mode_aws_session_token
+            }
+          )
       }}
   when: image_mode_aws_session_token | trim | length > 0
   no_log: true
@@ -68,6 +133,10 @@
       }}
   when: image_mode_aws_profile | trim | length > 0
   no_log: true
+
+###############################################################################
+# Required commands
+###############################################################################
 
 - name: IMAGE MODE AMI | Locate required commands
   ansible.builtin.command:
@@ -92,7 +161,11 @@
         | list
         | length == 0
     fail_msg: >-
-      The Image Builder host must have podman, aws and python3 installed.
+      The Image Builder host must have podman, aws, and python3 installed.
+
+###############################################################################
+# Container registry authentication
+###############################################################################
 
 - name: IMAGE MODE AMI | Verify Red Hat registry authentication
   ansible.builtin.command:

@@ -1,43 +1,94 @@
 ---
-- name: IMAGE MODE AMI | Remove previous workspace
-  ansible.builtin.file:
-    path: "{{ image_mode_workspace }}"
-    state: absent
-  when: image_mode_clean_workspace_before_build | bool
+- name: IMAGE MODE AMI | Generate automated build workspace
+  when: automated_build | bool
+  block:
+    - name: IMAGE MODE AMI | Remove previous workspace
+      ansible.builtin.file:
+        path: "{{ image_mode_workspace }}"
+        state: absent
 
-- name: IMAGE MODE AMI | Create workspace directories
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-  loop:
-    - "{{ image_mode_workspace }}"
-    - "{{ image_mode_files_directory }}"
-    - "{{ image_mode_output_directory }}"
+    - name: IMAGE MODE AMI | Create workspace directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - "{{ image_mode_workspace }}"
+        - "{{ image_mode_files_directory }}"
+        - "{{ image_mode_output_directory }}"
 
-- name: IMAGE MODE AMI | Render application index page
-  ansible.builtin.template:
-    src: index.html.j2
-    dest: "{{ image_mode_index_path }}"
-    owner: root
-    group: root
-    mode: "0644"
+    - name: IMAGE MODE AMI | Render application index page
+      ansible.builtin.template:
+        src: index.html.j2
+        dest: "{{ image_mode_index_path }}"
+        owner: root
+        group: root
+        mode: "0644"
 
-- name: IMAGE MODE AMI | Render bootc Containerfile
-  ansible.builtin.template:
-    src: Containerfile.j2
-    dest: "{{ image_mode_containerfile_path }}"
-    owner: root
-    group: root
-    mode: "0644"
+    - name: IMAGE MODE AMI | Copy NGINX configuration
+      ansible.builtin.copy:
+        src: "{{ role_path }}/files/nginx.conf"
+        dest: "{{ image_mode_files_directory }}/nginx.conf"
+        owner: root
+        group: root
+        mode: "0644"
 
-- name: IMAGE MODE AMI | Render bootc-image-builder configuration
-  ansible.builtin.template:
-    src: config.toml.j2
-    dest: "{{ image_mode_config_path }}"
-    owner: root
-    group: root
-    mode: "0600"
-  no_log: true
+    - name: IMAGE MODE AMI | Render bootc Containerfile
+      ansible.builtin.template:
+        src: Containerfile.j2
+        dest: "{{ image_mode_containerfile_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: IMAGE MODE AMI | Render bootc-image-builder configuration
+      ansible.builtin.template:
+        src: config.toml.j2
+        dest: "{{ image_mode_config_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+- name: IMAGE MODE AMI | Validate preserved manual-build workspace
+  when: not (automated_build | bool)
+  block:
+    - name: IMAGE MODE AMI | Inspect manual-build workspace
+      ansible.builtin.stat:
+        path: "{{ image_mode_workspace }}"
+      register: image_mode_manual_workspace
+
+    - name: IMAGE MODE AMI | Inspect manual-build Containerfile
+      ansible.builtin.stat:
+        path: "{{ image_mode_containerfile_path }}"
+      register: image_mode_manual_containerfile
+
+    - name: IMAGE MODE AMI | Inspect manual-build NGINX configuration
+      ansible.builtin.stat:
+        path: "{{ image_mode_files_directory }}/nginx.conf"
+      register: image_mode_manual_nginx_config
+
+    - name: IMAGE MODE AMI | Inspect manual-build configuration
+      ansible.builtin.stat:
+        path: "{{ image_mode_config_path }}"
+      register: image_mode_manual_config
+
+    - name: IMAGE MODE AMI | Validate manual-build files
+      ansible.builtin.assert:
+        that:
+          - image_mode_manual_workspace.stat.exists
+          - image_mode_manual_workspace.stat.isdir
+          - image_mode_manual_containerfile.stat.exists
+          - image_mode_manual_containerfile.stat.isreg
+          - image_mode_manual_nginx_config.stat.exists
+          - image_mode_manual_nginx_config.stat.isreg
+          - image_mode_manual_config.stat.exists
+          - image_mode_manual_config.stat.isreg
+        fail_msg: >-
+          Manual build mode preserves the existing workspace, but one or more
+          required files are missing. Confirm that {{ image_mode_workspace }},
+          {{ image_mode_containerfile_path }},
+          {{ image_mode_files_directory }}/nginx.conf, and
+          {{ image_mode_config_path }} exist.

@@ -249,7 +249,7 @@
       - "{{ image_mode_image_reference }}"
       - --format
       - >-
-        {{ '{{' }} index .Config.Labels
+        {{ '{{' }} index .Labels
         "com.redhat.image-mode.rhel-release" {{ '}}' }}
   register: image_mode_built_image_release
   changed_when: false
@@ -263,7 +263,7 @@
         == image_mode_rhel_release
     fail_msg: >-
       The built image reports RHEL release
-      {{ image_mode_built_image_release.stdout | trim | default('unknown') }},
+      {{ image_mode_built_image_release.stdout | trim | default('unknown', true) }},
       but the selected Satellite release is
       {{ image_mode_rhel_release }}.
 
@@ -298,7 +298,7 @@
       - "{{ image_mode_image_reference }}"
       - --format
       - >-
-        {{ '{{' }} index .Config.Labels "containers.bootc" {{ '}}' }}
+        {{ '{{' }} index .Labels "containers.bootc" {{ '}}' }}
   register: image_mode_bootc_label
   changed_when: false
 
@@ -323,4 +323,3 @@
   register: image_mode_container_push
   changed_when: true
   when: image_mode_push_container | bool
-

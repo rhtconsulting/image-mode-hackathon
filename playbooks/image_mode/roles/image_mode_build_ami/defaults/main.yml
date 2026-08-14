@@ -151,6 +151,9 @@ image_mode_ami_discovery_retries: 30
 image_mode_ami_discovery_delay: 10
 image_mode_ami_available_timeout_seconds: 3600
 
+image_mode_automated_build: true
+
+
 ###############################################################################
 # Tags
 ###############################################################################
@@ -168,6 +171,7 @@ image_mode_ami_tags:
 image_mode_base_images:
   "9": "registry.redhat.io/rhel9/rhel-bootc:latest"
   "10": "registry.redhat.io/rhel10/rhel-bootc:latest"
+
 
 ################################################################################
 # GitLab synchronization

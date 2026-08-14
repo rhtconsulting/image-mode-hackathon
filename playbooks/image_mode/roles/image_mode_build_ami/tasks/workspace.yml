@@ -30,7 +30,7 @@
     - name: IMAGE MODE AMI | Copy NGINX configuration
       ansible.builtin.copy:
         src: nginx.conf
-        dest: "{{ image_mode_files_directory }}/nginx.conf"
+        dest: "{{ role_path }}/files/nginx.conf"
         owner: root
         group: root
         mode: "0644"

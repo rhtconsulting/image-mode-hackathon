@@ -228,6 +228,10 @@
       - "IMAGE_MODE_BASE_IMAGE={{ image_mode_base_image }}"
       - --build-arg
       - "IMAGE_MODE_RHEL_RELEASE={{ image_mode_rhel_release }}"
+      - --label
+      - "com.redhat.image-mode.rhel-release={{ image_mode_rhel_release }}"
+      - --label
+      - "containers.bootc=1"
       - --tag
       - "{{ image_mode_image_reference }}"
       - --file

@@ -158,6 +158,19 @@
     or image_mode_podman_restorecon.stderr | trim | length > 0
   become: true
 
+###############################################################################
+# Select bootc base image
+###############################################################################
+
+- name: IMAGE MODE AMI | Select bootc base image
+  ansible.builtin.set_fact:
+    image_mode_base_image: >-
+      {{
+        image_mode_base_images[
+          image_mode_rhel_major_version
+        ]
+      }}
+
 - name: IMAGE MODE AMI | Verify container execution
   ansible.builtin.command:
     argv:
@@ -171,19 +184,6 @@
   register: image_mode_container_runtime_test
   changed_when: false
   become: true
-
-###############################################################################
-# Select bootc base image
-###############################################################################
-
-- name: IMAGE MODE AMI | Select bootc base image
-  ansible.builtin.set_fact:
-    image_mode_base_image: >-
-      {{
-        image_mode_base_images[
-          image_mode_rhel_major_version
-        ]
-      }}
 
 - name: IMAGE MODE AMI | Display build configuration
   ansible.builtin.debug:
@@ -217,6 +217,25 @@
 ###############################################################################
 # Build bootc container
 ###############################################################################
+
+- name: IMAGE MODE AMI | Validate tagged image reference
+  ansible.builtin.assert:
+    that:
+      - image_mode_image_reference is defined
+      - image_mode_image_reference | length > 0
+      - >-
+        image_mode_image_reference
+        is match('^.+/[^/:]+:[^/:]+$')
+    fail_msg: >-
+      image_mode_image_reference must be a complete, tagged container
+      reference such as quay.example.com/image-mode/dev-nginx:v1.
+
+- name: IMAGE MODE AMI | Render Containerfile from template
+  ansible.builtin.template:
+    src: Containerfile.j2
+    dest: "{{ image_mode_workspace }}/Containerfile"
+    mode: "0644"
+  register: image_mode_containerfile_template
 
 - name: IMAGE MODE AMI | Build bootc container
   ansible.builtin.command:

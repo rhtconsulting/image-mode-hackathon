@@ -2,6 +2,10 @@
 # Image Mode bootc container
 ###############################################################################
 
+{% set image_mode_template_leaf = image_mode_image_reference | regex_replace('^.*/', '') %}
+{% set image_mode_template_name = image_mode_template_leaf | regex_replace(':[^:]+$', '') %}
+{% set image_mode_template_version = image_mode_template_leaf | regex_replace('^.*:', '') %}
+
 ARG IMAGE_MODE_BASE_IMAGE
 
 FROM ${IMAGE_MODE_BASE_IMAGE}
@@ -221,15 +225,15 @@ RUN set -eux; \
 
 RUN set -eux; \
     printf '%s\n' \
-        'IMAGE_NAME=sample-rhel9' \
-        'IMAGE_VERSION=v1' \
-        "RHEL_RELEASE=${IMAGE_MODE_RHEL_RELEASE}" \
-        "RHEL_VERSION=${IMAGE_MODE_RHEL_RELEASE}" \
+        'IMAGE_NAME={{ image_mode_template_name }}' \
+        'IMAGE_VERSION={{ image_mode_template_version }}' \
+        'RHEL_RELEASE={{ image_mode_rhel_release }}' \
+        'RHEL_VERSION={{ image_mode_rhel_release }}' \
         'APPLICATION=nginx' \
         'HTTPS_ENABLED=true' \
         'HTTPS_PORT=443' \
-        'CONTAINER_IMAGE=quay-1.lab.sandbox3513.opentlc.com/image-mode/sample-rhel9:v1' \
-        "BASE_IMAGE=${IMAGE_MODE_BASE_IMAGE}" \
+        'CONTAINER_IMAGE={{ image_mode_image_reference }}' \
+        'BASE_IMAGE={{ image_mode_base_image }}' \
         'SATELLITE_CLIENT=subscription-manager' \
         'SATELLITE_REGISTRATION=first-boot' \
         'SATELLITE_FACT_SERVICE=rhsmcertd' \
@@ -242,10 +246,11 @@ RUN set -eux; \
 ###############################################################################
 
 LABEL containers.bootc="1" \
-      org.opencontainers.image.title="sample-rhel9" \
-      org.opencontainers.image.version="v1" \
-      com.redhat.image-mode.rhel-release="${IMAGE_MODE_RHEL_RELEASE}" \
-      com.redhat.image-mode.base-image="${IMAGE_MODE_BASE_IMAGE}" \
+      org.opencontainers.image.title="{{ image_mode_template_name }}" \
+      org.opencontainers.image.version="{{ image_mode_template_version }}" \
+      org.opencontainers.image.ref.name="{{ image_mode_image_reference }}" \
+      com.redhat.image-mode.rhel-release="{{ image_mode_rhel_release }}" \
+      com.redhat.image-mode.base-image="{{ image_mode_base_image }}" \
       com.redhat.image-mode.application="nginx" \
       com.redhat.image-mode.https="enabled" \
       com.redhat.image-mode.satellite-client="subscription-manager" \

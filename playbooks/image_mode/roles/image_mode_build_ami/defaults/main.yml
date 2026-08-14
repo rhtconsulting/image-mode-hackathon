@@ -151,7 +151,7 @@ image_mode_ami_discovery_retries: 30
 image_mode_ami_discovery_delay: 10
 image_mode_ami_available_timeout_seconds: 3600
 
-image_mode_automated_build: true
+automated_build: true
 
 
 ###############################################################################

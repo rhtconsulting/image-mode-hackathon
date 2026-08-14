@@ -1,6 +1,6 @@
 ---
 - name: IMAGE MODE AMI | Generate automated build workspace
-  when: image_mode_automated_build | bool
+  when: automated_build | bool
   block:
     - name: IMAGE MODE AMI | Remove previous workspace
       ansible.builtin.file:
@@ -45,7 +45,7 @@
       no_log: true
 
 - name: IMAGE MODE AMI | Validate preserved manual-build workspace
-  when: not (image_mode_automated_build | bool)
+  when: not (automated_build | bool)
   block:
     - name: IMAGE MODE AMI | Inspect manual-build workspace
       ansible.builtin.stat:

@@ -28,7 +28,7 @@
   ansible.builtin.import_tasks: git_sync.yml
   when:
     - image_mode_build_required | bool
-    - image_mode_automated_build | bool
+    - automated_build | bool
     - image_mode_git_sync_enabled | bool
 
 

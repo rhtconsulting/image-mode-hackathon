@@ -142,6 +142,8 @@ image_mode_vmimport_role_name: "vmimport"
 # Build controls
 ###############################################################################
 
+automated_build: true
+
 image_mode_force_rebuild: false
 image_mode_pull_base_image: true
 image_mode_push_container: true
@@ -150,9 +152,6 @@ image_mode_validate_registry_logins: true
 image_mode_ami_discovery_retries: 30
 image_mode_ami_discovery_delay: 10
 image_mode_ami_available_timeout_seconds: 3600
-
-automated_build: true
-
 
 ###############################################################################
 # Tags

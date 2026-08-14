@@ -29,7 +29,7 @@
 
     - name: IMAGE MODE AMI | Copy NGINX configuration
       ansible.builtin.copy:
-        src: "{{ role_path }}/files/snginx.conf"
+        src: "{{ role_path }}/files/nginx.conf"
         dest: "{{ image_mode_files_directory }}/nginx.conf"
         owner: root
         group: root

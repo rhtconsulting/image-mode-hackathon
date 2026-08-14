@@ -11,18 +11,21 @@
   ansible.builtin.assert:
     that:
       - automated_build is defined
-      - automated_build | type_debug == "bool"
+      - (automated_build | string | lower) in ['true', 'false']
     fail_msg: >-
-      automated_build must be a YAML boolean. Set it to true for an automated
-      clean build, or false for a manual build that preserves the existing
-      workspace.
+      automated_build must be true for an automated clean build or false for
+      a manual build that preserves the existing workspace.
+
+- name: IMAGE MODE AMI | Normalize automated build setting
+  ansible.builtin.set_fact:
+    automated_build: "{{ automated_build | bool }}"
 
 - name: IMAGE MODE AMI | Determine build type
   ansible.builtin.set_fact:
     image_mode_build_type: >-
       {{
         'AUTOMATED'
-        if automated_build | bool
+        if automated_build
         else 'MANUAL'
       }}
 
@@ -34,14 +37,14 @@
         Workspace behavior:
         {{
           'remove and regenerate the workspace from role templates'
-          if automated_build | bool
+          if automated_build
           else 'preserve and build the existing user-managed workspace'
         }}
       - >-
         Git synchronization:
         {{
           'enabled when image_mode_git_sync_enabled is true'
-          if automated_build | bool
+          if automated_build
           else 'disabled for manual builds'
         }}
 

@@ -1,4 +1,3 @@
-############################################################
 # Generate Ansible Inventory File
 ############################################################
 
@@ -26,7 +25,7 @@ resource "local_file" "ansible_inventory" {
     )
 
     keycloak_installer_s3_bucket = (
-      aws_s3_bucket.image_mode_artifacts.bucket
+      var.keycloak_installer_s3_bucket
     )
 
     keycloak_installer_s3_key = (

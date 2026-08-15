@@ -125,6 +125,39 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
         ]
 
         Resource = "${aws_s3_bucket.image_mode_artifacts.arn}/*"
+      },
+
+      #########################################################################
+      # Read the Keycloak installer from the existing installer bucket
+      #########################################################################
+
+      {
+        Sid    = "ListKeycloakInstaller"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetBucketLocation",
+          "s3:ListBucket"
+        ]
+
+        Resource = "arn:aws:s3:::${var.keycloak_installer_s3_bucket}"
+
+        Condition = {
+          StringLike = {
+            "s3:prefix" = [var.keycloak_installer_s3_key]
+          }
+        }
+      },
+      {
+        Sid    = "DownloadKeycloakInstaller"
+        Effect = "Allow"
+
+        Action = [
+          "s3:GetObject",
+          "s3:GetObjectVersion"
+        ]
+
+        Resource = "arn:aws:s3:::${var.keycloak_installer_s3_bucket}/${var.keycloak_installer_s3_key}"
       }
     ]
   })

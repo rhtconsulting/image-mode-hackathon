@@ -193,7 +193,7 @@ output "ansible_inventory" {
     )
 
     keycloak_installer_s3_bucket = (
-      aws_s3_bucket.image_mode_artifacts.id
+      var.keycloak_installer_s3_bucket
     )
 
     keycloak_installer_s3_key = (
@@ -1116,9 +1116,9 @@ output "keycloak_servers" {
         ""
       )
 
-      installer_s3_bucket = aws_s3_bucket.image_mode_artifacts.id
+      installer_s3_bucket = var.keycloak_installer_s3_bucket
       installer_s3_key    = var.keycloak_installer_s3_key
-      installer_s3_uri    = "s3://${aws_s3_bucket.image_mode_artifacts.id}/${var.keycloak_installer_s3_key}"
+      installer_s3_uri    = "s3://${var.keycloak_installer_s3_bucket}/${var.keycloak_installer_s3_key}"
 
       ssh = "ssh -i ${local.ansible_ssh_private_key_file} ec2-user@${coalesce(
         try(aws_eip.server[name].public_ip, null),
@@ -1142,7 +1142,7 @@ output "keycloak_urls" {
 
 output "keycloak_installer_s3_uri" {
   description = "S3 URI Ansible uses to copy the Keycloak installer ZIP to Keycloak servers."
-  value       = "s3://${aws_s3_bucket.image_mode_artifacts.id}/${var.keycloak_installer_s3_key}"
+  value       = "s3://${var.keycloak_installer_s3_bucket}/${var.keycloak_installer_s3_key}"
 }
 
 output "keycloak_acm_certificate_arns" {

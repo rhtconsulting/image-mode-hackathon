@@ -312,10 +312,21 @@ variable "servers" {
 # Keycloak Installation Settings
 ############################################################
 
+variable "keycloak_installer_s3_bucket" {
+  type        = string
+  default     = "aap-containerized-installers"
+  description = "Existing S3 bucket containing the Red Hat Build of Keycloak installer ZIP."
+
+  validation {
+    condition     = trimspace(var.keycloak_installer_s3_bucket) != ""
+    error_message = "keycloak_installer_s3_bucket cannot be empty."
+  }
+}
+
 variable "keycloak_installer_s3_key" {
   type        = string
-  default     = "keycloak/keycloak-installer.zip"
-  description = "Object key of the Keycloak installer ZIP in the shared Image Mode artifact bucket."
+  default     = "rhbk-26.6.5.zip"
+  description = "Object key of the Red Hat Build of Keycloak installer ZIP."
 
   validation {
     condition = (

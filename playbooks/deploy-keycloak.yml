@@ -1,0 +1,551 @@
+---
+- name: Deploy and configure Red Hat Build of Keycloak
+  hosts: keycloak
+  become: true
+  gather_facts: true
+
+  vars:
+    keycloak_service_user: keycloak
+    keycloak_service_group: keycloak
+    keycloak_install_root: /opt/keycloak
+    keycloak_release_dir: "/opt/rhbk-26.6.5"
+    keycloak_installer_local_path: "/var/tmp/{{ keycloak_installer_s3_key }}"
+    keycloak_tls_dir: /etc/keycloak/tls
+    keycloak_tls_certificate_file: "{{ keycloak_tls_dir }}/tls.crt"
+    keycloak_tls_private_key_file: "{{ keycloak_tls_dir }}/tls.key"
+    keycloak_admin_username: admin
+    keycloak_admin_password_secret_name: "{{ secret_prefix }}/keycloak/admin_password"
+    keycloak_idm_admin_password_secret_name: "{{ secret_prefix }}/idm/admin_password"
+    keycloak_realm_name: "{{ idm_realm_name | lower }}"
+    keycloak_ldap_provider_name: red-hat-idm
+    keycloak_https_url: "https://{{ keycloak_hostname | default(inventory_hostname) }}"
+    keycloak_ldap_url: "ldap://{{ idm_server_fqdn }}:389"
+    keycloak_ldap_base_dn: "{{ idm_domain_name.split('.') | map('regex_replace', '^(.*)$', 'dc=\\1') | join(',') }}"
+    keycloak_ldap_users_dn: "cn=users,cn=accounts,{{ keycloak_ldap_base_dn }}"
+    keycloak_ldap_bind_dn: "uid=admin,cn=users,cn=accounts,{{ keycloak_ldap_base_dn }}"
+
+  pre_tasks:
+    - name: Validate required Keycloak inventory variables
+      ansible.builtin.assert:
+        that:
+          - keycloak_installer_s3_bucket | default('') | length > 0
+          - keycloak_installer_s3_key | default('') | length > 0
+          - acm_certificate_arn | default('') | length > 0
+          - idm_server_fqdn | default('') | length > 0
+          - idm_domain_name | default('') | length > 0
+          - idm_users is iterable
+        fail_msg: >-
+          Keycloak requires its installer bucket/key, ACM certificate ARN,
+          IdM server/domain, and idm_users in the generated inventory.
+
+  tasks:
+    ###########################################################################
+    # Phase 1: prerequisites and installer
+    ###########################################################################
+
+    - name: Install Keycloak operating-system prerequisites
+      ansible.builtin.dnf:
+        name:
+          - java-21-openjdk-headless
+          - openssl
+          - unzip
+        state: present
+      tags: [keycloak, keycloak_install]
+
+    - name: Verify that the AWS CLI is available on the Keycloak host
+      ansible.builtin.command:
+        argv:
+          - aws
+          - --version
+      changed_when: false
+      tags: [keycloak, keycloak_install]
+
+    - name: Create Keycloak service group
+      ansible.builtin.group:
+        name: "{{ keycloak_service_group }}"
+        system: true
+        state: present
+      tags: [keycloak, keycloak_install]
+
+    - name: Create Keycloak service user
+      ansible.builtin.user:
+        name: "{{ keycloak_service_user }}"
+        group: "{{ keycloak_service_group }}"
+        home: "{{ keycloak_install_root }}"
+        shell: /sbin/nologin
+        system: true
+        create_home: false
+        state: present
+      tags: [keycloak, keycloak_install]
+
+    - name: Download the RHBK installer from the existing S3 bucket
+      ansible.builtin.command:
+        argv:
+          - aws
+          - s3
+          - cp
+          - "s3://{{ keycloak_installer_s3_bucket }}/{{ keycloak_installer_s3_key }}"
+          - "{{ keycloak_installer_local_path }}"
+      register: keycloak_installer_download
+      changed_when: keycloak_installer_download.rc == 0
+      tags: [keycloak, keycloak_install]
+
+    - name: Create the RHBK release directory
+      ansible.builtin.file:
+        path: "{{ keycloak_release_dir }}"
+        state: directory
+        owner: "{{ keycloak_service_user }}"
+        group: "{{ keycloak_service_group }}"
+        mode: "0750"
+      tags: [keycloak, keycloak_install]
+
+    - name: Extract the RHBK installer
+      ansible.builtin.unarchive:
+        src: "{{ keycloak_installer_local_path }}"
+        dest: /opt
+        remote_src: true
+        owner: "{{ keycloak_service_user }}"
+        group: "{{ keycloak_service_group }}"
+        creates: "{{ keycloak_release_dir }}/bin/kc.sh"
+      notify: Restart Keycloak
+      tags: [keycloak, keycloak_install]
+
+    - name: Link the active Keycloak installation
+      ansible.builtin.file:
+        src: "{{ keycloak_release_dir }}"
+        dest: "{{ keycloak_install_root }}"
+        state: link
+        force: true
+      notify: Restart Keycloak
+      tags: [keycloak, keycloak_install]
+
+    ###########################################################################
+    # Phase 2: retrieve credentials and stage the Terraform ACM certificate
+    ###########################################################################
+
+    - name: Read the generated Keycloak bootstrap password
+      ansible.builtin.command:
+        argv:
+          - aws
+          - --profile
+          - "{{ aws_profile }}"
+          - --region
+          - "{{ aws_region }}"
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ keycloak_admin_password_secret_name }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      delegate_to: localhost
+      become: false
+      register: keycloak_admin_password_result
+      changed_when: false
+      no_log: true
+      tags: [keycloak, keycloak_secrets]
+
+    - name: Read the IdM bind password
+      ansible.builtin.command:
+        argv:
+          - aws
+          - --profile
+          - "{{ aws_profile }}"
+          - --region
+          - "{{ aws_region }}"
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ keycloak_idm_admin_password_secret_name }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      delegate_to: localhost
+      become: false
+      register: keycloak_idm_password_result
+      changed_when: false
+      no_log: true
+      tags: [keycloak, keycloak_secrets, keycloak_idm]
+
+    - name: Generate a one-time ACM export passphrase
+      ansible.builtin.set_fact:
+        keycloak_acm_export_passphrase: >-
+          {{ lookup('ansible.builtin.password', '/dev/null', length=32,
+             chars=['ascii_letters', 'digits']) }}
+      no_log: true
+      tags: [keycloak, keycloak_tls]
+
+    - name: Export the Terraform-managed ACM certificate
+      ansible.builtin.command:
+        argv:
+          - aws
+          - --profile
+          - "{{ aws_profile }}"
+          - --region
+          - "{{ aws_region }}"
+          - acm
+          - export-certificate
+          - --certificate-arn
+          - "{{ acm_certificate_arn }}"
+          - --passphrase
+          - fileb:///dev/stdin
+        stdin: "{{ keycloak_acm_export_passphrase }}"
+        stdin_add_newline: false
+      delegate_to: localhost
+      become: false
+      register: keycloak_exported_certificate_result
+      changed_when: false
+      no_log: true
+      tags: [keycloak, keycloak_tls]
+
+    - name: Decrypt the exported ACM private key
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail;
+          printf '%s' "$KEYCLOAK_ENCRYPTED_KEY" |
+          openssl pkey -passin env:KEYCLOAK_EXPORT_PASSPHRASE
+        executable: /bin/bash
+      environment:
+        KEYCLOAK_ENCRYPTED_KEY: >-
+          {{ (keycloak_exported_certificate_result.stdout | from_json).PrivateKey }}
+        KEYCLOAK_EXPORT_PASSPHRASE: "{{ keycloak_acm_export_passphrase }}"
+      delegate_to: localhost
+      become: false
+      register: keycloak_private_key_result
+      changed_when: false
+      no_log: true
+      tags: [keycloak, keycloak_tls]
+
+    - name: Create the Keycloak TLS directory
+      ansible.builtin.file:
+        path: "{{ keycloak_tls_dir }}"
+        state: directory
+        owner: root
+        group: "{{ keycloak_service_group }}"
+        mode: "0750"
+      tags: [keycloak, keycloak_tls]
+
+    - name: Install the ACM certificate and chain
+      ansible.builtin.copy:
+        content: |-
+          {{ (keycloak_exported_certificate_result.stdout | from_json).Certificate }}
+          {{ (keycloak_exported_certificate_result.stdout | from_json).CertificateChain }}
+        dest: "{{ keycloak_tls_certificate_file }}"
+        owner: root
+        group: "{{ keycloak_service_group }}"
+        mode: "0640"
+      notify: Restart Keycloak
+      no_log: true
+      tags: [keycloak, keycloak_tls]
+
+    - name: Install the decrypted ACM private key
+      ansible.builtin.copy:
+        content: "{{ keycloak_private_key_result.stdout }}\n"
+        dest: "{{ keycloak_tls_private_key_file }}"
+        owner: root
+        group: "{{ keycloak_service_group }}"
+        mode: "0640"
+      notify: Restart Keycloak
+      no_log: true
+      tags: [keycloak, keycloak_tls]
+
+    ###########################################################################
+    # Phase 3: configure and start RHBK in production HTTPS mode
+    ###########################################################################
+
+    - name: Configure Keycloak production settings
+      ansible.builtin.copy:
+        dest: "{{ keycloak_install_root }}/conf/keycloak.conf"
+        owner: "{{ keycloak_service_user }}"
+        group: "{{ keycloak_service_group }}"
+        mode: "0640"
+        content: |
+          hostname={{ keycloak_hostname | default(inventory_hostname) }}
+          http-enabled=false
+          https-port=443
+          https-certificate-file={{ keycloak_tls_certificate_file }}
+          https-certificate-key-file={{ keycloak_tls_private_key_file }}
+          health-enabled=true
+          metrics-enabled=true
+      notify: Restart Keycloak
+      tags: [keycloak, keycloak_config]
+
+    - name: Install the Keycloak systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/keycloak.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Red Hat Build of Keycloak
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=idle
+          User={{ keycloak_service_user }}
+          Group={{ keycloak_service_group }}
+          EnvironmentFile=/etc/keycloak/keycloak.env
+          ExecStart={{ keycloak_install_root }}/bin/kc.sh start
+          WorkingDirectory={{ keycloak_install_root }}
+          Restart=on-failure
+          RestartSec=10
+          TimeoutStartSec=180
+          LimitNOFILE=102642
+          AmbientCapabilities=CAP_NET_BIND_SERVICE
+          CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+          NoNewPrivileges=true
+
+          [Install]
+          WantedBy=multi-user.target
+      notify:
+        - Reload systemd
+        - Restart Keycloak
+      no_log: true
+      tags: [keycloak, keycloak_config]
+
+    - name: Install the protected Keycloak service environment
+      ansible.builtin.copy:
+        dest: /etc/keycloak/keycloak.env
+        owner: root
+        group: "{{ keycloak_service_group }}"
+        mode: "0640"
+        content: |
+          KC_BOOTSTRAP_ADMIN_USERNAME={{ keycloak_admin_username }}
+          KC_BOOTSTRAP_ADMIN_PASSWORD={{ keycloak_admin_password_result.stdout }}
+      notify: Restart Keycloak
+      no_log: true
+      tags: [keycloak, keycloak_config]
+
+    - name: Apply service changes before IdM federation
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and start Keycloak
+      ansible.builtin.systemd_service:
+        name: keycloak
+        enabled: true
+        state: started
+      tags: [keycloak, keycloak_service]
+
+    - name: Wait for the Keycloak HTTPS endpoint
+      ansible.builtin.uri:
+        url: "{{ keycloak_https_url }}/realms/master"
+        method: GET
+        status_code: 200
+        validate_certs: true
+      register: keycloak_health_check
+      retries: 30
+      delay: 10
+      until: keycloak_health_check.status == 200
+      tags: [keycloak, keycloak_service]
+
+    ###########################################################################
+    # Phase 4: create realm and configure Red Hat IdM user federation
+    ###########################################################################
+
+    - name: Authenticate the Keycloak administration CLI
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - config
+          - credentials
+          - --server
+          - "{{ keycloak_https_url }}"
+          - --realm
+          - master
+          - --user
+          - "{{ keycloak_admin_username }}"
+          - --password
+          - "{{ keycloak_admin_password_result.stdout }}"
+      become_user: "{{ keycloak_service_user }}"
+      changed_when: false
+      no_log: true
+      tags: [keycloak, keycloak_idm]
+
+    - name: Check whether the lab realm exists
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - get
+          - "realms/{{ keycloak_realm_name }}"
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_realm_check
+      changed_when: false
+      failed_when: keycloak_realm_check.rc not in [0, 1]
+      tags: [keycloak, keycloak_idm]
+
+    - name: Create the lab realm
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - create
+          - realms
+          - -s
+          - "realm={{ keycloak_realm_name }}"
+          - -s
+          - enabled=true
+          - -s
+          - loginWithEmailAllowed=true
+      become_user: "{{ keycloak_service_user }}"
+      when: keycloak_realm_check.rc != 0
+      tags: [keycloak, keycloak_idm]
+
+    - name: Read the lab realm ID
+      ansible.builtin.shell:
+        cmd: >-
+          {{ keycloak_install_root }}/bin/kcadm.sh
+          get realms/{{ keycloak_realm_name | quote }}
+          --fields id --format csv --noquotes | head -n 1
+        executable: /bin/bash
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_realm_id
+      changed_when: false
+      tags: [keycloak, keycloak_idm]
+
+    - name: Find the existing IdM LDAP provider
+      ansible.builtin.shell:
+        cmd: >-
+          {{ keycloak_install_root }}/bin/kcadm.sh get components
+          -r {{ keycloak_realm_name | quote }}
+          -q name={{ keycloak_ldap_provider_name | quote }}
+          --fields id --format csv --noquotes | head -n 1
+        executable: /bin/bash
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_ldap_provider_lookup
+      changed_when: false
+      tags: [keycloak, keycloak_idm]
+
+    - name: Create the IdM LDAP federation provider
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - create
+          - components
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - "name={{ keycloak_ldap_provider_name }}"
+          - -s
+          - providerId=ldap
+          - -s
+          - providerType=org.keycloak.storage.UserStorageProvider
+          - -s
+          - parentId={{ keycloak_realm_id.stdout | trim }}
+          - -s
+          - 'config.vendor=["other"]'
+          - -s
+          - 'config.enabled=["true"]'
+          - -s
+          - 'config.priority=["0"]'
+          - -s
+          - 'config.connectionUrl=["{{ keycloak_ldap_url }}"]'
+          - -s
+          - 'config.usersDn=["{{ keycloak_ldap_users_dn }}"]'
+          - -s
+          - 'config.bindDn=["{{ keycloak_ldap_bind_dn }}"]'
+          - -s
+          - 'config.bindCredential=["{{ keycloak_idm_password_result.stdout }}"]'
+          - -s
+          - 'config.authType=["simple"]'
+          - -s
+          - 'config.editMode=["READ_ONLY"]'
+          - -s
+          - 'config.importEnabled=["true"]'
+          - -s
+          - 'config.syncRegistrations=["false"]'
+          - -s
+          - 'config.usernameLDAPAttribute=["uid"]'
+          - -s
+          - 'config.rdnLDAPAttribute=["uid"]'
+          - -s
+          - 'config.uuidLDAPAttribute=["ipaUniqueID"]'
+          - -s
+          - 'config.userObjectClasses=["inetOrgPerson,organizationalPerson"]'
+          - -s
+          - 'config.searchScope=["1"]'
+          - -s
+          - 'config.pagination=["true"]'
+          - -s
+          - 'config.connectionPooling=["true"]'
+          - -s
+          - 'config.fullSyncPeriod=["-1"]'
+          - -s
+          - 'config.changedSyncPeriod=["-1"]'
+          - -s
+          - 'config.cachePolicy=["DEFAULT"]'
+      become_user: "{{ keycloak_service_user }}"
+      when: keycloak_ldap_provider_lookup.stdout | trim == ''
+      no_log: true
+      tags: [keycloak, keycloak_idm]
+
+    - name: Read the IdM LDAP provider ID
+      ansible.builtin.shell:
+        cmd: >-
+          {{ keycloak_install_root }}/bin/kcadm.sh get components
+          -r {{ keycloak_realm_name | quote }}
+          -q name={{ keycloak_ldap_provider_name | quote }}
+          --fields id --format csv --noquotes | head -n 1
+        executable: /bin/bash
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_ldap_provider_id
+      changed_when: false
+      tags: [keycloak, keycloak_idm]
+
+    - name: Synchronize IdM users into Keycloak
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - create
+          - "user-storage/{{ keycloak_ldap_provider_id.stdout | trim }}/sync"
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -q
+          - action=triggerFullSync
+      become_user: "{{ keycloak_service_user }}"
+      changed_when: true
+      tags: [keycloak, keycloak_idm]
+
+    ###########################################################################
+    # Phase 5: grant the IdM administrators Keycloak realm administration
+    ###########################################################################
+
+    - name: Grant IdM administrators the Keycloak realm-admin role
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - add-roles
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - --uusername
+          - "{{ item }}"
+          - --cclientid
+          - realm-management
+          - --rolename
+          - realm-admin
+      become_user: "{{ keycloak_service_user }}"
+      loop: "{{ idm_users }}"
+      changed_when: true
+      no_log: true
+      tags: [keycloak, keycloak_idm, keycloak_admins]
+
+    - name: Verify the Keycloak public endpoint
+      ansible.builtin.uri:
+        url: "{{ keycloak_https_url }}/realms/{{ keycloak_realm_name }}"
+        method: GET
+        status_code: 200
+        validate_certs: true
+      tags: [keycloak, keycloak_verify]
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Restart Keycloak
+      ansible.builtin.systemd_service:
+        name: keycloak
+        enabled: true
+        state: restarted

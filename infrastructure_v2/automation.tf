@@ -1,3 +1,4 @@
+############################################################
 # Generate Ansible Inventory File
 ############################################################
 
@@ -22,6 +23,14 @@ resource "local_file" "ansible_inventory" {
 
     image_mode_artifact_bucket = (
       aws_s3_bucket.image_mode_artifacts.bucket
+    )
+
+    keycloak_installer_s3_bucket = (
+      aws_s3_bucket.image_mode_artifacts.bucket
+    )
+
+    keycloak_installer_s3_key = (
+      var.keycloak_installer_s3_key
     )
 
     rhel_iam_credentials_secret_name = (

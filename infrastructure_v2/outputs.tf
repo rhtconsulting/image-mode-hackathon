@@ -18,16 +18,10 @@ output "servers" {
         ""
       )
 
-      instance_profile = (
-        local.flattened_servers[name].role == "aap"
-        ? aws_iam_instance_profile.aap.name
-        : local.flattened_servers[name].role == "satellite"
-        ? aws_iam_instance_profile.satellite.name
-        : local.flattened_servers[name].role == "gitlab"
-        ? aws_iam_instance_profile.gitlab_runtime.name
-        : local.flattened_servers[name].role == "image-builder"
-        ? aws_iam_instance_profile.image_builder.name
-        : aws_iam_instance_profile.lab_ec2_default.name
+      instance_profile = lookup(
+        local.instance_profile_by_role,
+        local.flattened_servers[name].role,
+        aws_iam_instance_profile.lab_ec2_default.name
       )
 
       ssh = try(
@@ -235,16 +229,10 @@ output "ansible_inventory" {
           instance.private_ip
         )
 
-        iam_instance_profile = (
-          local.flattened_servers[name].role == "aap"
-          ? aws_iam_instance_profile.aap.name
-          : local.flattened_servers[name].role == "satellite"
-          ? aws_iam_instance_profile.satellite.name
-          : local.flattened_servers[name].role == "gitlab"
-          ? aws_iam_instance_profile.gitlab_runtime.name
-          : local.flattened_servers[name].role == "image-builder"
-          ? aws_iam_instance_profile.image_builder.name
-          : aws_iam_instance_profile.lab_ec2_default.name
+        iam_instance_profile = lookup(
+          local.instance_profile_by_role,
+          local.flattened_servers[name].role,
+          aws_iam_instance_profile.lab_ec2_default.name
         )
 
         acm_certificate_arn = try(

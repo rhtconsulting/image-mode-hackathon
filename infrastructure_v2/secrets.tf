@@ -61,7 +61,8 @@ locals {
     "gitlab/rails_secret",
     "gitlab/otp_key_base",
     "gitlab/db_key_base",
-    "gitlab/openid_connect_client_secret"
+    "gitlab/openid_connect_client_secret",
+    "keycloak/admin_password"
 
   ])
 
@@ -71,7 +72,8 @@ locals {
     "quay/admin_access_token"    = "CHANGE_ME_AFTER_QUAY_DEPLOYMENT"
     "idm/default_user_password"  = var.idm_default_user_password
     # GitLab
-    "gitlab/root_username" = "root"
+    "gitlab/root_username"    = "root"
+    "keycloak/admin_username" = "admin"
 
   }
 

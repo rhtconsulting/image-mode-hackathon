@@ -24,6 +24,14 @@ rhel_iam_credentials_secret_name=${rhel_iam_credentials_secret_name}
 vmimport_role_name=${vmimport_role_name}
 
 ###############################################################################
+# Keycloak installation artifact
+###############################################################################
+
+keycloak_installer_s3_bucket=${keycloak_installer_s3_bucket}
+keycloak_installer_s3_key=${keycloak_installer_s3_key}
+keycloak_installer_s3_uri=s3://${keycloak_installer_s3_bucket}/${keycloak_installer_s3_key}
+
+###############################################################################
 # IdM and DNS
 ###############################################################################
 
@@ -114,7 +122,7 @@ idm_users=${jsonencode(idm_users)}
 [${replace(role, "-", "_")}]
 %{ for name, s in servers ~}
 %{ if s.role == role ~}
-${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} iam_instance_profile=${s.iam_instance_profile} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}%{ if s.role == "quay" } quay_hostname=${s.fqdn}%{ endif }%{ if s.role == "gitlab" } gitlab_hostname=${s.fqdn} gitlab_registry_port=${gitlab_registry_port}%{ endif }%{ if s.role == "image-builder" } image_builder_cockpit_port=${image_builder_cockpit_port}%{ endif }
+${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} iam_instance_profile=${s.iam_instance_profile} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}%{ if s.role == "quay" } quay_hostname=${s.fqdn}%{ endif }%{ if s.role == "gitlab" } gitlab_hostname=${s.fqdn} gitlab_registry_port=${gitlab_registry_port}%{ endif }%{ if s.role == "image-builder" } image_builder_cockpit_port=${image_builder_cockpit_port}%{ endif }%{ if s.role == "keycloak" } keycloak_hostname=${s.fqdn} keycloak_https_port=443%{ endif }
 %{ endif ~}
 %{ endfor ~}
 

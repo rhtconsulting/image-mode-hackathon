@@ -12,8 +12,9 @@ locals {
     gitlab        = aws_iam_instance_profile.gitlab_runtime.name
     image-builder = aws_iam_instance_profile.image_builder.name
 
-    # Keycloak currently needs only the shared lab permissions. Keeping this
-    # entry explicit makes its IAM assignment visible to future administrators.
+    # Keycloak deliberately uses the same default profile as the other common
+    # lab nodes. That role already has the shared artifact-bucket policy, so
+    # Ansible can copy the configured installer ZIP without another IAM policy.
     keycloak = aws_iam_instance_profile.lab_ec2_default.name
   }
 
@@ -39,6 +40,8 @@ resource "aws_instance" "server" {
   subnet_id     = aws_subnet.public.id
 
   vpc_security_group_ids = concat(
+    # aws_security_group.lab permits HTTPS on TCP/443. Keycloak receives this
+    # group automatically, so no Keycloak-only security group is required.
     [aws_security_group.lab.id],
     lookup(local.additional_security_groups_by_role, each.value.role, [])
   )
@@ -223,6 +226,9 @@ resource "aws_route53_record" "public_dns" {
 ############################################################
 
 resource "aws_acm_certificate" "server" {
+  # This iterates over every configured server, including keycloak-1. The
+  # certificate is exportable so Ansible can install it on the Keycloak host
+  # or its local HTTPS reverse proxy.
   for_each = (
     var.create_public_dns_records
     ? local.flattened_servers

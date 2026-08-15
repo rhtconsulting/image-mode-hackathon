@@ -309,6 +309,26 @@ variable "servers" {
 }
 
 ############################################################
+# Keycloak Installation Settings
+############################################################
+
+variable "keycloak_installer_s3_key" {
+  type        = string
+  default     = "keycloak/keycloak-installer.zip"
+  description = "Object key of the Keycloak installer ZIP in the shared Image Mode artifact bucket."
+
+  validation {
+    condition = (
+      trimspace(var.keycloak_installer_s3_key) != "" &&
+      !startswith(trimspace(var.keycloak_installer_s3_key), "/") &&
+      endswith(lower(trimspace(var.keycloak_installer_s3_key)), ".zip")
+    )
+
+    error_message = "keycloak_installer_s3_key must be a non-empty relative S3 object key ending in .zip."
+  }
+}
+
+############################################################
 # GitLab Settings
 ############################################################
 

@@ -6,7 +6,7 @@
   ansible.builtin.import_playbook: enroll-idm-clients.yml
 
 - name: Deploy Keycloak
-  ansible.builtin.import_playbook: deploy-keycloak
+  ansible.builtin.import_playbook: deploy-keycloak.yml
 
 - name: Deploy Gitlab
   ansible.builtin.import_playbook: deploy-gitlab.yml

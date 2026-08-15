@@ -11,15 +11,27 @@ locals {
     satellite     = aws_iam_instance_profile.satellite.name
     gitlab        = aws_iam_instance_profile.gitlab_runtime.name
     image-builder = aws_iam_instance_profile.image_builder.name
+
+    # Keycloak currently needs only the shared lab permissions. Keeping this
+    # entry explicit makes its IAM assignment visible to future administrators.
+    keycloak = aws_iam_instance_profile.lab_ec2_default.name
   }
 
   additional_security_groups_by_role = {
     gitlab        = [aws_security_group.gitlab.id]
     image-builder = [aws_security_group.image_builder.id]
+
+    # Keycloak uses aws_security_group.lab, which is always attached below.
+    # Add a Keycloak-specific security group here if nonstandard ports are
+    # exposed in network.tf later.
+    keycloak = []
   }
 }
 
 resource "aws_instance" "server" {
+  # local.flattened_servers contains keycloak-1 because variables.tf defines a
+  # keycloak role with count = 1. Increasing that count creates keycloak-2,
+  # keycloak-3, and so on through this same generic resource.
   for_each = local.flattened_servers
 
   ami           = local.selected_ami

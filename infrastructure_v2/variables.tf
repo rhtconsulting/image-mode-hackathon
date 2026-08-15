@@ -273,6 +273,16 @@ variable "servers" {
       root_volume   = 120
       extra_volume  = 500
     }
+
+    # Keycloak uses the shared/default EC2 instance profile and common lab
+    # security group unless role-specific mappings are added in compute.tf.
+    # Instances are named keycloak-1, keycloak-2, and so on.
+    keycloak = {
+      count         = 1
+      instance_type = "m6i.large"
+      root_volume   = 80
+      extra_volume  = 0
+    }
   }
 
   validation {
@@ -583,6 +593,10 @@ variable "public_server_names" {
     "quay-1",
     "gitlab-1"
   ]
+
+  # keycloak-1 intentionally does not receive an Elastic IP by default. The
+  # five entries above already consume the configured regional quota limit.
+  # Add keycloak-1 only after raising that quota or removing another entry.
 
   validation {
     condition = (

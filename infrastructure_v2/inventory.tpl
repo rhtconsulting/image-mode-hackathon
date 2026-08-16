@@ -24,6 +24,14 @@ rhel_iam_credentials_secret_name=${rhel_iam_credentials_secret_name}
 vmimport_role_name=${vmimport_role_name}
 
 ###############################################################################
+# Keycloak installation artifact
+###############################################################################
+
+keycloak_installer_s3_bucket=${keycloak_installer_s3_bucket}
+keycloak_installer_s3_key=${keycloak_installer_s3_key}
+keycloak_installer_s3_uri=s3://${keycloak_installer_s3_bucket}/${keycloak_installer_s3_key}
+
+###############################################################################
 # IdM and DNS
 ###############################################################################
 
@@ -104,67 +112,18 @@ lab_users=${jsonencode(lab_users)}
 idm_users=${jsonencode(idm_users)}
 
 ###############################################################################
-# IdM
+# Server groups
+#
+# Groups are generated from role names. A new role added to var.servers is
+# therefore immediately available to Ansible; hyphens become underscores.
 ###############################################################################
 
-[idm]
+%{ for role in sort(distinct([for name, s in servers : s.role])) ~}
+[${replace(role, "-", "_")}]
 %{ for name, s in servers ~}
-%{ if s.role == "idm" ~}
-${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} iam_instance_profile=${s.iam_instance_profile} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
+%{ if s.role == role ~}
+${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} iam_instance_profile=${s.iam_instance_profile} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}%{ if s.role == "quay" } quay_hostname=${s.fqdn}%{ endif }%{ if s.role == "gitlab" } gitlab_hostname=${s.fqdn} gitlab_registry_port=${gitlab_registry_port}%{ endif }%{ if s.role == "image-builder" } image_builder_cockpit_port=${image_builder_cockpit_port}%{ endif }%{ if s.role == "keycloak" } keycloak_hostname=${s.fqdn} keycloak_https_port=443%{ endif }
 %{ endif ~}
 %{ endfor ~}
 
-###############################################################################
-# Satellite
-###############################################################################
-
-[satellite]
-%{ for name, s in servers ~}
-%{ if s.role == "satellite" ~}
-${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} iam_instance_profile=${s.iam_instance_profile} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
-%{ endif ~}
-%{ endfor ~}
-
-###############################################################################
-# Ansible Automation Platform
-###############################################################################
-
-[aap]
-%{ for name, s in servers ~}
-%{ if s.role == "aap" ~}
-${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} iam_instance_profile=${s.iam_instance_profile} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
-%{ endif ~}
-%{ endfor ~}
-
-###############################################################################
-# Quay
-###############################################################################
-
-[quay]
-%{ for name, s in servers ~}
-%{ if s.role == "quay" ~}
-${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} iam_instance_profile=${s.iam_instance_profile} quay_hostname=${s.fqdn} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
-%{ endif ~}
-%{ endfor ~}
-
-###############################################################################
-# Image Builder
-###############################################################################
-
-[image_builder]
-%{ for name, s in servers ~}
-%{ if s.role == "image-builder" ~}
-${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} iam_instance_profile=${s.iam_instance_profile} image_builder_cockpit_port=${image_builder_cockpit_port} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
-%{ endif ~}
-%{ endfor ~}
-
-###############################################################################
-# GitLab
-###############################################################################
-
-[gitlab]
-%{ for name, s in servers ~}
-%{ if s.role == "gitlab" ~}
-${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} iam_instance_profile=${s.iam_instance_profile} gitlab_hostname=${s.fqdn} gitlab_registry_port=${gitlab_registry_port} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}
-%{ endif ~}
 %{ endfor ~}

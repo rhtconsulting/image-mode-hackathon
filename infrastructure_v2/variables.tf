@@ -273,6 +273,16 @@ variable "servers" {
       root_volume   = 120
       extra_volume  = 500
     }
+
+    # Keycloak uses the shared/default EC2 instance profile and common lab
+    # security group unless role-specific mappings are added in compute.tf.
+    # Instances are named keycloak-1, keycloak-2, and so on.
+    keycloak = {
+      count         = 1
+      instance_type = "m6i.large"
+      root_volume   = 80
+      extra_volume  = 0
+    }
   }
 
   validation {
@@ -295,6 +305,37 @@ variable "servers" {
     )
 
     error_message = "servers must include at least one IdM server."
+  }
+}
+
+############################################################
+# Keycloak Installation Settings
+############################################################
+
+variable "keycloak_installer_s3_bucket" {
+  type        = string
+  default     = "aap-containerized-installers"
+  description = "Existing S3 bucket containing the Red Hat Build of Keycloak installer ZIP."
+
+  validation {
+    condition     = trimspace(var.keycloak_installer_s3_bucket) != ""
+    error_message = "keycloak_installer_s3_bucket cannot be empty."
+  }
+}
+
+variable "keycloak_installer_s3_key" {
+  type        = string
+  default     = "rhbk-26.6.5.zip"
+  description = "Object key of the Red Hat Build of Keycloak installer ZIP."
+
+  validation {
+    condition = (
+      trimspace(var.keycloak_installer_s3_key) != "" &&
+      !startswith(trimspace(var.keycloak_installer_s3_key), "/") &&
+      endswith(lower(trimspace(var.keycloak_installer_s3_key)), ".zip")
+    )
+
+    error_message = "keycloak_installer_s3_key must be a non-empty relative S3 object key ending in .zip."
   }
 }
 
@@ -583,6 +624,10 @@ variable "public_server_names" {
     "quay-1",
     "gitlab-1"
   ]
+
+  # keycloak-1 intentionally does not receive an Elastic IP by default. The
+  # five entries above already consume the configured regional quota limit.
+  # Add keycloak-1 only after raising that quota or removing another entry.
 
   validation {
     condition = (

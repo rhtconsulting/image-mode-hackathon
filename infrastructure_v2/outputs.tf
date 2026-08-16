@@ -18,16 +18,10 @@ output "servers" {
         ""
       )
 
-      instance_profile = (
-        local.flattened_servers[name].role == "aap"
-        ? aws_iam_instance_profile.aap.name
-        : local.flattened_servers[name].role == "satellite"
-        ? aws_iam_instance_profile.satellite.name
-        : local.flattened_servers[name].role == "gitlab"
-        ? aws_iam_instance_profile.gitlab_runtime.name
-        : local.flattened_servers[name].role == "image-builder"
-        ? aws_iam_instance_profile.image_builder.name
-        : aws_iam_instance_profile.lab_ec2_default.name
+      instance_profile = lookup(
+        local.instance_profile_by_role,
+        local.flattened_servers[name].role,
+        aws_iam_instance_profile.lab_ec2_default.name
       )
 
       ssh = try(
@@ -198,6 +192,14 @@ output "ansible_inventory" {
       aws_s3_bucket.image_mode_artifacts.id
     )
 
+    keycloak_installer_s3_bucket = (
+      var.keycloak_installer_s3_bucket
+    )
+
+    keycloak_installer_s3_key = (
+      var.keycloak_installer_s3_key
+    )
+
     rhel_iam_credentials_secret_name = (
       aws_secretsmanager_secret.rhel_iam_credentials.name
     )
@@ -235,16 +237,10 @@ output "ansible_inventory" {
           instance.private_ip
         )
 
-        iam_instance_profile = (
-          local.flattened_servers[name].role == "aap"
-          ? aws_iam_instance_profile.aap.name
-          : local.flattened_servers[name].role == "satellite"
-          ? aws_iam_instance_profile.satellite.name
-          : local.flattened_servers[name].role == "gitlab"
-          ? aws_iam_instance_profile.gitlab_runtime.name
-          : local.flattened_servers[name].role == "image-builder"
-          ? aws_iam_instance_profile.image_builder.name
-          : aws_iam_instance_profile.lab_ec2_default.name
+        iam_instance_profile = lookup(
+          local.instance_profile_by_role,
+          local.flattened_servers[name].role,
+          aws_iam_instance_profile.lab_ec2_default.name
         )
 
         acm_certificate_arn = try(
@@ -1085,4 +1081,76 @@ output "rhel_iam_credentials_secret_name" {
 output "rhel_iam_credentials_secret_arn" {
   description = "ARN of the Secrets Manager secret containing rhel-iam access credentials."
   value       = aws_secretsmanager_secret.rhel_iam_credentials.arn
+}
+
+############################################################
+# Keycloak
+############################################################
+
+output "keycloak_servers" {
+  description = "Created Keycloak servers with addresses, HTTPS endpoint, shared IAM profile, ACM certificate, and installer location."
+
+  value = {
+    for name, instance in aws_instance.server :
+    name => {
+      hostname   = instance.tags.Name
+      fqdn       = local.flattened_servers[name].hostname
+      private_ip = instance.private_ip
+
+      public_ip = coalesce(
+        try(aws_eip.server[name].public_ip, null),
+        instance.public_ip,
+        ""
+      )
+
+      https_url = "https://${local.flattened_servers[name].hostname}"
+
+      instance_profile = lookup(
+        local.instance_profile_by_role,
+        local.flattened_servers[name].role,
+        aws_iam_instance_profile.lab_ec2_default.name
+      )
+
+      acm_certificate_arn = try(
+        aws_acm_certificate.server[name].arn,
+        ""
+      )
+
+      installer_s3_bucket = var.keycloak_installer_s3_bucket
+      installer_s3_key    = var.keycloak_installer_s3_key
+      installer_s3_uri    = "s3://${var.keycloak_installer_s3_bucket}/${var.keycloak_installer_s3_key}"
+
+      ssh = "ssh -i ${local.ansible_ssh_private_key_file} ec2-user@${coalesce(
+        try(aws_eip.server[name].public_ip, null),
+        instance.public_ip,
+        instance.private_ip
+      )}"
+    }
+    if local.flattened_servers[name].role == "keycloak"
+  }
+}
+
+output "keycloak_urls" {
+  description = "HTTPS URLs for all Keycloak servers."
+
+  value = {
+    for name, instance in aws_instance.server :
+    name => "https://${local.flattened_servers[name].hostname}"
+    if local.flattened_servers[name].role == "keycloak"
+  }
+}
+
+output "keycloak_installer_s3_uri" {
+  description = "S3 URI Ansible uses to copy the Keycloak installer ZIP to Keycloak servers."
+  value       = "s3://${var.keycloak_installer_s3_bucket}/${var.keycloak_installer_s3_key}"
+}
+
+output "keycloak_acm_certificate_arns" {
+  description = "Exportable ACM certificate ARNs generated for Keycloak servers."
+
+  value = {
+    for name, certificate in aws_acm_certificate.server :
+    name => certificate.arn
+    if local.flattened_servers[name].role == "keycloak"
+  }
 }

@@ -3,6 +3,8 @@
   hosts: keycloak
   become: true
   gather_facts: true
+  any_errors_fatal: true
+  serial: 1
 
   vars:
     keycloak_service_user: keycloak
@@ -24,6 +26,16 @@
     keycloak_ldap_users_dn: "cn=users,cn=accounts,{{ keycloak_ldap_base_dn }}"
     keycloak_ldap_bind_dn: "uid=admin,cn=users,cn=accounts,{{ keycloak_ldap_base_dn }}"
 
+    ###########################################################################
+    # Keycloak repositories and packages
+    ###########################################################################
+
+    keycloak_required_packages:
+      - awscli
+      - java-21-openjdk-headless
+      - openssl
+      - unzip
+
   pre_tasks:
     - name: Validate required Keycloak inventory variables
       ansible.builtin.assert:
@@ -43,21 +55,28 @@
     # Phase 1: prerequisites and installer
     ###########################################################################
 
-    - name: Install Keycloak operating-system prerequisites
+    - name: PHASE 1 | Install Keycloak operating-system prerequisites
       ansible.builtin.dnf:
-        name:
-          - java-21-openjdk-headless
-          - openssl
-          - unzip
+        name: "{{ keycloak_required_packages }}"
         state: present
+        update_cache: true
       tags: [keycloak, keycloak_install]
 
-    - name: Verify that the AWS CLI is available on the Keycloak host
+    - name: PHASE 1 | Verify AWS identity from Keycloak EC2 instance role
       ansible.builtin.command:
         argv:
           - aws
-          - --version
+          - sts
+          - get-caller-identity
+          - --region
+          - "{{ aws_region }}"
+      register: keycloak_aws_identity_check
       changed_when: false
+      tags: [keycloak, keycloak_install]
+
+    - name: PHASE 1 | Show AWS caller identity
+      ansible.builtin.debug:
+        var: keycloak_aws_identity_check.stdout
       tags: [keycloak, keycloak_install]
 
     - name: Create Keycloak service group
@@ -78,7 +97,7 @@
         state: present
       tags: [keycloak, keycloak_install]
 
-    - name: Download the RHBK installer from the existing S3 bucket
+    - name: PHASE 1 | Download the RHBK installer from S3
       ansible.builtin.command:
         argv:
           - aws
@@ -86,8 +105,11 @@
           - cp
           - "s3://{{ keycloak_installer_s3_bucket }}/{{ keycloak_installer_s3_key }}"
           - "{{ keycloak_installer_local_path }}"
+          - --region
+          - "{{ aws_region }}"
+      args:
+        creates: "{{ keycloak_installer_local_path }}"
       register: keycloak_installer_download
-      changed_when: keycloak_installer_download.rc == 0
       tags: [keycloak, keycloak_install]
 
     - name: Create the RHBK release directory

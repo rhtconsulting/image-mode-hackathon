@@ -329,43 +329,36 @@ resource "aws_acm_certificate" "server" {
 ############################################################
 
 locals {
-  # ACM can return the same validation CNAME for an RHTAS exact hostname and
-  # wildcard SAN. Deduplicate only RHTAS by record name while retaining the
-  # existing resource keys for every previously deployed server certificate.
-  acm_validation_record_groups = {
-    for record in flatten([
-      for server_name, certificate in aws_acm_certificate.server : [
-        for validation_option in certificate.domain_validation_options : {
-          key = (
-            local.flattened_servers[server_name].role == "rhtas"
-            ? "${server_name}-${validation_option.resource_record_name}"
-            : "${server_name}-${validation_option.domain_name}"
-          )
-          server_name = server_name
-          name        = validation_option.resource_record_name
-          type        = validation_option.resource_record_type
-          value       = validation_option.resource_record_value
-        }
-      ]
-    ]) : record.key => record...
-  }
-
-  acm_validation_records = {
-    for validation_key, records in local.acm_validation_record_groups :
-    validation_key => records[0]
+  # These keys are derived entirely from configuration known during planning.
+  # The key format also preserves the existing validation-record addresses for
+  # servers that had certificates before the RHTAS wildcard SAN was added.
+  acm_validation_servers = {
+    for server_name, server in local.flattened_servers :
+    "${server_name}-${server.hostname}" => {
+      server_name = server_name
+    }
+    if var.create_public_dns_records
   }
 }
 
 resource "aws_route53_record" "server_certificate_validation" {
-  for_each = local.acm_validation_records
+  for_each = local.acm_validation_servers
 
+  # ACM uses the same DNS validation token for an exact hostname and its
+  # wildcard SAN, so one CNAME validates both names on the RHTAS certificate.
   zone_id = local.public_route53_zone_id
-  name    = each.value.name
-  type    = each.value.type
-  ttl     = 60
+  name = tolist(
+    aws_acm_certificate.server[each.value.server_name].domain_validation_options
+  )[0].resource_record_name
+  type = tolist(
+    aws_acm_certificate.server[each.value.server_name].domain_validation_options
+  )[0].resource_record_type
+  ttl = 60
 
   records = [
-    each.value.value
+    tolist(
+      aws_acm_certificate.server[each.value.server_name].domain_validation_options
+    )[0].resource_record_value
   ]
 
   allow_overwrite = true
@@ -385,8 +378,8 @@ resource "aws_acm_certificate_validation" "server" {
   certificate_arn = each.value.arn
 
   validation_record_fqdns = [
-    for validation_key, validation_record in local.acm_validation_records :
-    aws_route53_record.server_certificate_validation[validation_key].fqdn
-    if validation_record.server_name == each.key
+    aws_route53_record.server_certificate_validation[
+      "${each.key}-${local.flattened_servers[each.key].hostname}"
+    ].fqdn
   ]
 }

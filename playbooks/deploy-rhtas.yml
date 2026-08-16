@@ -14,7 +14,8 @@
       https://{{ groups['keycloak'][0] }}
 
     rhtas_oidc_issuer: >-
-      {{ rhtas_keycloak_url }}/realms/{{ rhtas_keycloak_realm }}
+      {{ rhtas_oidc_issuer_url |
+         default(rhtas_keycloak_url ~ '/realms/' ~ rhtas_keycloak_realm, true) }}
 
     rhtas_oidc_client: >-
       {{ rhtas_oidc_client_id | default('trusted-artifact-signer') }}

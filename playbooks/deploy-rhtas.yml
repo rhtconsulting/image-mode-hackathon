@@ -210,6 +210,16 @@
     # Validate network and OIDC prerequisites
     ###########################################################################
 
+    - name: PHASE 3 | Configure local RHTAS service-name resolution
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} ANSIBLE MANAGED RHTAS SERVICE NAMES"
+        block: |
+          {{ ansible_default_ipv4.address }} {{ rhtas_required_ingress_names | join(' ') }}
+        owner: root
+        group: root
+        mode: "0644"
+
     - name: PHASE 3 | Verify all RHTAS ingress records resolve
       ansible.builtin.command:
         argv:
@@ -219,7 +229,11 @@
       loop: "{{ rhtas_required_ingress_names }}"
       loop_control:
         label: "{{ item }}"
+      register: rhtas_dns_lookup
       changed_when: false
+      retries: 20
+      delay: 15
+      until: rhtas_dns_lookup.rc == 0
 
     - name: PHASE 3 | Verify the Keycloak OIDC discovery endpoint
       ansible.builtin.uri:

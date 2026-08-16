@@ -1,0 +1,136 @@
+---
+- name: Deploy and configure Red Hat Trusted Artifact Signer
+  hosts: rhtas
+  become: true
+  gather_facts: true
+
+  vars:
+    rhtas_base_hostname: "{{ inventory_hostname }}"
+
+    rhtas_keycloak_realm: >-
+      {{ idm_realm_name | default(parent_domain_name) | lower }}
+
+    rhtas_keycloak_url: >-
+      https://{{ groups['keycloak'][0] }}
+
+    rhtas_oidc_issuer: >-
+      {{ rhtas_keycloak_url }}/realms/{{ rhtas_keycloak_realm }}
+
+    rhtas_oidc_client: >-
+      {{ rhtas_oidc_client_id | default('trusted-artifact-signer') }}
+
+    rhtas_required_ingress_names:
+      - "cli-server.{{ rhtas_base_hostname }}"
+      - "fulcio.{{ rhtas_base_hostname }}"
+      - "rekor.{{ rhtas_base_hostname }}"
+      - "rekor-search.{{ rhtas_base_hostname }}"
+      - "tsa.{{ rhtas_base_hostname }}"
+      - "tuf.{{ rhtas_base_hostname }}"
+
+  pre_tasks:
+    - name: Validate RHTAS host operating system
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'RedHat'
+          - ansible_distribution_major_version | int == 9
+          - ansible_distribution_version is version('9.4', '>=')
+        fail_msg: >-
+          The RHTAS single-node collection requires RHEL 9.4 or later.
+
+    - name: Validate RHTAS inventory and protected credentials
+      ansible.builtin.assert:
+        that:
+          - groups['keycloak'] | default([]) | length > 0
+          - rhtas_registry_username | default('') | length > 0
+          - rhtas_registry_password | default('') | length > 0
+          - rhtas_fulcio_ca_passphrase | default('') | length >= 12
+          - rhtas_ctlog_ca_passphrase | default('') | length >= 12
+          - rhtas_rekor_ca_passphrase | default('') | length >= 12
+          - rhtas_tsa_ca_passphrase | default('') | length >= 12
+        fail_msg: >-
+          Define the registry.redhat.io credentials and four RHTAS CA
+          passphrases in Ansible Vault or an AAP credential.
+      no_log: true
+
+    - name: Verify all RHTAS ingress records resolve
+      ansible.builtin.command:
+        argv:
+          - getent
+          - ahostsv4
+          - "{{ item }}"
+      loop: "{{ rhtas_required_ingress_names }}"
+      changed_when: false
+
+    - name: Verify the Keycloak OIDC discovery endpoint
+      ansible.builtin.uri:
+        url: "{{ rhtas_oidc_issuer }}/.well-known/openid-configuration"
+        method: GET
+        return_content: false
+        status_code: 200
+        validate_certs: true
+
+  tasks:
+    - name: Deploy the RHTAS single-node service
+      ansible.builtin.include_role:
+        name: redhat.artifact_signer.tas_single_node
+      vars:
+        ansible_become: true
+
+        tas_single_node_base_hostname: "{{ rhtas_base_hostname }}"
+        tas_single_node_registry_username: "{{ rhtas_registry_username }}"
+        tas_single_node_registry_password: "{{ rhtas_registry_password }}"
+
+        tas_single_node_fulcio:
+          ca_passphrase: "{{ rhtas_fulcio_ca_passphrase }}"
+          fulcio_config:
+            oidc_issuers:
+              - issuer: "{{ rhtas_oidc_issuer }}"
+                client_id: "{{ rhtas_oidc_client }}"
+                url: "{{ rhtas_oidc_issuer }}"
+                type: email
+          ct_log_prefix: "{{ rhtas_ct_log_prefix | default('rhtas-ctlog') }}"
+
+        tas_single_node_ctlog:
+          ca_passphrase: "{{ rhtas_ctlog_ca_passphrase }}"
+
+        tas_single_node_rekor:
+          ca_passphrase: "{{ rhtas_rekor_ca_passphrase }}"
+
+        tas_single_node_tsa:
+          ca_passphrase: "{{ rhtas_tsa_ca_passphrase }}"
+      no_log: true
+
+    - name: Install signing-client environment configuration
+      ansible.builtin.copy:
+        dest: /etc/profile.d/rhtas.sh
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          export RHTAS_BASE_HOSTNAME="{{ rhtas_base_hostname }}"
+          export COSIGN_OIDC_CLIENT_ID="{{ rhtas_oidc_client }}"
+          export COSIGN_OIDC_ISSUER="{{ rhtas_oidc_issuer }}"
+          export COSIGN_CERTIFICATE_OIDC_ISSUER="{{ rhtas_oidc_issuer }}"
+          export COSIGN_FULCIO_URL="https://fulcio.{{ rhtas_base_hostname }}"
+          export COSIGN_REKOR_URL="https://rekor.{{ rhtas_base_hostname }}"
+          export COSIGN_MIRROR="https://tuf.{{ rhtas_base_hostname }}"
+          export COSIGN_ROOT="https://tuf.{{ rhtas_base_hostname }}/root.json"
+          export COSIGN_YES="true"
+
+  post_tasks:
+    - name: Verify RHTAS HTTPS endpoints
+      ansible.builtin.uri:
+        url: "https://{{ item }}"
+        method: GET
+        return_content: false
+        status_code:
+          - 200
+          - 301
+          - 302
+          - 404
+        validate_certs: false
+      loop: "{{ rhtas_required_ingress_names }}"
+      register: rhtas_endpoint_checks
+      retries: 20
+      delay: 15
+      until: rhtas_endpoint_checks is succeeded

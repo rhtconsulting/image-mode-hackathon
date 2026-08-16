@@ -212,6 +212,10 @@ output "ansible_inventory" {
       var.rhtas_https_port
     )
 
+    rhtas_oidc_issuer_url = (
+      local.output_rhtas_oidc_issuer_url
+    )
+
     rhel_iam_credentials_secret_name = (
       aws_secretsmanager_secret.rhel_iam_credentials.name
     )

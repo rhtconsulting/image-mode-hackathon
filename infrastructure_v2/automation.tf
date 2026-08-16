@@ -255,7 +255,9 @@ resource "local_file" "ansible_inventory" {
 
 resource "terraform_data" "bootstrap_lab" {
   depends_on = [
-    local_file.ansible_inventory
+    local_file.ansible_inventory,
+    aws_route53_record.public_dns,
+    aws_route53_record.rhtas_service
   ]
 
   triggers_replace = [
@@ -272,7 +274,7 @@ resource "terraform_data" "bootstrap_lab" {
       INVENTORY_FILE="${abspath(path.module)}/inventory.ini"
 
       REPO_URL="https://github.com/claudiol/image-mode-hackathon.git"
-      BRANCH="deploy-rhtas-server"
+      BRANCH="dev"
 
       echo "Using inventory: $INVENTORY_FILE"
 

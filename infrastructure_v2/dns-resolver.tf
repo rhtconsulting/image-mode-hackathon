@@ -77,7 +77,6 @@ resource "terraform_data" "validate_public_servers" {
   }
 }
 
-
 resource "aws_route53_resolver_rule_association" "idm_forward" {
   resolver_rule_id = aws_route53_resolver_rule.idm_forward.id
   vpc_id           = aws_vpc.lab.id
@@ -85,3 +84,39 @@ resource "aws_route53_resolver_rule_association" "idm_forward" {
 }
 
 ############################################################
+# Resolve RHTAS Service Names Through Public Route53 DNS
+#
+# The broader IdM forwarding rule owns local.idm_domain_name. Without this
+# more-specific SYSTEM rule, queries such as fulcio.rhtas-1.<domain> are sent
+# to IdM, which does not contain the Terraform-managed public Route53 records.
+############################################################
+
+locals {
+  rhtas_resolver_system_rules = {
+    for server_name, server in local.flattened_servers :
+    server_name => server
+    if server.role == "rhtas"
+  }
+}
+
+resource "aws_route53_resolver_rule" "rhtas_system" {
+  for_each = local.rhtas_resolver_system_rules
+
+  domain_name = each.value.hostname
+  name        = "${var.environment_name}-${each.key}-system-rule"
+  rule_type   = "SYSTEM"
+
+  tags = {
+    Name        = "${var.environment_name}-${each.key}-system-rule"
+    Environment = var.environment_name
+    Role        = each.value.role
+  }
+}
+
+resource "aws_route53_resolver_rule_association" "rhtas_system" {
+  for_each = aws_route53_resolver_rule.rhtas_system
+
+  resolver_rule_id = each.value.id
+  vpc_id           = aws_vpc.lab.id
+  name             = "${var.environment_name}-${each.key}-system-association"
+}

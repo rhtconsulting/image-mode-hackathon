@@ -332,7 +332,15 @@
 
     - name: PHASE 6 | Verify RHTAS HTTPS endpoints
       ansible.builtin.uri:
-        url: "https://{{ item }}"
+        # Apache intentionally returns 403 for the TUF directory root because
+        # directory listing is disabled. Verify the same trust-root object used
+        # by the collection's native TUF readiness and liveness probes.
+        url: >-
+          https://{{ item }}{{
+            '/1.root.json'
+            if item == ('tuf.' ~ rhtas_base_hostname)
+            else ''
+          }}
         method: GET
         return_content: false
         status_code:

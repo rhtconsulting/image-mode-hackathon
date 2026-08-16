@@ -32,6 +32,16 @@ keycloak_installer_s3_key=${keycloak_installer_s3_key}
 keycloak_installer_s3_uri=s3://${keycloak_installer_s3_bucket}/${keycloak_installer_s3_key}
 
 ###############################################################################
+# Keycloak OIDC and RHTAS
+###############################################################################
+
+keycloak_oidc_realm=${lower(idm_realm_name)}
+keycloak_oidc_issuer_url=${rhtas_oidc_issuer_url}
+rhtas_oidc_client_id=${rhtas_oidc_client_id}
+rhtas_oidc_issuer_url=${rhtas_oidc_issuer_url}
+rhtas_https_port=${rhtas_https_port}
+
+###############################################################################
 # IdM and DNS
 ###############################################################################
 
@@ -122,7 +132,7 @@ idm_users=${jsonencode(idm_users)}
 [${replace(role, "-", "_")}]
 %{ for name, s in servers ~}
 %{ if s.role == role ~}
-${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} iam_instance_profile=${s.iam_instance_profile} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}%{ if s.role == "quay" } quay_hostname=${s.fqdn}%{ endif }%{ if s.role == "gitlab" } gitlab_hostname=${s.fqdn} gitlab_registry_port=${gitlab_registry_port}%{ endif }%{ if s.role == "image-builder" } image_builder_cockpit_port=${image_builder_cockpit_port}%{ endif }%{ if s.role == "keycloak" } keycloak_hostname=${s.fqdn} keycloak_https_port=443%{ endif }
+${s.fqdn} ansible_host=${s.ansible_host} private_ip=${s.private_ip} public_ip=${s.public_ip} role=${s.role} iam_instance_profile=${s.iam_instance_profile} public_tls_fqdn=${s.fqdn} acm_certificate_arn=${s.acm_certificate_arn}%{ if s.role == "quay" } quay_hostname=${s.fqdn}%{ endif }%{ if s.role == "gitlab" } gitlab_hostname=${s.fqdn} gitlab_registry_port=${gitlab_registry_port}%{ endif }%{ if s.role == "image-builder" } image_builder_cockpit_port=${image_builder_cockpit_port}%{ endif }%{ if s.role == "keycloak" } keycloak_hostname=${s.fqdn} keycloak_https_port=443%{ endif }%{ if s.role == "rhtas" } rhtas_base_hostname=${s.fqdn}%{ endif }
 %{ endif ~}
 %{ endfor ~}
 

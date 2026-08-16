@@ -16,6 +16,10 @@ locals {
     # lab nodes. That role already has the shared artifact-bucket policy, so
     # Ansible can copy the configured installer ZIP without another IAM policy.
     keycloak = aws_iam_instance_profile.lab_ec2_default.name
+
+    # RHTAS uses the shared/default profile. Add a dedicated profile only if
+    # future backup or KMS requirements need workload-specific permissions.
+    rhtas = aws_iam_instance_profile.lab_ec2_default.name
   }
 
   additional_security_groups_by_role = {
@@ -26,13 +30,16 @@ locals {
     # Add a Keycloak-specific security group here if nonstandard ports are
     # exposed in network.tf later.
     keycloak = []
+
+    # Public RHTAS services are exposed through HTTPS on the common lab group.
+    rhtas = []
   }
 }
 
 resource "aws_instance" "server" {
-  # local.flattened_servers contains keycloak-1 because variables.tf defines a
-  # keycloak role with count = 1. Increasing that count creates keycloak-2,
-  # keycloak-3, and so on through this same generic resource.
+  # local.flattened_servers contains keycloak-1 and rhtas-1 because those roles
+  # are defined in var.servers. Increasing a role count creates the subsequent
+  # numbered instances through this same generic resource.
   for_each = local.flattened_servers
 
   ami           = local.selected_ami
@@ -40,8 +47,8 @@ resource "aws_instance" "server" {
   subnet_id     = aws_subnet.public.id
 
   vpc_security_group_ids = concat(
-    # aws_security_group.lab permits HTTPS on TCP/443. Keycloak receives this
-    # group automatically, so no Keycloak-only security group is required.
+    # aws_security_group.lab permits HTTPS on TCP/443. Keycloak and RHTAS receive
+    # this group automatically, so no workload-only security group is required.
     [aws_security_group.lab.id],
     lookup(local.additional_security_groups_by_role, each.value.role, [])
   )
@@ -222,13 +229,60 @@ resource "aws_route53_record" "public_dns" {
 }
 
 ############################################################
+# RHTAS Public Service DNS Records
+############################################################
+
+locals {
+  rhtas_service_dns_records = merge(
+    {},
+    [
+      for server_name, server in local.flattened_servers : {
+        for service_name in var.rhtas_service_subdomains :
+        "${server_name}-${service_name}" => {
+          server_name = server_name
+          service     = service_name
+          fqdn        = "${service_name}.${server.hostname}"
+        }
+      }
+      if server.role == "rhtas"
+    ]...
+  )
+}
+
+resource "aws_route53_record" "rhtas_service" {
+  for_each = (
+    var.create_public_dns_records
+    ? local.rhtas_service_dns_records
+    : {}
+  )
+
+  zone_id = local.public_route53_zone_id
+  name    = each.value.fqdn
+  type    = "A"
+
+  ttl             = 300
+  allow_overwrite = true
+
+  records = [
+    try(
+      aws_eip.server[each.value.server_name].public_ip,
+      aws_instance.server[each.value.server_name].public_ip
+    )
+  ]
+
+  depends_on = [
+    aws_eip_association.server,
+    terraform_data.validate_dns_discovery
+  ]
+}
+
+############################################################
 # Publicly Trusted TLS Certificates
 ############################################################
 
 resource "aws_acm_certificate" "server" {
-  # This iterates over every configured server, including keycloak-1. The
-  # certificate is exportable so Ansible can install it on the Keycloak host
-  # or its local HTTPS reverse proxy.
+  # This iterates over every configured server. RHTAS receives a wildcard SAN
+  # covering fulcio, rekor, tuf, cli-server, and future service subdomains.
   for_each = (
     var.create_public_dns_records
     ? local.flattened_servers
@@ -238,6 +292,12 @@ resource "aws_acm_certificate" "server" {
   domain_name       = each.value.hostname
   validation_method = "DNS"
   key_algorithm     = "RSA_2048"
+
+  subject_alternative_names = (
+    each.value.role == "rhtas"
+    ? ["*.${each.value.hostname}"]
+    : []
+  )
 
   options {
     certificate_transparency_logging_preference = "ENABLED"
@@ -269,20 +329,31 @@ resource "aws_acm_certificate" "server" {
 ############################################################
 
 locals {
-  acm_validation_records = merge(
-    {},
-    [
-      for server_name, certificate in aws_acm_certificate.server : {
-        for validation_option in certificate.domain_validation_options :
-        "${server_name}-${validation_option.domain_name}" => {
+  # ACM can return the same validation CNAME for an RHTAS exact hostname and
+  # wildcard SAN. Deduplicate only RHTAS by record name while retaining the
+  # existing resource keys for every previously deployed server certificate.
+  acm_validation_record_groups = {
+    for record in flatten([
+      for server_name, certificate in aws_acm_certificate.server : [
+        for validation_option in certificate.domain_validation_options : {
+          key = (
+            local.flattened_servers[server_name].role == "rhtas"
+            ? "${server_name}-${validation_option.resource_record_name}"
+            : "${server_name}-${validation_option.domain_name}"
+          )
           server_name = server_name
           name        = validation_option.resource_record_name
           type        = validation_option.resource_record_type
           value       = validation_option.resource_record_value
         }
-      }
-    ]...
-  )
+      ]
+    ]) : record.key => record...
+  }
+
+  acm_validation_records = {
+    for validation_key, records in local.acm_validation_record_groups :
+    validation_key => records[0]
+  }
 }
 
 resource "aws_route53_record" "server_certificate_validation" {

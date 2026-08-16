@@ -310,10 +310,28 @@ variable "servers" {
   validation {
     condition = (
       contains(keys(var.servers), "idm") &&
-      var.servers["idm"].count >= 1
+      try(var.servers["idm"].count, 0) >= 1
     )
 
     error_message = "servers must include at least one IdM server."
+  }
+
+  validation {
+    condition = (
+      contains(keys(var.servers), "keycloak") &&
+      try(var.servers["keycloak"].count, 0) >= 1
+    )
+
+    error_message = "servers must include at least one Keycloak server; add a keycloak entry to terraform.tfvars when overriding the servers map."
+  }
+
+  validation {
+    condition = (
+      contains(keys(var.servers), "rhtas") &&
+      try(var.servers["rhtas"].count, 0) >= 1
+    )
+
+    error_message = "servers must include at least one RHTAS server; add an rhtas entry to terraform.tfvars when overriding the servers map."
   }
 }
 
@@ -686,10 +704,8 @@ variable "public_server_names" {
     "gitlab-1"
   ]
 
-  # keycloak-1 and rhtas-1 intentionally do not receive Elastic IPs by default.
-  # The five entries above already consume the configured regional quota. RHTAS
-  # should receive a stable address before it is treated as a persistent signing
-  # service; raise the quota or remove another entry first.
+  # Keycloak and RHTAS use automatically assigned public IPs for now. Add them
+  # here only after increasing the regional EC2-VPC Elastic IP quota.
 
   validation {
     condition = (

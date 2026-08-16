@@ -389,6 +389,8 @@ variable "rhtas_service_subdomains" {
     "cli-server",
     "fulcio",
     "rekor",
+    "rekor-search",
+    "tsa",
     "tuf"
   ]
 

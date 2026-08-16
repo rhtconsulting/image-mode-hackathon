@@ -51,7 +51,7 @@
         fail_msg: >-
           Define the registry.redhat.io credentials and four RHTAS CA
           passphrases in Ansible Vault or an AAP credential.
-      no_log: true
+      no_log: false
 
     - name: Verify all RHTAS ingress records resolve
       ansible.builtin.command:

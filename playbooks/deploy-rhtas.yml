@@ -71,6 +71,9 @@
     rhtas_tsa_ca_passphrase_secret_name: >-
       {{ secret_prefix }}/rhtas/tsa_ca_passphrase
 
+    rhtas_acm_export_passphrase_secret_name: >-
+      {{ secret_prefix }}/rhtas/acm_export_passphrase
+
     ###########################################################################
     # Required RHTAS ingress names
     ###########################################################################
@@ -116,6 +119,26 @@
     tas_single_node_tsa:
       ca_passphrase: "{{ rhtas_tsa_ca_passphrase }}"
 
+    tas_single_node_ingress_certificates:
+      fulcio:
+        certificate: "{{ rhtas_acm_fullchain }}"
+        private_key: "{{ rhtas_acm_private_key }}"
+      rekor:
+        certificate: "{{ rhtas_acm_fullchain }}"
+        private_key: "{{ rhtas_acm_private_key }}"
+      tuf:
+        certificate: "{{ rhtas_acm_fullchain }}"
+        private_key: "{{ rhtas_acm_private_key }}"
+      tsa:
+        certificate: "{{ rhtas_acm_fullchain }}"
+        private_key: "{{ rhtas_acm_private_key }}"
+      rekor-search:
+        certificate: "{{ rhtas_acm_fullchain }}"
+        private_key: "{{ rhtas_acm_private_key }}"
+      cli-server:
+        certificate: "{{ rhtas_acm_fullchain }}"
+        private_key: "{{ rhtas_acm_private_key }}"
+
   pre_tasks:
     ###########################################################################
     # PHASE 0
@@ -142,6 +165,7 @@
           - rhtas_base_hostname | string | length > 0
           - rhtas_oidc_issuer | string | length > 0
           - rhtas_oidc_client | string | length > 0
+          - acm_certificate_arn | default('') | string | length > 0
         fail_msg: >-
           RHTAS requires aws_region, secret_prefix, a Keycloak inventory
           group, an OIDC issuer, and an OIDC client identifier.
@@ -199,6 +223,9 @@
         - name: rhtas_tsa_ca_passphrase
           secret_name: "{{ rhtas_tsa_ca_passphrase_secret_name }}"
 
+        - name: rhtas_acm_export_passphrase
+          secret_name: "{{ rhtas_acm_export_passphrase_secret_name }}"
+
       loop_control:
         label: "{{ item.name }}"
 
@@ -233,6 +260,7 @@
           - rhtas_ctlog_ca_passphrase | default('') | length >= 12
           - rhtas_rekor_ca_passphrase | default('') | length >= 12
           - rhtas_tsa_ca_passphrase | default('') | length >= 12
+          - rhtas_acm_export_passphrase | default('') | length >= 12
         fail_msg: >-
           One or more RHTAS CA passphrases are missing or shorter than
           12 characters. Verify the RHTAS passphrase secrets exist in
@@ -291,6 +319,102 @@
           The Keycloak OIDC discovery document does not match the
           expected RHTAS issuer {{ rhtas_oidc_issuer }}.
 
+    ###########################################################################
+    # PHASE 3A
+    # Export the Terraform-managed ACM wildcard certificate
+    ###########################################################################
+
+    - name: PHASE 3A | Create temporary ACM export passphrase file
+      ansible.builtin.tempfile:
+        state: file
+        prefix: rhtas-acm-passphrase-
+      delegate_to: localhost
+      become: false
+      register: rhtas_acm_passphrase_file
+      no_log: true
+
+    - name: PHASE 3A | Write ACM export passphrase securely
+      ansible.builtin.copy:
+        dest: "{{ rhtas_acm_passphrase_file.path }}"
+        content: "{{ rhtas_acm_export_passphrase }}"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: PHASE 3A | Export the ACM wildcard certificate
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'aws', 'acm', 'export-certificate',
+              '--region', aws_region,
+              '--certificate-arn', acm_certificate_arn,
+              '--passphrase', 'fileb://' ~ rhtas_acm_passphrase_file.path,
+              '--output', 'json'
+            ]
+            +
+            (
+              ['--profile', aws_profile]
+              if aws_profile | default('') | trim | length > 0
+              else []
+            )
+          }}
+      delegate_to: localhost
+      become: false
+      register: rhtas_acm_export_result
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 3A | Convert exported ACM certificate into Ansible facts
+      ansible.builtin.set_fact:
+        rhtas_acm_export: "{{ rhtas_acm_export_result.stdout | from_json }}"
+        rhtas_acm_fullchain: >-
+          {{
+            (rhtas_acm_export_result.stdout | from_json).Certificate
+            ~ '\n'
+            ~ (rhtas_acm_export_result.stdout | from_json).CertificateChain
+          }}
+      no_log: true
+
+    - name: PHASE 3A | Create temporary encrypted private-key file
+      ansible.builtin.tempfile:
+        state: file
+        prefix: rhtas-acm-key-
+      delegate_to: localhost
+      become: false
+      register: rhtas_acm_encrypted_key_file
+      no_log: true
+
+    - name: PHASE 3A | Write exported encrypted private key securely
+      ansible.builtin.copy:
+        dest: "{{ rhtas_acm_encrypted_key_file.path }}"
+        content: "{{ rhtas_acm_export.PrivateKey }}"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: PHASE 3A | Decrypt the exported ACM private key in memory
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - pkey
+          - -in
+          - "{{ rhtas_acm_encrypted_key_file.path }}"
+          - -passin
+          - "file:{{ rhtas_acm_passphrase_file.path }}"
+      delegate_to: localhost
+      become: false
+      register: rhtas_acm_private_key_result
+      changed_when: false
+      no_log: true
+
+    - name: PHASE 3A | Store decrypted ACM private key as a protected fact
+      ansible.builtin.set_fact:
+        rhtas_acm_private_key: "{{ rhtas_acm_private_key_result.stdout }}"
+      no_log: true
+
   tasks:
     ###########################################################################
     # PHASE 4
@@ -300,6 +424,17 @@
     - name: PHASE 4 | Deploy the RHTAS single-node service
       ansible.builtin.include_role:
         name: redhat.artifact_signer.tas_single_node
+      no_log: true
+
+    - name: PHASE 4 | Remove temporary ACM export files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ rhtas_acm_passphrase_file.path }}"
+        - "{{ rhtas_acm_encrypted_key_file.path }}"
+      delegate_to: localhost
+      become: false
       no_log: true
 
     ###########################################################################
@@ -387,4 +522,8 @@
         rhtas_ctlog_ca_passphrase: ""
         rhtas_rekor_ca_passphrase: ""
         rhtas_tsa_ca_passphrase: ""
+        rhtas_acm_export_passphrase: ""
+        rhtas_acm_export: {}
+        rhtas_acm_fullchain: ""
+        rhtas_acm_private_key: ""
       no_log: true

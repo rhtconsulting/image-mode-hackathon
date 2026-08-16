@@ -1,12 +1,12 @@
 ---
-# - name: Deploy Red Hat IdM Server
-#   ansible.builtin.import_playbook: deploy-idm.yml
+- name: Deploy Red Hat IdM Server
+  ansible.builtin.import_playbook: deploy-idm.yml
 
-# - name: Enroll hosts into IdM
-#   ansible.builtin.import_playbook: enroll-idm-clients.yml
+- name: Enroll hosts into IdM
+  ansible.builtin.import_playbook: enroll-idm-clients.yml
 
-# - name: Deploy Keycloak
-#   ansible.builtin.import_playbook: deploy-keycloak.yml
+- name: Deploy Keycloak
+  ansible.builtin.import_playbook: deploy-keycloak.yml
 
 
 # RHTAS uses Keycloak as its OIDC provider, so it must be deployed after

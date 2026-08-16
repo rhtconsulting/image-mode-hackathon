@@ -27,6 +27,18 @@
     keycloak_ldap_bind_dn: "uid=admin,cn=users,cn=accounts,{{ keycloak_ldap_base_dn }}"
 
     ###########################################################################
+    # Trusted Artifact Signer OIDC client
+    ###########################################################################
+
+    keycloak_rhtas_client_id: trusted-artifact-signer
+    keycloak_rhtas_client_name: Red Hat Trusted Artifact Signer
+    keycloak_rhtas_issuer_url: >-
+      {{ keycloak_https_url }}/realms/{{ keycloak_realm_name }}
+    keycloak_rhtas_redirect_uris:
+      - "http://localhost:*"
+      - "http://127.0.0.1:*"
+
+    ###########################################################################
     # Keycloak repositories and packages
     ###########################################################################
 
@@ -552,6 +564,266 @@
       changed_when: true
       no_log: true
       tags: [keycloak, keycloak_idm, keycloak_admins]
+
+    ###########################################################################
+    # Phase 6: configure Trusted Artifact Signer OIDC integration
+    ###########################################################################
+
+    - name: Find the Trusted Artifact Signer OIDC client
+      ansible.builtin.shell:
+        cmd: >-
+          {{ keycloak_install_root }}/bin/kcadm.sh get clients
+          -r {{ keycloak_realm_name | quote }}
+          -q clientId={{ keycloak_rhtas_client_id | quote }}
+          --fields id --format csv --noquotes | head -n 1
+        executable: /bin/bash
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_rhtas_client_lookup
+      changed_when: false
+      tags: [keycloak, keycloak_rhtas]
+
+    - name: Create the Trusted Artifact Signer OIDC client
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - create
+          - clients
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - "clientId={{ keycloak_rhtas_client_id }}"
+          - -s
+          - "name={{ keycloak_rhtas_client_name }}"
+          - -s
+          - enabled=true
+          - -s
+          - protocol=openid-connect
+          - -s
+          - publicClient=true
+          - -s
+          - standardFlowEnabled=true
+          - -s
+          - implicitFlowEnabled=false
+          - -s
+          - directAccessGrantsEnabled=false
+          - -s
+          - serviceAccountsEnabled=false
+          - -s
+          - 'redirectUris={{ keycloak_rhtas_redirect_uris | to_json }}'
+          - -s
+          - 'attributes."request.object.signature.alg"=RS256'
+          - -s
+          - 'attributes."user.info.response.signature.alg"=RS256'
+      become_user: "{{ keycloak_service_user }}"
+      when: keycloak_rhtas_client_lookup.stdout | trim == ''
+      tags: [keycloak, keycloak_rhtas]
+
+    - name: Read the Trusted Artifact Signer client ID
+      ansible.builtin.shell:
+        cmd: >-
+          {{ keycloak_install_root }}/bin/kcadm.sh get clients
+          -r {{ keycloak_realm_name | quote }}
+          -q clientId={{ keycloak_rhtas_client_id | quote }}
+          --fields id --format csv --noquotes | head -n 1
+        executable: /bin/bash
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_rhtas_internal_client_id
+      changed_when: false
+      failed_when: keycloak_rhtas_internal_client_id.stdout | trim == ''
+      tags: [keycloak, keycloak_rhtas]
+
+    - name: Reconcile the Trusted Artifact Signer OIDC client
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - update
+          - "clients/{{ keycloak_rhtas_internal_client_id.stdout | trim }}"
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - "clientId={{ keycloak_rhtas_client_id }}"
+          - -s
+          - "name={{ keycloak_rhtas_client_name }}"
+          - -s
+          - enabled=true
+          - -s
+          - protocol=openid-connect
+          - -s
+          - publicClient=true
+          - -s
+          - standardFlowEnabled=true
+          - -s
+          - implicitFlowEnabled=false
+          - -s
+          - directAccessGrantsEnabled=false
+          - -s
+          - serviceAccountsEnabled=false
+          - -s
+          - 'redirectUris={{ keycloak_rhtas_redirect_uris | to_json }}'
+          - -s
+          - 'attributes."request.object.signature.alg"=RS256'
+          - -s
+          - 'attributes."user.info.response.signature.alg"=RS256'
+      become_user: "{{ keycloak_service_user }}"
+      changed_when: true
+      tags: [keycloak, keycloak_rhtas]
+
+    - name: Read existing Trusted Artifact Signer protocol mappers
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - get
+          - "clients/{{ keycloak_rhtas_internal_client_id.stdout | trim }}/protocol-mappers/models"
+          - -r
+          - "{{ keycloak_realm_name }}"
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_rhtas_protocol_mappers
+      changed_when: false
+      tags: [keycloak, keycloak_rhtas]
+
+    - name: Create the Trusted Artifact Signer email mapper
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - create
+          - "clients/{{ keycloak_rhtas_internal_client_id.stdout | trim }}/protocol-mappers/models"
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - name=email
+          - -s
+          - protocol=openid-connect
+          - -s
+          - protocolMapper=oidc-usermodel-property-mapper
+          - -s
+          - 'config."user.attribute"=email'
+          - -s
+          - 'config."claim.name"=email'
+          - -s
+          - 'config."jsonType.label"=String'
+          - -s
+          - 'config."id.token.claim"=true'
+          - -s
+          - 'config."access.token.claim"=true'
+          - -s
+          - 'config."userinfo.token.claim"=true'
+      become_user: "{{ keycloak_service_user }}"
+      when: >-
+        'email' not in
+        (keycloak_rhtas_protocol_mappers.stdout | from_json | map(attribute='name') | list)
+      tags: [keycloak, keycloak_rhtas]
+
+    - name: Create the Trusted Artifact Signer email-verification mapper
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - create
+          - "clients/{{ keycloak_rhtas_internal_client_id.stdout | trim }}/protocol-mappers/models"
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - name=email-verified
+          - -s
+          - protocol=openid-connect
+          - -s
+          - protocolMapper=oidc-hardcoded-claim-mapper
+          - -s
+          - 'config."claim.name"=email_verified'
+          - -s
+          - 'config."claim.value"=true'
+          - -s
+          - 'config."jsonType.label"=boolean'
+          - -s
+          - 'config."id.token.claim"=true'
+          - -s
+          - 'config."access.token.claim"=true'
+          - -s
+          - 'config."userinfo.token.claim"=true'
+      become_user: "{{ keycloak_service_user }}"
+      when: >-
+        'email-verified' not in
+        (keycloak_rhtas_protocol_mappers.stdout | from_json | map(attribute='name') | list)
+      tags: [keycloak, keycloak_rhtas]
+
+    - name: Create the Trusted Artifact Signer audience mapper
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - create
+          - "clients/{{ keycloak_rhtas_internal_client_id.stdout | trim }}/protocol-mappers/models"
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - name=trusted-artifact-signer-audience
+          - -s
+          - protocol=openid-connect
+          - -s
+          - protocolMapper=oidc-audience-mapper
+          - -s
+          - 'config."included.client.audience"={{ keycloak_rhtas_client_id }}'
+          - -s
+          - 'config."id.token.claim"=true'
+          - -s
+          - 'config."access.token.claim"=true'
+      become_user: "{{ keycloak_service_user }}"
+      when: >-
+        'trusted-artifact-signer-audience' not in
+        (keycloak_rhtas_protocol_mappers.stdout | from_json | map(attribute='name') | list)
+      tags: [keycloak, keycloak_rhtas]
+
+    - name: Read the Keycloak OIDC discovery document
+      ansible.builtin.uri:
+        url: "{{ keycloak_rhtas_issuer_url }}/.well-known/openid-configuration"
+        method: GET
+        return_content: true
+        status_code: 200
+        validate_certs: true
+      register: keycloak_rhtas_discovery
+      tags: [keycloak, keycloak_rhtas, keycloak_verify]
+
+    - name: Read the reconciled Trusted Artifact Signer client
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - get
+          - "clients/{{ keycloak_rhtas_internal_client_id.stdout | trim }}"
+          - -r
+          - "{{ keycloak_realm_name }}"
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_rhtas_client_result
+      changed_when: false
+      tags: [keycloak, keycloak_rhtas, keycloak_verify]
+
+    - name: Read the reconciled Trusted Artifact Signer mappers
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - get
+          - "clients/{{ keycloak_rhtas_internal_client_id.stdout | trim }}/protocol-mappers/models"
+          - -r
+          - "{{ keycloak_realm_name }}"
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_rhtas_final_mappers
+      changed_when: false
+      tags: [keycloak, keycloak_rhtas, keycloak_verify]
+
+    - name: Validate the Trusted Artifact Signer OIDC issuer
+      ansible.builtin.assert:
+        that:
+          - keycloak_rhtas_discovery.json.issuer == keycloak_rhtas_issuer_url
+          - keycloak_rhtas_discovery.json.authorization_endpoint is defined
+          - keycloak_rhtas_discovery.json.token_endpoint is defined
+          - keycloak_rhtas_discovery.json.jwks_uri is defined
+          - (keycloak_rhtas_client_result.stdout | from_json).clientId == keycloak_rhtas_client_id
+          - (keycloak_rhtas_client_result.stdout | from_json).publicClient | bool
+          - (keycloak_rhtas_client_result.stdout | from_json).standardFlowEnabled | bool
+          - "'email' in (keycloak_rhtas_final_mappers.stdout | from_json | map(attribute='name') | list)"
+          - "'email-verified' in (keycloak_rhtas_final_mappers.stdout | from_json | map(attribute='name') | list)"
+          - "'trusted-artifact-signer-audience' in (keycloak_rhtas_final_mappers.stdout | from_json | map(attribute='name') | list)"
+        fail_msg: >-
+          The Keycloak discovery document does not match the Trusted Artifact
+          Signer issuer configuration.
+      tags: [keycloak, keycloak_rhtas, keycloak_verify]
 
     - name: Verify the Keycloak public endpoint
       ansible.builtin.uri:

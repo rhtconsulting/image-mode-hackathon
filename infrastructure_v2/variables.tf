@@ -283,6 +283,15 @@ variable "servers" {
       root_volume   = 80
       extra_volume  = 0
     }
+
+    # RHTAS is deployed as a single-node signing service on RHEL 9.4 or later.
+    # The additional encrypted volume holds persistent signing and trust data.
+    rhtas = {
+      count         = 1
+      instance_type = "m6i.xlarge"
+      root_volume   = 120
+      extra_volume  = 500
+    }
   }
 
   validation {
@@ -301,10 +310,28 @@ variable "servers" {
   validation {
     condition = (
       contains(keys(var.servers), "idm") &&
-      var.servers["idm"].count >= 1
+      try(var.servers["idm"].count, 0) >= 1
     )
 
     error_message = "servers must include at least one IdM server."
+  }
+
+  validation {
+    condition = (
+      contains(keys(var.servers), "keycloak") &&
+      try(var.servers["keycloak"].count, 0) >= 1
+    )
+
+    error_message = "servers must include at least one Keycloak server; add a keycloak entry to terraform.tfvars when overriding the servers map."
+  }
+
+  validation {
+    condition = (
+      contains(keys(var.servers), "rhtas") &&
+      try(var.servers["rhtas"].count, 0) >= 1
+    )
+
+    error_message = "servers must include at least one RHTAS server; add an rhtas entry to terraform.tfvars when overriding the servers map."
   }
 }
 
@@ -336,6 +363,59 @@ variable "keycloak_installer_s3_key" {
     )
 
     error_message = "keycloak_installer_s3_key must be a non-empty relative S3 object key ending in .zip."
+  }
+}
+
+############################################################
+# Red Hat Trusted Artifact Signer Settings
+############################################################
+
+variable "rhtas_oidc_client_id" {
+  type        = string
+  default     = "trusted-artifact-signer"
+  description = "Keycloak OpenID Connect client ID trusted by RHTAS Fulcio."
+
+  validation {
+    condition     = trimspace(var.rhtas_oidc_client_id) != ""
+    error_message = "rhtas_oidc_client_id cannot be empty."
+  }
+}
+
+variable "rhtas_service_subdomains" {
+  type        = set(string)
+  description = "Public RHTAS service names created below the rhtas-1 hostname."
+
+  default = [
+    "cli-server",
+    "fulcio",
+    "rekor",
+    "rekor-search",
+    "tsa",
+    "tuf"
+  ]
+
+  validation {
+    condition = alltrue([
+      for subdomain in var.rhtas_service_subdomains :
+      can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", subdomain))
+    ])
+
+    error_message = "Every RHTAS service subdomain must be a valid lowercase DNS label."
+  }
+}
+
+variable "rhtas_https_port" {
+  type        = number
+  default     = 443
+  description = "Public HTTPS port used by the RHTAS service endpoints."
+
+  validation {
+    condition = (
+      var.rhtas_https_port >= 1 &&
+      var.rhtas_https_port <= 65535
+    )
+
+    error_message = "rhtas_https_port must be between 1 and 65535."
   }
 }
 
@@ -609,10 +689,11 @@ variable "satellite_manifest_sha256" {
 
 variable "public_server_names" {
   description = <<-EOT
-    Exact flattened server names that require an Elastic IP,
-    public Route53 record, and public ACM certificate.
+    Exact flattened server names that require a stable Elastic IP.
 
-    Servers not listed remain private-only.
+    The current compute configuration still assigns automatic public IPs,
+    public Route53 records, and ACM certificates to other servers. Those
+    automatic public IPs can change after an EC2 stop/start.
   EOT
 
   type = set(string)
@@ -625,9 +706,8 @@ variable "public_server_names" {
     "gitlab-1"
   ]
 
-  # keycloak-1 intentionally does not receive an Elastic IP by default. The
-  # five entries above already consume the configured regional quota limit.
-  # Add keycloak-1 only after raising that quota or removing another entry.
+  # Keycloak and RHTAS use automatically assigned public IPs for now. Add them
+  # here only after increasing the regional EC2-VPC Elastic IP quota.
 
   validation {
     condition = (

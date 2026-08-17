@@ -200,6 +200,22 @@ output "ansible_inventory" {
       var.keycloak_installer_s3_key
     )
 
+    rhtas_oidc_client_id = (
+      var.rhtas_oidc_client_id
+    )
+
+    rhtas_service_subdomains = (
+      var.rhtas_service_subdomains
+    )
+
+    rhtas_https_port = (
+      var.rhtas_https_port
+    )
+
+    rhtas_oidc_issuer_url = (
+      local.output_rhtas_oidc_issuer_url
+    )
+
     rhel_iam_credentials_secret_name = (
       aws_secretsmanager_secret.rhel_iam_credentials.name
     )
@@ -1152,5 +1168,133 @@ output "keycloak_acm_certificate_arns" {
     for name, certificate in aws_acm_certificate.server :
     name => certificate.arn
     if local.flattened_servers[name].role == "keycloak"
+  }
+}
+
+############################################################
+# Red Hat Trusted Artifact Signer
+############################################################
+
+locals {
+  output_keycloak_server_names = sort([
+    for name, server in local.flattened_servers : name
+    if server.role == "keycloak"
+  ])
+
+  output_primary_keycloak_fqdn = (
+    length(local.output_keycloak_server_names) > 0
+    ? local.flattened_servers[local.output_keycloak_server_names[0]].hostname
+    : ""
+  )
+
+  output_rhtas_oidc_issuer_url = (
+    local.output_primary_keycloak_fqdn != ""
+    ? "https://${local.output_primary_keycloak_fqdn}/realms/${lower(local.idm_realm_name)}"
+    : ""
+  )
+}
+
+output "rhtas_servers" {
+  description = "Created RHTAS servers with addresses, storage, wildcard certificate, service endpoints, and Keycloak OIDC configuration."
+
+  value = {
+    for name, instance in aws_instance.server :
+    name => {
+      hostname   = instance.tags.Name
+      fqdn       = local.flattened_servers[name].hostname
+      private_ip = instance.private_ip
+
+      public_ip = coalesce(
+        try(aws_eip.server[name].public_ip, null),
+        instance.public_ip,
+        ""
+      )
+
+      https_url = "https://${local.flattened_servers[name].hostname}"
+
+      service_urls = {
+        for service in var.rhtas_service_subdomains :
+        service => "https://${service}.${local.flattened_servers[name].hostname}"
+      }
+
+      instance_profile = lookup(
+        local.instance_profile_by_role,
+        local.flattened_servers[name].role,
+        aws_iam_instance_profile.lab_ec2_default.name
+      )
+
+      data_volume_id   = try(aws_ebs_volume.extra[name].id, "")
+      data_volume_size = try(aws_ebs_volume.extra[name].size, 0)
+
+      acm_certificate_arn = try(
+        aws_acm_certificate.server[name].arn,
+        ""
+      )
+
+      certificate_names = [
+        local.flattened_servers[name].hostname,
+        "*.${local.flattened_servers[name].hostname}"
+      ]
+
+      oidc_issuer_url = local.output_rhtas_oidc_issuer_url
+      oidc_client_id  = var.rhtas_oidc_client_id
+
+      ssh = "ssh -i ${local.ansible_ssh_private_key_file} ec2-user@${coalesce(
+        try(aws_eip.server[name].public_ip, null),
+        instance.public_ip,
+        instance.private_ip
+      )}"
+    }
+    if local.flattened_servers[name].role == "rhtas"
+  }
+}
+
+output "rhtas_service_urls" {
+  description = "Public HTTPS endpoints for the RHTAS services on each RHTAS server."
+
+  value = {
+    for name, server in local.flattened_servers :
+    name => {
+      for service in var.rhtas_service_subdomains :
+      service => "https://${service}.${server.hostname}"
+    }
+    if server.role == "rhtas"
+  }
+}
+
+output "rhtas_oidc_configuration" {
+  description = "Keycloak OpenID Connect settings used by RHTAS and signing clients."
+
+  value = {
+    issuer_url = local.output_rhtas_oidc_issuer_url
+    client_id  = var.rhtas_oidc_client_id
+  }
+}
+
+output "rhtas_signing_client_environment" {
+  description = "Environment values that image-pipeline clients can use to discover the RHTAS Fulcio, Rekor, TUF, and Keycloak endpoints."
+
+  value = {
+    for name, server in local.flattened_servers :
+    name => {
+      COSIGN_OIDC_CLIENT_ID          = var.rhtas_oidc_client_id
+      COSIGN_OIDC_ISSUER             = local.output_rhtas_oidc_issuer_url
+      COSIGN_CERTIFICATE_OIDC_ISSUER = local.output_rhtas_oidc_issuer_url
+      COSIGN_FULCIO_URL              = "https://fulcio.${server.hostname}"
+      COSIGN_REKOR_URL               = "https://rekor.${server.hostname}"
+      RHTAS_CLI_SERVER_URL           = "https://cli-server.${server.hostname}"
+      RHTAS_TUF_URL                  = "https://tuf.${server.hostname}"
+    }
+    if server.role == "rhtas"
+  }
+}
+
+output "rhtas_acm_certificate_arns" {
+  description = "Exportable ACM wildcard certificate ARNs generated for RHTAS servers."
+
+  value = {
+    for name, certificate in aws_acm_certificate.server :
+    name => certificate.arn
+    if local.flattened_servers[name].role == "rhtas"
   }
 }

@@ -62,7 +62,12 @@ locals {
     "gitlab/otp_key_base",
     "gitlab/db_key_base",
     "gitlab/openid_connect_client_secret",
-    "keycloak/admin_password"
+    "keycloak/admin_password",
+    "rhtas/fulcio_ca_passphrase",
+    "rhtas/ctlog_ca_passphrase",
+    "rhtas/rekor_ca_passphrase",
+    "rhtas/tsa_ca_passphrase",
+    "rhtas/acm_export_passphrase"
 
   ])
 

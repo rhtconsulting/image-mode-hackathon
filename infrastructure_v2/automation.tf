@@ -32,6 +32,22 @@ resource "local_file" "ansible_inventory" {
       var.keycloak_installer_s3_key
     )
 
+    ###########################################################################
+    # Keycloak OIDC and RHTAS
+    ###########################################################################
+
+    rhtas_oidc_client_id = (
+      var.rhtas_oidc_client_id
+    )
+
+    rhtas_https_port = (
+      var.rhtas_https_port
+    )
+
+    rhtas_oidc_issuer_url = (
+      local.output_rhtas_oidc_issuer_url
+    )
+
     rhel_iam_credentials_secret_name = (
       aws_secretsmanager_secret.rhel_iam_credentials.name
     )
@@ -239,7 +255,9 @@ resource "local_file" "ansible_inventory" {
 
 resource "terraform_data" "bootstrap_lab" {
   depends_on = [
-    local_file.ansible_inventory
+    local_file.ansible_inventory,
+    aws_route53_record.public_dns,
+    aws_route53_record.rhtas_service
   ]
 
   triggers_replace = [

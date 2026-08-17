@@ -1,12 +1,18 @@
-# ---
-# - name: Deploy Red Hat IdM Server
-#   ansible.builtin.import_playbook: deploy-idm.yml
+---
+- name: Deploy Red Hat IdM Server
+  ansible.builtin.import_playbook: deploy-idm.yml
 
-# - name: Enroll hosts into IdM
-#   ansible.builtin.import_playbook: enroll-idm-clients.yml
+- name: Enroll hosts into IdM
+  ansible.builtin.import_playbook: enroll-idm-clients.yml
 
 - name: Deploy Keycloak
   ansible.builtin.import_playbook: deploy-keycloak.yml
+
+
+# RHTAS uses Keycloak as its OIDC provider, so it must be deployed after
+# Keycloak is available and the trusted-artifact-signer client exists.
+- name: Deploy Red Hat Trusted Artifact Signer
+  ansible.builtin.import_playbook: deploy-rhtas.yml
 
 - name: Deploy Gitlab
   ansible.builtin.import_playbook: deploy-gitlab.yml

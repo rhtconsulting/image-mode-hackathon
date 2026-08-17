@@ -67,7 +67,8 @@ locals {
     "rhtas/ctlog_ca_passphrase",
     "rhtas/rekor_ca_passphrase",
     "rhtas/tsa_ca_passphrase",
-    "rhtas/acm_export_passphrase"
+    "rhtas/acm_export_passphrase",
+    "rhtas/oidc_ci_client_secret"
 
   ])
 

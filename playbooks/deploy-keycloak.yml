@@ -18,6 +18,8 @@
     keycloak_admin_username: admin
     keycloak_admin_password_secret_name: "{{ secret_prefix }}/keycloak/admin_password"
     keycloak_idm_admin_password_secret_name: "{{ secret_prefix }}/idm/admin_password"
+    keycloak_rhtas_ci_client_secret_name: >-
+      {{ secret_prefix }}/rhtas/oidc_ci_client_secret
     keycloak_realm_name: "{{ idm_realm_name | lower }}"
     keycloak_ldap_provider_name: red-hat-idm
     keycloak_https_url: "https://{{ keycloak_hostname | default(inventory_hostname) }}"
@@ -37,6 +39,10 @@
     keycloak_rhtas_redirect_uris:
       - "http://localhost:*"
       - "http://127.0.0.1:*"
+    keycloak_rhtas_ci_client_id: trusted-artifact-signer-ci
+    keycloak_rhtas_ci_client_name: >-
+      Red Hat Trusted Artifact Signer - AAP Automation
+    keycloak_rhtas_ci_email: "rhtas-ci@{{ keycloak_realm_name }}"
 
     ###########################################################################
     # Keycloak repositories and packages
@@ -202,6 +208,29 @@
       changed_when: false
       no_log: true
       tags: [keycloak, keycloak_secrets, keycloak_idm]
+
+    - name: Read the RHTAS unattended-signing client secret
+      ansible.builtin.command:
+        argv:
+          - aws
+          - --profile
+          - "{{ aws_profile }}"
+          - --region
+          - "{{ aws_region }}"
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ keycloak_rhtas_ci_client_secret_name }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      delegate_to: localhost
+      become: false
+      register: keycloak_rhtas_ci_client_secret_result
+      changed_when: false
+      no_log: true
+      tags: [keycloak, keycloak_secrets, keycloak_rhtas_ci]
 
     - name: Generate a one-time ACM export passphrase
       ansible.builtin.set_fact:
@@ -528,6 +557,144 @@
       changed_when: false
       tags: [keycloak, keycloak_idm]
 
+    - name: Reconcile the existing IdM LDAP federation provider
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - update
+          - "components/{{ keycloak_ldap_provider_id.stdout | trim }}"
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - "name={{ keycloak_ldap_provider_name }}"
+          - -s
+          - providerId=ldap
+          - -s
+          - providerType=org.keycloak.storage.UserStorageProvider
+          - -s
+          - parentId={{ keycloak_realm_id.stdout | trim }}
+          - -s
+          - 'config.vendor=["other"]'
+          - -s
+          - 'config.enabled=["true"]'
+          - -s
+          - 'config.priority=["0"]'
+          - -s
+          - 'config.connectionUrl=["{{ keycloak_ldap_url }}"]'
+          - -s
+          - 'config.usersDn=["{{ keycloak_ldap_users_dn }}"]'
+          - -s
+          - 'config.bindDn=["{{ keycloak_ldap_bind_dn }}"]'
+          - -s
+          - 'config.bindCredential=["{{ keycloak_idm_password_result.stdout }}"]'
+          - -s
+          - 'config.authType=["simple"]'
+          - -s
+          - 'config.editMode=["READ_ONLY"]'
+          - -s
+          - 'config.importEnabled=["true"]'
+          - -s
+          - 'config.syncRegistrations=["false"]'
+          - -s
+          - 'config.usernameLDAPAttribute=["uid"]'
+          - -s
+          - 'config.rdnLDAPAttribute=["uid"]'
+          - -s
+          - 'config.uuidLDAPAttribute=["ipaUniqueID"]'
+          - -s
+          - 'config.userObjectClasses=["inetOrgPerson,organizationalPerson"]'
+          - -s
+          - 'config.searchScope=["1"]'
+          - -s
+          - 'config.pagination=["true"]'
+          - -s
+          - 'config.connectionPooling=["true"]'
+          - -s
+          - 'config.fullSyncPeriod=["-1"]'
+          - -s
+          - 'config.changedSyncPeriod=["-1"]'
+          - -s
+          - 'config.cachePolicy=["DEFAULT"]'
+      become_user: "{{ keycloak_service_user }}"
+      changed_when: true
+      no_log: true
+      tags: [keycloak, keycloak_idm]
+
+    - name: Find the IdM LDAP email mapper
+      ansible.builtin.shell:
+        cmd: >-
+          {{ keycloak_install_root }}/bin/kcadm.sh get components
+          -r {{ keycloak_realm_name | quote }}
+          -q parent={{ keycloak_ldap_provider_id.stdout | trim | quote }}
+          -q name=email
+          --fields id --format csv --noquotes | head -n 1
+        executable: /bin/bash
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_ldap_email_mapper_lookup
+      changed_when: false
+      tags: [keycloak, keycloak_idm]
+
+    - name: Create the IdM LDAP email mapper when missing
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - create
+          - components
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - name=email
+          - -s
+          - providerId=user-attribute-ldap-mapper
+          - -s
+          - providerType=org.keycloak.storage.ldap.mappers.LDAPStorageMapper
+          - -s
+          - parentId={{ keycloak_ldap_provider_id.stdout | trim }}
+          - -s
+          - 'config."ldap.attribute"=["mail"]'
+          - -s
+          - 'config."user.model.attribute"=["email"]'
+          - -s
+          - 'config."read.only"=["true"]'
+          - -s
+          - 'config."always.read.value.from.ldap"=["true"]'
+          - -s
+          - 'config."is.mandatory.in.ldap"=["false"]'
+      become_user: "{{ keycloak_service_user }}"
+      when: keycloak_ldap_email_mapper_lookup.stdout | trim == ''
+      tags: [keycloak, keycloak_idm]
+
+    - name: Reconcile the existing IdM LDAP email mapper
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - update
+          - "components/{{ keycloak_ldap_email_mapper_lookup.stdout | trim }}"
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - name=email
+          - -s
+          - providerId=user-attribute-ldap-mapper
+          - -s
+          - providerType=org.keycloak.storage.ldap.mappers.LDAPStorageMapper
+          - -s
+          - parentId={{ keycloak_ldap_provider_id.stdout | trim }}
+          - -s
+          - 'config."ldap.attribute"=["mail"]'
+          - -s
+          - 'config."user.model.attribute"=["email"]'
+          - -s
+          - 'config."read.only"=["true"]'
+          - -s
+          - 'config."always.read.value.from.ldap"=["true"]'
+          - -s
+          - 'config."is.mandatory.in.ldap"=["false"]'
+      become_user: "{{ keycloak_service_user }}"
+      when: keycloak_ldap_email_mapper_lookup.stdout | trim != ''
+      changed_when: true
+      tags: [keycloak, keycloak_idm]
+
     - name: Synchronize IdM users into Keycloak
       ansible.builtin.command:
         argv:
@@ -541,6 +708,44 @@
       become_user: "{{ keycloak_service_user }}"
       changed_when: true
       tags: [keycloak, keycloak_idm]
+
+    - name: Read the synchronized IdM users
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - get
+          - users
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -q
+          - max=1000
+          - --fields
+          - id,username,email,emailVerified,enabled,federationLink
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_synchronized_users
+      changed_when: false
+      tags: [keycloak, keycloak_idm]
+
+    - name: Trust email addresses supplied by the IdM federation provider
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - update
+          - "users/{{ item.id }}"
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - emailVerified=true
+      become_user: "{{ keycloak_service_user }}"
+      loop: "{{ keycloak_synchronized_users.stdout | from_json }}"
+      loop_control:
+        label: "{{ item.username }}"
+      when:
+        - item.federationLink | default('') == keycloak_ldap_provider_id.stdout | trim
+        - item.email | default('') | length > 0
+        - not (item.emailVerified | default(false) | bool)
+      changed_when: true
+      tags: [keycloak, keycloak_idm, keycloak_rhtas]
 
     ###########################################################################
     # Phase 5: grant the IdM administrators Keycloak realm administration
@@ -770,6 +975,382 @@
         'trusted-artifact-signer-audience' not in
         (keycloak_rhtas_protocol_mappers.stdout | from_json | map(attribute='name') | list)
       tags: [keycloak, keycloak_rhtas]
+
+    ###########################################################################
+    # Phase 7: configure unattended RHTAS signing for AAP
+    ###########################################################################
+
+    - name: Find the unattended RHTAS signing client
+      ansible.builtin.shell:
+        cmd: >-
+          {{ keycloak_install_root }}/bin/kcadm.sh get clients
+          -r {{ keycloak_realm_name | quote }}
+          -q clientId={{ keycloak_rhtas_ci_client_id | quote }}
+          --fields id --format csv --noquotes | head -n 1
+        executable: /bin/bash
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_rhtas_ci_client_lookup
+      changed_when: false
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci]
+
+    - name: Create the unattended RHTAS signing client
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - create
+          - clients
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - "clientId={{ keycloak_rhtas_ci_client_id }}"
+          - -s
+          - "name={{ keycloak_rhtas_ci_client_name }}"
+          - -s
+          - enabled=true
+          - -s
+          - protocol=openid-connect
+          - -s
+          - publicClient=false
+          - -s
+          - clientAuthenticatorType=client-secret
+          - -s
+          - standardFlowEnabled=false
+          - -s
+          - implicitFlowEnabled=false
+          - -s
+          - directAccessGrantsEnabled=false
+          - -s
+          - serviceAccountsEnabled=true
+          - -s
+          - authorizationServicesEnabled=false
+          - -s
+          - fullScopeAllowed=false
+          - -s
+          - 'redirectUris=[]'
+          - -s
+          - 'webOrigins=[]'
+          - -s
+          - "secret={{ keycloak_rhtas_ci_client_secret_result.stdout | trim }}"
+      become_user: "{{ keycloak_service_user }}"
+      when: keycloak_rhtas_ci_client_lookup.stdout | trim == ''
+      no_log: true
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci]
+
+    - name: Read the unattended RHTAS signing client ID
+      ansible.builtin.shell:
+        cmd: >-
+          {{ keycloak_install_root }}/bin/kcadm.sh get clients
+          -r {{ keycloak_realm_name | quote }}
+          -q clientId={{ keycloak_rhtas_ci_client_id | quote }}
+          --fields id --format csv --noquotes | head -n 1
+        executable: /bin/bash
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_rhtas_ci_internal_client_id
+      changed_when: false
+      failed_when: keycloak_rhtas_ci_internal_client_id.stdout | trim == ''
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci]
+
+    - name: Reconcile the unattended RHTAS signing client
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - update
+          - "clients/{{ keycloak_rhtas_ci_internal_client_id.stdout | trim }}"
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - "clientId={{ keycloak_rhtas_ci_client_id }}"
+          - -s
+          - "name={{ keycloak_rhtas_ci_client_name }}"
+          - -s
+          - enabled=true
+          - -s
+          - protocol=openid-connect
+          - -s
+          - publicClient=false
+          - -s
+          - clientAuthenticatorType=client-secret
+          - -s
+          - standardFlowEnabled=false
+          - -s
+          - implicitFlowEnabled=false
+          - -s
+          - directAccessGrantsEnabled=false
+          - -s
+          - serviceAccountsEnabled=true
+          - -s
+          - authorizationServicesEnabled=false
+          - -s
+          - fullScopeAllowed=false
+          - -s
+          - 'redirectUris=[]'
+          - -s
+          - 'webOrigins=[]'
+          - -s
+          - "secret={{ keycloak_rhtas_ci_client_secret_result.stdout | trim }}"
+      become_user: "{{ keycloak_service_user }}"
+      changed_when: true
+      no_log: true
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci]
+
+    - name: Read unattended RHTAS signing protocol mappers
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - get
+          - "clients/{{ keycloak_rhtas_ci_internal_client_id.stdout | trim }}/protocol-mappers/models"
+          - -r
+          - "{{ keycloak_realm_name }}"
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_rhtas_ci_protocol_mappers
+      changed_when: false
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci]
+
+    - name: Create the unattended-signing email mapper
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - create
+          - "clients/{{ keycloak_rhtas_ci_internal_client_id.stdout | trim }}/protocol-mappers/models"
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - name=rhtas-ci-email
+          - -s
+          - protocol=openid-connect
+          - -s
+          - protocolMapper=oidc-hardcoded-claim-mapper
+          - -s
+          - 'config."claim.name"=email'
+          - -s
+          - 'config."claim.value"={{ keycloak_rhtas_ci_email }}'
+          - -s
+          - 'config."jsonType.label"=String'
+          - -s
+          - 'config."id.token.claim"=true'
+          - -s
+          - 'config."access.token.claim"=true'
+          - -s
+          - 'config."userinfo.token.claim"=true'
+      become_user: "{{ keycloak_service_user }}"
+      when: >-
+        'rhtas-ci-email' not in
+        (keycloak_rhtas_ci_protocol_mappers.stdout | from_json | map(attribute='name') | list)
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci]
+
+    - name: Create the unattended-signing email-verification mapper
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - create
+          - "clients/{{ keycloak_rhtas_ci_internal_client_id.stdout | trim }}/protocol-mappers/models"
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - name=rhtas-ci-email-verified
+          - -s
+          - protocol=openid-connect
+          - -s
+          - protocolMapper=oidc-hardcoded-claim-mapper
+          - -s
+          - 'config."claim.name"=email_verified'
+          - -s
+          - 'config."claim.value"=true'
+          - -s
+          - 'config."jsonType.label"=boolean'
+          - -s
+          - 'config."id.token.claim"=true'
+          - -s
+          - 'config."access.token.claim"=true'
+          - -s
+          - 'config."userinfo.token.claim"=true'
+      become_user: "{{ keycloak_service_user }}"
+      when: >-
+        'rhtas-ci-email-verified' not in
+        (keycloak_rhtas_ci_protocol_mappers.stdout | from_json | map(attribute='name') | list)
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci]
+
+    - name: Create the unattended-signing RHTAS audience mapper
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - create
+          - "clients/{{ keycloak_rhtas_ci_internal_client_id.stdout | trim }}/protocol-mappers/models"
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - name=rhtas-ci-audience
+          - -s
+          - protocol=openid-connect
+          - -s
+          - protocolMapper=oidc-audience-mapper
+          - -s
+          - 'config."included.client.audience"={{ keycloak_rhtas_client_id }}'
+          - -s
+          - 'config."id.token.claim"=true'
+          - -s
+          - 'config."access.token.claim"=true'
+      become_user: "{{ keycloak_service_user }}"
+      when: >-
+        'rhtas-ci-audience' not in
+        (keycloak_rhtas_ci_protocol_mappers.stdout | from_json | map(attribute='name') | list)
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci]
+
+    - name: Read the reconciled unattended-signing protocol mappers
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - get
+          - "clients/{{ keycloak_rhtas_ci_internal_client_id.stdout | trim }}/protocol-mappers/models"
+          - -r
+          - "{{ keycloak_realm_name }}"
+      become_user: "{{ keycloak_service_user }}"
+      register: keycloak_rhtas_ci_reconciled_mappers
+      changed_when: false
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci]
+
+    - name: Reconcile the unattended-signing email mapper
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - update
+          - >-
+            clients/{{ keycloak_rhtas_ci_internal_client_id.stdout | trim
+            }}/protocol-mappers/models/{{ keycloak_rhtas_ci_email_mapper.id }}
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - name=rhtas-ci-email
+          - -s
+          - protocol=openid-connect
+          - -s
+          - protocolMapper=oidc-hardcoded-claim-mapper
+          - -s
+          - 'config."claim.name"=email'
+          - -s
+          - 'config."claim.value"={{ keycloak_rhtas_ci_email }}'
+          - -s
+          - 'config."jsonType.label"=String'
+          - -s
+          - 'config."id.token.claim"=true'
+          - -s
+          - 'config."access.token.claim"=true'
+          - -s
+          - 'config."userinfo.token.claim"=true'
+      vars:
+        keycloak_rhtas_ci_email_mapper: >-
+          {{
+            keycloak_rhtas_ci_reconciled_mappers.stdout
+            | from_json
+            | selectattr('name', 'equalto', 'rhtas-ci-email')
+            | first
+          }}
+      become_user: "{{ keycloak_service_user }}"
+      changed_when: true
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci]
+
+    - name: Reconcile the unattended-signing email-verification mapper
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - update
+          - >-
+            clients/{{ keycloak_rhtas_ci_internal_client_id.stdout | trim
+            }}/protocol-mappers/models/{{ keycloak_rhtas_ci_verified_mapper.id }}
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - name=rhtas-ci-email-verified
+          - -s
+          - protocol=openid-connect
+          - -s
+          - protocolMapper=oidc-hardcoded-claim-mapper
+          - -s
+          - 'config."claim.name"=email_verified'
+          - -s
+          - 'config."claim.value"=true'
+          - -s
+          - 'config."jsonType.label"=boolean'
+          - -s
+          - 'config."id.token.claim"=true'
+          - -s
+          - 'config."access.token.claim"=true'
+          - -s
+          - 'config."userinfo.token.claim"=true'
+      vars:
+        keycloak_rhtas_ci_verified_mapper: >-
+          {{
+            keycloak_rhtas_ci_reconciled_mappers.stdout
+            | from_json
+            | selectattr('name', 'equalto', 'rhtas-ci-email-verified')
+            | first
+          }}
+      become_user: "{{ keycloak_service_user }}"
+      changed_when: true
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci]
+
+    - name: Reconcile the unattended-signing audience mapper
+      ansible.builtin.command:
+        argv:
+          - "{{ keycloak_install_root }}/bin/kcadm.sh"
+          - update
+          - >-
+            clients/{{ keycloak_rhtas_ci_internal_client_id.stdout | trim
+            }}/protocol-mappers/models/{{ keycloak_rhtas_ci_audience_mapper.id }}
+          - -r
+          - "{{ keycloak_realm_name }}"
+          - -s
+          - name=rhtas-ci-audience
+          - -s
+          - protocol=openid-connect
+          - -s
+          - protocolMapper=oidc-audience-mapper
+          - -s
+          - 'config."included.client.audience"={{ keycloak_rhtas_client_id }}'
+          - -s
+          - 'config."id.token.claim"=true'
+          - -s
+          - 'config."access.token.claim"=true'
+      vars:
+        keycloak_rhtas_ci_audience_mapper: >-
+          {{
+            keycloak_rhtas_ci_reconciled_mappers.stdout
+            | from_json
+            | selectattr('name', 'equalto', 'rhtas-ci-audience')
+            | first
+          }}
+      become_user: "{{ keycloak_service_user }}"
+      changed_when: true
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci]
+
+    - name: Request an unattended RHTAS signing token
+      ansible.builtin.uri:
+        url: "{{ keycloak_rhtas_issuer_url }}/protocol/openid-connect/token"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          grant_type: client_credentials
+          client_id: "{{ keycloak_rhtas_ci_client_id }}"
+          client_secret: "{{ keycloak_rhtas_ci_client_secret_result.stdout | trim }}"
+          scope: openid email
+        return_content: true
+        status_code: 200
+        validate_certs: true
+      register: keycloak_rhtas_ci_token_result
+      no_log: true
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci, keycloak_verify]
+
+    - name: Validate unattended RHTAS token issuance
+      ansible.builtin.assert:
+        that:
+          - keycloak_rhtas_ci_token_result.json.access_token is defined
+          - keycloak_rhtas_ci_token_result.json.access_token | length > 0
+          - keycloak_rhtas_ci_token_result.json.token_type | lower == 'bearer'
+        fail_msg: >-
+          Keycloak did not issue a client-credentials token for the unattended
+          RHTAS signing client.
+      no_log: true
+      tags: [keycloak, keycloak_rhtas, keycloak_rhtas_ci, keycloak_verify]
 
     - name: Read the Keycloak OIDC discovery document
       ansible.builtin.uri:

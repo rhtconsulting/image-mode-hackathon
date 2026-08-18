@@ -15,12 +15,14 @@
 #   4. Discovers the vendor osbuild-composer repository definition.
 #   5. Supports both RHEL 9 and RHEL 10 repository naming conventions.
 #   6. Preserves a pristine copy of the vendor JSON.
-#   7. Reads the real BaseOS and AppStream URLs from the vendor JSON.
-#   8. Builds an /etc override from the vendor JSON.
-#   9. Replaces only the current host architecture's repository URLs.
-#  10. Validates the resulting JSON.
-#  11. Restarts osbuild-composer only when the override changes.
-#  12. Verifies Composer can query package metadata.
+#   7. Keeps the vendor JSON as text for safe replacement operations.
+#   8. Parses the vendor JSON separately for structured inspection.
+#   9. Reads the actual BaseOS and AppStream URLs from the vendor definition.
+#  10. Builds an /etc override from the vendor definition.
+#  11. Replaces only the current host architecture's repository URLs.
+#  12. Validates the resulting JSON.
+#  13. Restarts osbuild-composer only when the override changes.
+#  14. Verifies Composer can query package metadata.
 ###############################################################################
 
 ###############################################################################
@@ -60,19 +62,7 @@
       {{ image_builder_composer_architecture }}
 
 ###############################################################################
-# Configure the Satellite-backed Composer override for RHEL 9 and RHEL 10.
-#
-# Repository IDs are generated from the detected major version and architecture.
-#
-# Examples:
-#
-#   RHEL 9 x86_64:
-#     rhel-9-for-x86_64-baseos-rpms
-#     rhel-9-for-x86_64-appstream-rpms
-#
-#   RHEL 10 x86_64:
-#     rhel-10-for-x86_64-baseos-rpms
-#     rhel-10-for-x86_64-appstream-rpms
+# Configure the Satellite-backed Composer override for RHEL 9 and RHEL 10
 ###############################################################################
 
 - name: PHASE 15 | Resolve Satellite repository identifiers
@@ -222,24 +212,6 @@
 
 ###############################################################################
 # Resolve osbuild-composer repository definition
-#
-# Repository-definition naming differs between osbuild-composer generations.
-#
-# Examples:
-#
-#   RHEL 9.8 legacy:
-#     rhel-98.json
-#
-#   RHEL 9.8 current:
-#     rhel-9.8.json
-#
-#   RHEL 10:
-#     rhel-10.json
-#
-#   RHEL 10 minor-specific, when shipped:
-#     rhel-10.2.json
-#
-# Never construct rhel-100.json or rhel-102.json for RHEL 10.
 ###############################################################################
 
 - name: PHASE 15 | Resolve Composer repository directories
@@ -283,19 +255,6 @@
 
 ###############################################################################
 # Build supported filename candidates
-#
-# RHEL 10 selection order:
-#
-#   1. rhel-<major>.json
-#   2. rhel-<major.minor>.json
-#
-# The generic rhel-10.json definition is preferred for RHEL 10.
-#
-# RHEL 9 selection order:
-#
-#   1. rhel-<major.minor>.json
-#   2. legacy compact rhel-<majorminor>.json
-#   3. rhel-<major>.json
 ###############################################################################
 
 - name: PHASE 15 | Resolve Composer repository filename candidates
@@ -311,10 +270,18 @@
       }}.json
 
 ###############################################################################
-# RHEL 10 and later
+# RHEL 10 selection
+#
+# Prefer:
+#
+#   rhel-10.json
+#
+# Fall back to:
+#
+#   rhel-10.2.json
 ###############################################################################
 
-- name: PHASE 15 | Resolve Composer repository filename for RHEL 10 or newer
+- name: PHASE 15 | Resolve Composer repository filename for RHEL 10
   ansible.builtin.set_fact:
     image_builder_composer_repository_filename: >-
       {{
@@ -336,10 +303,22 @@
     - image_builder_composer_rhel_major | int >= 10
 
 ###############################################################################
-# RHEL 9 and earlier
+# RHEL 9 selection
+#
+# Prefer:
+#
+#   rhel-9.8.json
+#
+# Fall back to:
+#
+#   rhel-98.json
+#
+# Then:
+#
+#   rhel-9.json
 ###############################################################################
 
-- name: PHASE 15 | Resolve Composer repository filename for RHEL 9 or earlier
+- name: PHASE 15 | Resolve Composer repository filename for RHEL 9
   ansible.builtin.set_fact:
     image_builder_composer_repository_filename: >-
       {{
@@ -437,9 +416,6 @@
 
 ###############################################################################
 # Preserve the pristine vendor file
-#
-# force: false intentionally prevents later runs from overwriting the original
-# backup.
 ###############################################################################
 
 - name: PHASE 15 | Preserve original Composer repository definition
@@ -454,9 +430,6 @@
 
 ###############################################################################
 # Read the vendor repository definition
-#
-# Generate the desired override from the pristine RPM-owned vendor file on
-# every run rather than modifying an existing override repeatedly.
 ###############################################################################
 
 - name: PHASE 15 | Read vendor Composer repository definition
@@ -464,25 +437,54 @@
     src: "{{ image_builder_composer_vendor_repository_file }}"
   register: image_builder_composer_vendor_repository
 
-- name: PHASE 15 | Decode vendor Composer repository definition
+###############################################################################
+# Decode vendor JSON as text
+#
+# Keep this variable as raw JSON text. It is used later by replace() and copy.
+###############################################################################
+
+- name: PHASE 15 | Decode vendor Composer repository definition as text
   ansible.builtin.set_fact:
-    image_builder_composer_vendor_json: >-
+    image_builder_composer_vendor_repository_text: >-
       {{
         image_builder_composer_vendor_repository.content
         | b64decode
+        | string
       }}
 
 ###############################################################################
-# Parse vendor Composer repository definition
+# Parse vendor JSON into a structured mapping
+#
+# This variable is used only for structured inspection.
 ###############################################################################
 
 - name: PHASE 15 | Parse vendor Composer repository definition
   ansible.builtin.set_fact:
     image_builder_composer_vendor_definition: >-
       {{
-        image_builder_composer_vendor_json
+        image_builder_composer_vendor_repository_text
         | from_json
       }}
+
+- name: PHASE 15 | Validate parsed Composer repository definition
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_vendor_definition is mapping
+      - image_builder_composer_vendor_definition | length > 0
+    fail_msg: >-
+      Unable to parse the Composer repository definition as a JSON mapping.
+
+      File:
+
+      {{ image_builder_composer_vendor_repository_file }}
+
+      Raw value type:
+
+      {{ image_builder_composer_vendor_repository_text | type_debug }}
+
+      Parsed value type:
+
+      {{ image_builder_composer_vendor_definition | type_debug }}
 
 ###############################################################################
 # Validate local architecture exists in vendor repository definition
@@ -557,7 +559,7 @@
       {{ image_builder_composer_vendor_repository_file }}
 
 ###############################################################################
-# Capture the vendor repository URLs actually shipped by osbuild-composer
+# Capture vendor repository URLs
 ###############################################################################
 
 - name: PHASE 15 | Resolve vendor Composer repository URLs
@@ -587,15 +589,14 @@
 ###############################################################################
 # Replace only the current architecture's BaseOS and AppStream URLs
 #
-# The values actually present in the vendor JSON are used rather than trying
-# to predict the CDN URL format.
+# Perform replacement against the raw JSON text, not the parsed dictionary.
 ###############################################################################
 
-- name: PHASE 15 | Build Satellite-backed Composer repository definition
+- name: PHASE 15 | Build Satellite-backed Composer repository text
   ansible.builtin.set_fact:
-    image_builder_composer_satellite_json: >-
+    image_builder_composer_satellite_repository_text: >-
       {{
-        image_builder_composer_vendor_json
+        image_builder_composer_vendor_repository_text
         | replace(
             image_builder_composer_vendor_baseos_url,
             image_builder_satellite_baseos_url
@@ -607,16 +608,20 @@
       }}
 
 ###############################################################################
-# Validate generated JSON before installing it
+# Parse generated Satellite JSON
 ###############################################################################
 
 - name: PHASE 15 | Parse generated Composer repository definition
   ansible.builtin.set_fact:
     image_builder_composer_satellite_definition: >-
       {{
-        image_builder_composer_satellite_json
+        image_builder_composer_satellite_repository_text
         | from_json
       }}
+
+###############################################################################
+# Validate generated JSON before installing it
+###############################################################################
 
 - name: PHASE 15 | Validate generated Composer repository definition
   ansible.builtin.assert:
@@ -624,19 +629,70 @@
       - image_builder_composer_satellite_definition is mapping
       - >-
         image_builder_satellite_baseos_url
-        in image_builder_composer_satellite_json
+        in image_builder_composer_satellite_repository_text
       - >-
         image_builder_satellite_appstream_url
-        in image_builder_composer_satellite_json
+        in image_builder_composer_satellite_repository_text
       - >-
         image_builder_composer_vendor_baseos_url
-        not in image_builder_composer_satellite_json
+        not in image_builder_composer_satellite_repository_text
       - >-
         image_builder_composer_vendor_appstream_url
-        not in image_builder_composer_satellite_json
+        not in image_builder_composer_satellite_repository_text
     fail_msg: >-
       Failed to generate a valid Satellite-backed Composer repository
       definition for RHEL {{ image_builder_composer_rhel_release }}.
+
+###############################################################################
+# Validate generated local architecture entries structurally
+###############################################################################
+
+- name: PHASE 15 | Resolve generated local architecture repositories
+  ansible.builtin.set_fact:
+    image_builder_composer_satellite_local_repositories: >-
+      {{
+        image_builder_composer_satellite_definition[
+          image_builder_composer_architecture
+        ]
+      }}
+
+- name: PHASE 15 | Resolve generated BaseOS repository
+  ansible.builtin.set_fact:
+    image_builder_composer_satellite_baseos_definition: >-
+      {{
+        image_builder_composer_satellite_local_repositories
+        | selectattr('name', 'equalto', 'baseos')
+        | list
+        | first
+        | default({})
+      }}
+
+- name: PHASE 15 | Resolve generated AppStream repository
+  ansible.builtin.set_fact:
+    image_builder_composer_satellite_appstream_definition: >-
+      {{
+        image_builder_composer_satellite_local_repositories
+        | selectattr('name', 'equalto', 'appstream')
+        | list
+        | first
+        | default({})
+      }}
+
+- name: PHASE 15 | Validate generated Satellite repository URLs
+  ansible.builtin.assert:
+    that:
+      - >-
+        image_builder_composer_satellite_baseos_definition.baseurl
+        ==
+        image_builder_satellite_baseos_url
+      - >-
+        image_builder_composer_satellite_appstream_definition.baseurl
+        ==
+        image_builder_satellite_appstream_url
+    fail_msg: >-
+      Generated Composer repository definition does not contain the expected
+      Satellite BaseOS and AppStream URLs for architecture
+      {{ image_builder_composer_architecture }}.
 
 ###############################################################################
 # Install Composer override
@@ -652,7 +708,7 @@
 
 - name: PHASE 15 | Install Satellite-backed Composer repository definition
   ansible.builtin.copy:
-    content: "{{ image_builder_composer_satellite_json }}"
+    content: "{{ image_builder_composer_satellite_repository_text }}"
     dest: "{{ image_builder_composer_override_file }}"
     owner: root
     group: root
@@ -771,8 +827,6 @@
 
 ###############################################################################
 # Capture recent Composer errors without using journalctl -f
-#
-# journalctl -f must not be used from Ansible because it waits indefinitely.
 ###############################################################################
 
 - name: PHASE 15 | Query recent Composer service messages

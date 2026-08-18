@@ -21,8 +21,10 @@
 #  10. Builds an /etc override from the vendor definition.
 #  11. Replaces only the current host architecture's repository URLs.
 #  12. Validates the resulting JSON.
-#  13. Restarts osbuild-composer only when the override changes.
-#  14. Verifies Composer can query package metadata.
+#  13. Enables the osbuild-composer Weldr API socket.
+#  14. Restarts osbuild-composer only when the override changes.
+#  15. Waits for /run/weldr/api.socket before invoking composer-cli.
+#  16. Verifies Composer can query package metadata.
 ###############################################################################
 
 ###############################################################################
@@ -274,11 +276,11 @@
 #
 # Prefer:
 #
-#   rhel-10.json
+#   rhel-10.2.json
 #
 # Fall back to:
 #
-#   rhel-10.2.json
+#   rhel-10.json
 ###############################################################################
 
 - name: PHASE 15 | Resolve Composer repository filename for RHEL 10
@@ -439,8 +441,6 @@
 
 ###############################################################################
 # Decode vendor JSON as text
-#
-# Keep this variable as raw JSON text. It is used later by replace() and copy.
 ###############################################################################
 
 - name: PHASE 15 | Decode vendor Composer repository definition as text
@@ -454,8 +454,6 @@
 
 ###############################################################################
 # Parse vendor JSON into a structured mapping
-#
-# This variable is used only for structured inspection.
 ###############################################################################
 
 - name: PHASE 15 | Parse vendor Composer repository definition
@@ -588,8 +586,6 @@
 
 ###############################################################################
 # Replace only the current architecture's BaseOS and AppStream URLs
-#
-# Perform replacement against the raw JSON text, not the parsed dictionary.
 ###############################################################################
 
 - name: PHASE 15 | Build Satellite-backed Composer repository text
@@ -716,24 +712,99 @@
   register: image_builder_composer_repository_override
 
 ###############################################################################
+# Enable Composer Weldr API socket
+#
+# composer-cli communicates with osbuild-composer through:
+#
+#   /run/weldr/api.socket
+#
+# Starting osbuild-composer.service alone does not guarantee that this socket
+# has been created. Explicitly enable and start the socket before any
+# composer-cli commands are executed.
+###############################################################################
+
+- name: PHASE 15 | Enable and start osbuild-composer socket
+  ansible.builtin.systemd_service:
+    name: osbuild-composer.socket
+    state: started
+    enabled: true
+
+###############################################################################
 # Restart Composer only when its repository definition changes
 ###############################################################################
 
-- name: PHASE 15 | Restart osbuild-composer
-  ansible.builtin.systemd:
+- name: PHASE 15 | Restart osbuild-composer service
+  ansible.builtin.systemd_service:
     name: osbuild-composer.service
     state: restarted
   when:
     - image_builder_composer_repository_override.changed
 
 ###############################################################################
-# Ensure Composer is running
+# Ensure Composer service is running
 ###############################################################################
 
-- name: PHASE 15 | Ensure osbuild-composer is active
-  ansible.builtin.systemd:
+- name: PHASE 15 | Ensure osbuild-composer service is active
+  ansible.builtin.systemd_service:
     name: osbuild-composer.service
     state: started
+
+###############################################################################
+# Wait for Composer Weldr API
+###############################################################################
+
+- name: PHASE 15 | Wait for Composer Weldr API socket
+  ansible.builtin.wait_for:
+    path: /run/weldr/api.socket
+    state: present
+    timeout: 30
+
+- name: PHASE 15 | Inspect Composer Weldr API socket
+  ansible.builtin.stat:
+    path: /run/weldr/api.socket
+  register: image_builder_composer_weldr_socket
+
+- name: PHASE 15 | Validate Composer Weldr API socket
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_weldr_socket.stat.exists
+      - image_builder_composer_weldr_socket.stat.issock
+    fail_msg: >-
+      osbuild-composer.socket is enabled and started, but the Weldr API
+      socket was not created at /run/weldr/api.socket.
+
+###############################################################################
+# Validate Composer API
+###############################################################################
+
+- name: PHASE 15 | Query Composer API status
+  ansible.builtin.command:
+    argv:
+      - composer-cli
+      - status
+      - show
+  register: image_builder_composer_status
+  changed_when: false
+  retries: 6
+  delay: 5
+  until:
+    - image_builder_composer_status.rc == 0
+
+- name: PHASE 15 | Validate Composer API is responsive
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_status.rc == 0
+    fail_msg: >-
+      composer-cli cannot communicate with osbuild-composer through
+      /run/weldr/api.socket.
+
+      Output:
+
+      {{ image_builder_composer_status.stdout | default('') }}
+
+      Error:
+
+      {{ image_builder_composer_status.stderr | default('') }}
 
 ###############################################################################
 # Query Composer sources
@@ -793,9 +864,6 @@
 
 ###############################################################################
 # Verify Composer package metadata
-#
-# This exercises the same package metadata used by Cockpit Image Builder when
-# searching for packages while creating a blueprint.
 ###############################################################################
 
 - name: PHASE 15 | Verify Composer package metadata query
@@ -826,7 +894,7 @@
       {{ image_builder_composer_package_query.stderr }}
 
 ###############################################################################
-# Capture recent Composer errors without using journalctl -f
+# Capture recent Composer errors
 ###############################################################################
 
 - name: PHASE 15 | Query recent Composer service messages

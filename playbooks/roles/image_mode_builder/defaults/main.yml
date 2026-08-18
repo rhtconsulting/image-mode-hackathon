@@ -185,6 +185,8 @@ cockpit_firewall_zone: public
 image_mode_firewall_ports:
   - 80/tcp
   - 443/tcp
+  - 8080/tcp
+  - 2022/tcp
   - "{{ cockpit_port }}/tcp"
 
 ###############################################################################

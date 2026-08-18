@@ -157,16 +157,11 @@
         )
       }}
 
-- name: PHASE 1 | Fail rather than overwrite an unexpected registration
-  ansible.builtin.assert:
-    that:
-      - >-
-        satellite_activation_existing_identity.rc | default(1) != 0
-        or satellite_activation_already_correct
-        or satellite_activation_force_registration | bool
-    fail_msg: >-
-      {{ inventory_hostname }} is already registered to a different RHSM
-      organization or server.
+- name: PHASE 1 | Report registration that will be forcibly replaced
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} is registered to a different RHSM organization
+      or server. The existing registration will be forcibly replaced.
 
       Current identity:
 
@@ -179,9 +174,9 @@
           )
         | trim
       }}
-
-      Run satellite_subscription_cleanup first, or set
-      satellite_activation_force_registration=true.
+  when:
+    - satellite_activation_existing_identity.rc | default(1) == 0
+    - not satellite_activation_already_correct
 
 ###############################################################################
 # PHASE 2 | Install the current Satellite Katello consumer package

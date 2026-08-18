@@ -358,3 +358,15 @@ image_builder_rhel_media_directory: "/mnt/ISO"
 image_builder_rhel9_iso_destination_name: "rhel9.iso"
 image_builder_rhel10_iso_destination_name: "rhel10.iso"
 
+
+###############################################################################
+# osbuild-composer Satellite validation
+###############################################################################
+
+# Fail PHASE 15 only when Composer attempts to use cdn.redhat.com for the
+# currently running RHEL release and architecture.
+#
+# Composer may preload metadata for other RHEL releases that are not configured
+# through this host's Satellite Content View. Those unrelated preload failures
+# should not cause configuration of the current host release to fail.
+image_builder_composer_fail_on_current_release_cdn_access: true

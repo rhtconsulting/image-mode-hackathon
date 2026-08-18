@@ -843,66 +843,114 @@
   changed_when: false
 
 ###############################################################################
-# Detect current-architecture CDN access failures
+# Inspect recent Composer CDN access
+#
+# osbuild-composer preloads metadata for multiple supported RHEL distributions
+# when it starts. A RHEL 10.2 Image Builder can therefore produce CDN errors for
+# unrelated releases such as:
+#
+#   rhel-8
+#   rhel-8.10
+#   rhel-9.4
+#   rhel-9.8
+#   rhel-10.0
+#   rhel-10.1
+#
+# Those preload attempts are not evidence that the current RHEL 10.2 Composer
+# source is incorrectly configured.
+#
+# Only CDN access for the currently running RHEL release and architecture is
+# considered a configuration failure.
 ###############################################################################
 
-- name: PHASE 15 | Resolve recent Composer CDN errors
+- name: PHASE 15 | Resolve current release CDN URL fragment
   ansible.builtin.set_fact:
-    image_builder_composer_recent_cdn_errors: >-
+    image_builder_composer_current_release_cdn_fragment: >-
+      cdn.redhat.com/content/dist/rhel{{
+      image_builder_composer_rhel_major }}/{{
+      image_builder_composer_rhel_release }}/{{
+      image_builder_composer_architecture }}/
+
+###############################################################################
+# Capture all CDN messages for diagnostics
+###############################################################################
+
+- name: PHASE 15 | Resolve recent Composer CDN messages
+  ansible.builtin.set_fact:
+    image_builder_composer_recent_cdn_messages: >-
       {{
         image_builder_composer_recent_journal.stdout_lines
         | select('search', 'cdn\.redhat\.com')
+        | list
+      }}
+
+###############################################################################
+# Capture only CDN messages for the currently running RHEL release
+###############################################################################
+
+- name: PHASE 15 | Resolve current release Composer CDN errors
+  ansible.builtin.set_fact:
+    image_builder_composer_current_release_cdn_errors: >-
+      {{
+        image_builder_composer_recent_journal.stdout_lines
         | select(
             'search',
-            image_builder_composer_architecture
+            image_builder_composer_current_release_cdn_fragment
           )
         | list
       }}
 
-- name: PHASE 15 | Validate Composer did not fall back to CDN
+###############################################################################
+# Fail only if the current release falls back to CDN
+###############################################################################
+
+- name: PHASE 15 | Validate current RHEL release did not fall back to CDN
   ansible.builtin.assert:
     that:
-      - image_builder_composer_recent_cdn_errors | length == 0
+      - image_builder_composer_current_release_cdn_errors | length == 0
     fail_msg: >-
-      osbuild-composer attempted to access cdn.redhat.com for the local
-      architecture after the Satellite repository override was installed.
+      osbuild-composer attempted to access cdn.redhat.com for the currently
+      configured RHEL release after the Satellite repository override was
+      installed.
+
+      RHEL release:
+
+      {{ image_builder_composer_rhel_release }}
 
       Architecture:
 
       {{ image_builder_composer_architecture }}
 
-      Matching journal entries:
+      Expected Satellite BaseOS:
 
-      {{ image_builder_composer_recent_cdn_errors }}
+      {{ image_builder_satellite_baseos_url }}
+
+      Expected Satellite AppStream:
+
+      {{ image_builder_satellite_appstream_url }}
+
+      Matching current-release CDN entries:
+
+      {{ image_builder_composer_current_release_cdn_errors }}
+  when:
+    - >-
+      image_builder_composer_fail_on_current_release_cdn_access
+      | default(true)
+      | bool
 
 ###############################################################################
-# Report effective configuration
+# Report unrelated Composer preload CDN failures without failing the role
 ###############################################################################
 
-- name: PHASE 15 | Report Satellite-backed Composer configuration
+- name: PHASE 15 | Report unrelated Composer CDN preload messages
   ansible.builtin.debug:
     msg:
       - >-
-        RHEL release:
-        {{ image_builder_composer_rhel_release }}
+        osbuild-composer produced CDN messages while preloading other distro
+        definitions. These do not affect the current
+        RHEL {{ image_builder_composer_rhel_release }} Satellite override.
       - >-
-        Architecture:
-        {{ image_builder_composer_architecture }}
-      - >-
-        Composer repository definition:
-        {{ image_builder_composer_override_file }}
-      - >-
-        Vendor BaseOS:
-        {{ image_builder_composer_vendor_baseos_url }}
-      - >-
-        Satellite BaseOS:
-        {{ image_builder_satellite_baseos_url }}
-      - >-
-        Vendor AppStream:
-        {{ image_builder_composer_vendor_appstream_url }}
-      - >-
-        Satellite AppStream:
-        {{ image_builder_satellite_appstream_url }}
-      - >-
-        Package metadata query:
-        successful
+        CDN preload message count:
+        {{ image_builder_composer_recent_cdn_messages | length }}
+  when:
+    - image_builder_composer_recent_cdn_messages | length > 0

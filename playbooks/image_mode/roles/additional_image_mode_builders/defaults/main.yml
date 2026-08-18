@@ -185,6 +185,8 @@ cockpit_firewall_zone: public
 image_mode_firewall_ports:
   - 80/tcp
   - 443/tcp
+  - 8080/tcp
+  - 2022/tcp
   - "{{ cockpit_port }}/tcp"
 
 ###############################################################################
@@ -357,6 +359,7 @@ image_builder_rhel10_iso_s3_object: "rhel-10.2-x86_64-dvd.iso"
 image_builder_rhel_media_directory: "/mnt/ISO"
 image_builder_rhel9_iso_destination_name: "rhel9.iso"
 image_builder_rhel10_iso_destination_name: "rhel10.iso"
+
 
 ###############################################################################
 # osbuild-composer Satellite validation

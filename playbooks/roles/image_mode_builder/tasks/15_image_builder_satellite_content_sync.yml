@@ -285,15 +285,15 @@
   ansible.builtin.set_fact:
     image_builder_composer_repository_filename: >-
       {{
-        image_builder_composer_major_repository_filename
+        image_builder_composer_exact_repository_filename
         if
-        image_builder_composer_major_repository_filename
+        image_builder_composer_exact_repository_filename
         in image_builder_composer_vendor_repository_filenames
         else
         (
-          image_builder_composer_exact_repository_filename
+          image_builder_composer_major_repository_filename
           if
-          image_builder_composer_exact_repository_filename
+          image_builder_composer_major_repository_filename
           in image_builder_composer_vendor_repository_filenames
           else
           ''

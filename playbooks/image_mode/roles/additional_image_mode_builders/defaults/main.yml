@@ -227,6 +227,21 @@ root_container_auth_directory: /root/.config/containers
 root_container_auth_file: /root/.config/containers/auth.json
 
 
+###############################################################################
+# RHEL platform package synchronization
+###############################################################################
+
+# Packages that must remain synchronized with the currently enabled
+# RHEL/Satellite content. This prevents partial package-set upgrades where
+# systemd is updated but an older OpenSSL runtime remains installed.
+image_mode_platform_sync_packages:
+  - systemd
+  - systemd-libs
+  - systemd-pam
+  - systemd-udev
+  - openssl
+  - openssl-libs
+
 
 ###############################################################################
 #Default core packages

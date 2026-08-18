@@ -7,6 +7,133 @@
   ansible.builtin.dnf:
     update_cache: true
 
+###############################################################################
+# Synchronize critical RHEL platform packages
+#
+# Some RHEL cloud images may contain packages from the original image release
+# while Satellite provides newer packages for the currently selected release.
+#
+# In particular, newer systemd packages can require OpenSSL symbols that are
+# unavailable in an older openssl-libs package.
+#
+# Keep these tightly coupled packages aligned before installing additional
+# software or invoking systemd-managed services.
+###############################################################################
+
+- name: Synchronize critical RHEL platform packages
+  ansible.builtin.dnf:
+    name: "{{ image_mode_platform_sync_packages }}"
+    state: latest
+    update_cache: true
+  register: image_mode_platform_package_sync
+
+###############################################################################
+# Verify synchronized platform package versions
+###############################################################################
+
+- name: Query installed systemd package version
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - systemd
+  register: image_mode_systemd_package_version
+  changed_when: false
+
+- name: Query installed systemd-libs package version
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - systemd-libs
+  register: image_mode_systemd_libs_package_version
+  changed_when: false
+
+- name: Query installed systemd-pam package version
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - systemd-pam
+  register: image_mode_systemd_pam_package_version
+  changed_when: false
+
+- name: Query installed systemd-udev package version
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - systemd-udev
+  register: image_mode_systemd_udev_package_version
+  changed_when: false
+
+- name: Query installed OpenSSL package version
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - openssl
+  register: image_mode_openssl_package_version
+  changed_when: false
+
+- name: Query installed OpenSSL libraries package version
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - openssl-libs
+  register: image_mode_openssl_libs_package_version
+  changed_when: false
+
+- name: Display synchronized platform package versions
+  ansible.builtin.debug:
+    msg:
+      - "{{ image_mode_systemd_package_version.stdout }}"
+      - "{{ image_mode_systemd_libs_package_version.stdout }}"
+      - "{{ image_mode_systemd_pam_package_version.stdout }}"
+      - "{{ image_mode_systemd_udev_package_version.stdout }}"
+      - "{{ image_mode_openssl_package_version.stdout }}"
+      - "{{ image_mode_openssl_libs_package_version.stdout }}"
+
+###############################################################################
+# Validate systemctl runtime dependencies
+#
+# This detects package/runtime inconsistencies such as:
+#
+# /bin/systemctl:
+# symbol lookup error:
+# undefined symbol: EVP_MD_CTX_get_size_ex, version OPENSSL_3.4.0
+###############################################################################
+
+- name: Validate systemctl runtime dependencies
+  ansible.builtin.command:
+    argv:
+      - /bin/systemctl
+      - --version
+  register: image_mode_systemctl_runtime_validation
+  changed_when: false
+
+- name: Validate systemctl is operational
+  ansible.builtin.assert:
+    that:
+      - image_mode_systemctl_runtime_validation.rc == 0
+      - "'systemd' in image_mode_systemctl_runtime_validation.stdout"
+    fail_msg: >-
+      systemctl cannot start after synchronizing the critical RHEL platform
+      packages.
+
+      stdout:
+
+      {{ image_mode_systemctl_runtime_validation.stdout | default('') }}
+
+      stderr:
+
+      {{ image_mode_systemctl_runtime_validation.stderr | default('') }}
+
+###############################################################################
+# Install Image Mode development packages
+###############################################################################
+
 - name: Install Image Mode development packages
   ansible.builtin.dnf:
     name: "{{ image_mode_core_packages }}"
@@ -27,6 +154,44 @@
       - libvirt-daemon-config-network
       - virt-install
     state: present
+
+###############################################################################
+# Revalidate systemctl after installing virtualization packages
+#
+# Installing libvirt can introduce or update system-level dependencies.
+# Validate systemctl again before attempting to enable any libvirt sockets.
+###############################################################################
+
+- name: Revalidate systemctl after virtualization package installation
+  ansible.builtin.command:
+    argv:
+      - /bin/systemctl
+      - --version
+  register: image_mode_systemctl_post_virtualization_validation
+  changed_when: false
+
+- name: Validate systemctl remains operational
+  ansible.builtin.assert:
+    that:
+      - image_mode_systemctl_post_virtualization_validation.rc == 0
+      - "'systemd' in image_mode_systemctl_post_virtualization_validation.stdout"
+    fail_msg: >-
+      systemctl became unusable after installing the Image Builder
+      virtualization packages.
+
+      stdout:
+
+      {{
+        image_mode_systemctl_post_virtualization_validation.stdout
+        | default('')
+      }}
+
+      stderr:
+
+      {{
+        image_mode_systemctl_post_virtualization_validation.stderr
+        | default('')
+      }}
 
 - name: Enable and start libvirt modular daemon sockets
   ansible.builtin.systemd_service:
@@ -222,7 +387,8 @@
     image_mode_aws_cli_archive_name: >-
       awscli-exe-linux-{{ image_mode_aws_cli_architecture }}.zip
     image_mode_aws_cli_archive_url: >-
-      https://awscli.amazonaws.com/awscli-exe-linux-{{ image_mode_aws_cli_architecture }}.zip
+      https://awscli.amazonaws.com/awscli-exe-linux-{{
+      image_mode_aws_cli_architecture }}.zip
     image_mode_aws_cli_archive_path: >-
       /tmp/awscli-exe-linux-{{ image_mode_aws_cli_architecture }}.zip
     image_mode_aws_cli_extract_directory: /tmp/aws-cli-install

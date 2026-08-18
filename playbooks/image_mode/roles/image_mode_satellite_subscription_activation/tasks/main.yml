@@ -242,8 +242,8 @@
   ansible.builtin.debug:
     msg: >-
       {{ inventory_hostname }} is registered to a different RHSM organization
-      or server. Continuing with activation-key registration and replacing
-      the existing registration using subscription-manager register --force.
+      or server. The stale local consumer identity will be cleaned before a
+      fresh activation-key registration.
 
       Current identity:
 
@@ -256,18 +256,6 @@
           )
         | trim
       }}
-  when:
-    - satellite_activation_existing_identity.rc | default(1) == 0
-    - not satellite_activation_already_correct
-
-- name: PHASE 1 | Attempt to unregister stale RHSM identity
-  ansible.builtin.command:
-    argv:
-      - subscription-manager
-      - unregister
-  register: satellite_activation_stale_unregister
-  changed_when: satellite_activation_stale_unregister.rc == 0
-  failed_when: false
   when:
     - satellite_activation_existing_identity.rc | default(1) == 0
     - not satellite_activation_already_correct
@@ -511,6 +499,26 @@
 
       {{ satellite_activation_manage_repos_config.stdout | trim }}
 
+- name: PHASE 3 | Ensure local RHSM consumer identity is absent before registration
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - clean
+  register: satellite_activation_pre_registration_clean
+  changed_when: satellite_activation_pre_registration_clean.rc == 0
+  when:
+    - not satellite_activation_already_correct
+
+- name: PHASE 3 | Verify pre-registration RHSM cleanup succeeded
+  ansible.builtin.assert:
+    that:
+      - satellite_activation_pre_registration_clean.rc | default(1) == 0
+    fail_msg: >-
+      Unable to remove the local RHSM consumer identity before registration on
+      {{ inventory_hostname }}.
+  when:
+    - not satellite_activation_already_correct
+
 - name: PHASE 3 | Register host using OS-specific activation key
   ansible.builtin.command:
     argv:
@@ -518,7 +526,6 @@
       - register
       - "--org={{ satellite_activation_organization_label }}"
       - "--activationkey={{ satellite_activation_selected_key }}"
-      - --force
   register: satellite_activation_registration
   changed_when: satellite_activation_registration.rc == 0
   failed_when: false

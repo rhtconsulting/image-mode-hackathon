@@ -260,6 +260,41 @@
     - satellite_activation_existing_identity.rc | default(1) == 0
     - not satellite_activation_already_correct
 
+- name: PHASE 1 | Attempt to unregister stale RHSM identity
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - unregister
+  register: satellite_activation_stale_unregister
+  changed_when: satellite_activation_stale_unregister.rc == 0
+  failed_when: false
+  when:
+    - satellite_activation_existing_identity.rc | default(1) == 0
+    - not satellite_activation_already_correct
+
+- name: PHASE 1 | Clean stale local RHSM consumer state
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - clean
+  register: satellite_activation_stale_clean
+  changed_when: satellite_activation_stale_clean.rc == 0
+  when:
+    - satellite_activation_existing_identity.rc | default(1) == 0
+    - not satellite_activation_already_correct
+
+- name: PHASE 1 | Verify stale local RHSM state was cleaned
+  ansible.builtin.assert:
+    that:
+      - satellite_activation_stale_clean.rc | default(1) == 0
+    fail_msg: >-
+      Unable to clean the stale RHSM consumer identity on
+      {{ inventory_hostname }}. The old identity must be removed locally
+      before registering with {{ satellite_activation_resolved_server_fqdn }}.
+  when:
+    - satellite_activation_existing_identity.rc | default(1) == 0
+    - not satellite_activation_already_correct
+
 ###############################################################################
 # PHASE 2 | Install the current Satellite Katello consumer package
 ###############################################################################

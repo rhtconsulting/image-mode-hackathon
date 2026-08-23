@@ -1,29 +1,45 @@
 ---
 - name: Include validate tasks
   ansible.builtin.import_tasks: 00_validate.yml
+
 - name: Include packages tasks
   ansible.builtin.import_tasks: 10_packages.yml
+
+- name: Include Image Builder Satellite content sync tasks
+  ansible.builtin.import_tasks: 15_image_builder_satellite_content_sync.yml
+
 - name: Include idm access tasks
   ansible.builtin.import_tasks: 20_idm_access.yml
+
 - name: Include workspace tasks
   ansible.builtin.import_tasks: 30_workspace.yml
+
 - name: Include container runtime tasks
   ansible.builtin.import_tasks: 40_container_runtime.yml
+
 - name: Include build helpers tasks
   ansible.builtin.import_tasks: 50_build_helpers.yml
+
 - name: Include osbuild composer tasks
   ansible.builtin.import_tasks: 60_osbuild_composer.yml
+
 - name: Include cockpit tls tasks
   ansible.builtin.import_tasks: 70_cockpit_tls.yml
+
 - name: Include subid reconciliation tasks
   ansible.builtin.import_tasks: 75_subordinate_id_reconciliation.yml
+
 - name: Include cockpit firewall tasks
   ansible.builtin.import_tasks: 80_cockpit_firewall.yml
+
 - name: Include RHEL installation media tasks
   ansible.builtin.include_tasks: 85_rhel_media_selection.yml
+
 - name: Include insights tasks
   ansible.builtin.import_tasks: 90_insights.yml
+
 - name: Include shell tasks
   ansible.builtin.import_tasks: 95_shell.yml
+
 - name: Include verify tasks
   ansible.builtin.import_tasks: 99_verify.yml

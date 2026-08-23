@@ -185,6 +185,8 @@ cockpit_firewall_zone: public
 image_mode_firewall_ports:
   - 80/tcp
   - 443/tcp
+  - 8080/tcp
+  - 2022/tcp
   - "{{ cockpit_port }}/tcp"
 
 ###############################################################################
@@ -226,6 +228,21 @@ image_mode_yq_command: /usr/local/bin/yq
 root_container_auth_directory: /root/.config/containers
 root_container_auth_file: /root/.config/containers/auth.json
 
+
+###############################################################################
+# RHEL platform package synchronization
+###############################################################################
+
+# Packages that must remain synchronized with the currently enabled
+# RHEL/Satellite content. This prevents partial package-set upgrades where
+# systemd is updated but an older OpenSSL runtime remains installed.
+image_mode_platform_sync_packages:
+  - systemd
+  - systemd-libs
+  - systemd-pam
+  - systemd-udev
+  - openssl
+  - openssl-libs
 
 
 ###############################################################################
@@ -343,3 +360,15 @@ image_builder_rhel_media_directory: "/mnt/ISO"
 image_builder_rhel9_iso_destination_name: "rhel9.iso"
 image_builder_rhel10_iso_destination_name: "rhel10.iso"
 
+
+###############################################################################
+# osbuild-composer Satellite validation
+###############################################################################
+
+# Fail PHASE 15 only when Composer attempts to use cdn.redhat.com for the
+# currently running RHEL release and architecture.
+#
+# Composer may preload metadata for other RHEL releases that are not configured
+# through this host's Satellite Content View. Those unrelated preload failures
+# should not cause configuration of the current host release to fail.
+image_builder_composer_fail_on_current_release_cdn_access: true

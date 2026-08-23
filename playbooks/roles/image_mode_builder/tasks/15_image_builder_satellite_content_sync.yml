@@ -1,0 +1,1024 @@
+---
+###############################################################################
+# PHASE 15
+# Configure Image Builder to consume RHEL content from Satellite
+#
+# osbuild-composer does not automatically use the Satellite repository URLs
+# exposed to DNF through subscription-manager. The vendor Composer repository
+# definitions normally point to cdn.redhat.com.
+#
+# This phase:
+#
+#   1. Validates the host's enabled RHEL repositories.
+#   2. Discovers the effective BaseOS and AppStream URLs from DNF.
+#   3. Confirms those repositories are being served by Satellite.
+#   4. Discovers the vendor osbuild-composer repository definition.
+#   5. Supports both RHEL 9 and RHEL 10 repository naming conventions.
+#   6. Preserves a pristine copy of the vendor JSON.
+#   7. Keeps the vendor JSON as text for safe replacement operations.
+#   8. Parses the vendor JSON separately for structured inspection.
+#   9. Reads the actual BaseOS and AppStream URLs from the vendor definition.
+#  10. Builds an /etc override from the vendor definition.
+#  11. Replaces only the current host architecture's repository URLs.
+#  12. Validates the resulting JSON.
+#  13. Enables the osbuild-composer Weldr API socket.
+#  14. Restarts osbuild-composer only when the override changes.
+#  15. Waits for /run/weldr/api.socket before invoking composer-cli.
+#  16. Verifies Composer can query package metadata.
+###############################################################################
+
+###############################################################################
+# Resolve RHEL release and repository identifiers
+###############################################################################
+
+- name: PHASE 15 | Resolve RHEL release information
+  ansible.builtin.set_fact:
+    image_builder_composer_rhel_major: >-
+      {{ ansible_distribution_major_version }}
+    image_builder_composer_rhel_release: >-
+      {{ ansible_distribution_version }}
+    image_builder_composer_architecture: >-
+      {{ ansible_architecture }}
+
+- name: PHASE 15 | Validate supported RHEL release
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == 'RedHat'
+      - image_builder_composer_rhel_major | int in [9, 10]
+    fail_msg: >-
+      PHASE 15 currently supports RHEL 9 and RHEL 10 Image Builder hosts.
+
+      Distribution:
+      {{ ansible_distribution }}
+
+      Release:
+      {{ image_builder_composer_rhel_release }}
+
+- name: PHASE 15 | Validate supported RHEL architecture
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_architecture in
+        ['x86_64', 'aarch64', 'ppc64le', 's390x']
+    fail_msg: >-
+      Unsupported Image Builder architecture:
+      {{ image_builder_composer_architecture }}
+
+###############################################################################
+# Configure the Satellite-backed Composer override for RHEL 9 and RHEL 10
+###############################################################################
+
+- name: PHASE 15 | Resolve Satellite repository identifiers
+  ansible.builtin.set_fact:
+    image_builder_satellite_baseos_repo_id: >-
+      rhel-{{ image_builder_composer_rhel_major }}-for-{{
+      image_builder_composer_architecture }}-baseos-rpms
+    image_builder_satellite_appstream_repo_id: >-
+      rhel-{{ image_builder_composer_rhel_major }}-for-{{
+      image_builder_composer_architecture }}-appstream-rpms
+
+###############################################################################
+# Query enabled repositories
+###############################################################################
+
+- name: PHASE 15 | Query enabled DNF repositories
+  ansible.builtin.command:
+    argv:
+      - dnf
+      - repolist
+  register: image_builder_dnf_repolist
+  changed_when: false
+
+- name: PHASE 15 | Validate BaseOS and AppStream repositories are enabled
+  ansible.builtin.assert:
+    that:
+      - >-
+        image_builder_satellite_baseos_repo_id
+        in image_builder_dnf_repolist.stdout
+      - >-
+        image_builder_satellite_appstream_repo_id
+        in image_builder_dnf_repolist.stdout
+    fail_msg: >-
+      Required RHEL BaseOS and AppStream repositories are not enabled.
+
+      Expected BaseOS:
+      {{ image_builder_satellite_baseos_repo_id }}
+
+      Expected AppStream:
+      {{ image_builder_satellite_appstream_repo_id }}
+
+      Enabled repositories:
+
+      {{ image_builder_dnf_repolist.stdout }}
+
+###############################################################################
+# Discover BaseOS and AppStream URLs from Satellite-managed DNF configuration
+###############################################################################
+
+- name: PHASE 15 | Query BaseOS repository information
+  ansible.builtin.command:
+    argv:
+      - dnf
+      - repoinfo
+      - "{{ image_builder_satellite_baseos_repo_id }}"
+  register: image_builder_baseos_repoinfo
+  changed_when: false
+
+- name: PHASE 15 | Query AppStream repository information
+  ansible.builtin.command:
+    argv:
+      - dnf
+      - repoinfo
+      - "{{ image_builder_satellite_appstream_repo_id }}"
+  register: image_builder_appstream_repoinfo
+  changed_when: false
+
+###############################################################################
+# Extract Repo-baseurl values
+###############################################################################
+
+- name: PHASE 15 | Resolve BaseOS and AppStream repository URL lines
+  ansible.builtin.set_fact:
+    image_builder_baseos_repo_url_line: >-
+      {{
+        image_builder_baseos_repoinfo.stdout_lines
+        | select('match', '^Repo-baseurl[ ]*:.*')
+        | list
+        | first
+        | default('')
+      }}
+    image_builder_appstream_repo_url_line: >-
+      {{
+        image_builder_appstream_repoinfo.stdout_lines
+        | select('match', '^Repo-baseurl[ ]*:.*')
+        | list
+        | first
+        | default('')
+      }}
+
+- name: PHASE 15 | Validate repository URLs were discovered
+  ansible.builtin.assert:
+    that:
+      - image_builder_baseos_repo_url_line | length > 0
+      - image_builder_appstream_repo_url_line | length > 0
+    fail_msg: >-
+      Unable to discover Repo-baseurl from the Satellite-managed
+      BaseOS or AppStream repository.
+
+      BaseOS output:
+
+      {{ image_builder_baseos_repoinfo.stdout }}
+
+      AppStream output:
+
+      {{ image_builder_appstream_repoinfo.stdout }}
+
+- name: PHASE 15 | Extract Satellite repository URLs
+  ansible.builtin.set_fact:
+    image_builder_satellite_baseos_url: >-
+      {{
+        image_builder_baseos_repo_url_line
+        | regex_replace('^Repo-baseurl[ ]*:[ ]*', '')
+        | trim
+      }}
+    image_builder_satellite_appstream_url: >-
+      {{
+        image_builder_appstream_repo_url_line
+        | regex_replace('^Repo-baseurl[ ]*:[ ]*', '')
+        | trim
+      }}
+
+###############################################################################
+# Validate that Composer will be redirected to Satellite rather than CDN
+###############################################################################
+
+- name: PHASE 15 | Validate Satellite repository URLs
+  ansible.builtin.assert:
+    that:
+      - image_builder_satellite_baseos_url is match('^https://')
+      - image_builder_satellite_appstream_url is match('^https://')
+      - "'/pulp/content/' in image_builder_satellite_baseos_url"
+      - "'/pulp/content/' in image_builder_satellite_appstream_url"
+      - "'cdn.redhat.com' not in image_builder_satellite_baseos_url"
+      - "'cdn.redhat.com' not in image_builder_satellite_appstream_url"
+    fail_msg: >-
+      The RHEL repositories do not appear to be Satellite Content View
+      repositories.
+
+      BaseOS:
+
+      {{ image_builder_satellite_baseos_url }}
+
+      AppStream:
+
+      {{ image_builder_satellite_appstream_url }}
+
+###############################################################################
+# Resolve osbuild-composer repository definition
+###############################################################################
+
+- name: PHASE 15 | Resolve Composer repository directories
+  ansible.builtin.set_fact:
+    image_builder_composer_vendor_repository_directory: >-
+      /usr/share/osbuild-composer/repositories
+    image_builder_composer_override_directory: >-
+      /etc/osbuild-composer/repositories
+
+###############################################################################
+# Inspect vendor repository definitions actually installed on the host
+###############################################################################
+
+- name: PHASE 15 | Find installed RHEL Composer repository definitions
+  ansible.builtin.find:
+    paths: "{{ image_builder_composer_vendor_repository_directory }}"
+    patterns: "rhel-*.json"
+    file_type: file
+    recurse: false
+  register: image_builder_composer_vendor_repository_find
+
+- name: PHASE 15 | Resolve installed Composer repository filenames
+  ansible.builtin.set_fact:
+    image_builder_composer_vendor_repository_filenames: >-
+      {{
+        image_builder_composer_vendor_repository_find.files
+        | map(attribute='path')
+        | map('basename')
+        | list
+        | sort
+      }}
+
+- name: PHASE 15 | Validate Composer repository definitions were found
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_vendor_repository_filenames | length > 0
+    fail_msg: >-
+      No RHEL osbuild-composer repository definitions were found in:
+
+      {{ image_builder_composer_vendor_repository_directory }}
+
+###############################################################################
+# Build supported filename candidates
+###############################################################################
+
+- name: PHASE 15 | Resolve Composer repository filename candidates
+  ansible.builtin.set_fact:
+    image_builder_composer_exact_repository_filename: >-
+      rhel-{{ image_builder_composer_rhel_release }}.json
+    image_builder_composer_major_repository_filename: >-
+      rhel-{{ image_builder_composer_rhel_major }}.json
+    image_builder_composer_legacy_repository_filename: >-
+      rhel-{{
+        image_builder_composer_rhel_release
+        | regex_replace('\.', '')
+      }}.json
+
+###############################################################################
+# RHEL 10 selection
+#
+# Prefer:
+#
+#   rhel-10.2.json
+#
+# Fall back to:
+#
+#   rhel-10.json
+###############################################################################
+
+- name: PHASE 15 | Resolve Composer repository filename for RHEL 10
+  ansible.builtin.set_fact:
+    image_builder_composer_repository_filename: >-
+      {{
+        image_builder_composer_exact_repository_filename
+        if
+        image_builder_composer_exact_repository_filename
+        in image_builder_composer_vendor_repository_filenames
+        else
+        (
+          image_builder_composer_major_repository_filename
+          if
+          image_builder_composer_major_repository_filename
+          in image_builder_composer_vendor_repository_filenames
+          else
+          ''
+        )
+      }}
+  when:
+    - image_builder_composer_rhel_major | int >= 10
+
+###############################################################################
+# RHEL 9 selection
+#
+# Prefer:
+#
+#   rhel-9.8.json
+#
+# Fall back to:
+#
+#   rhel-98.json
+#
+# Then:
+#
+#   rhel-9.json
+###############################################################################
+
+- name: PHASE 15 | Resolve Composer repository filename for RHEL 9
+  ansible.builtin.set_fact:
+    image_builder_composer_repository_filename: >-
+      {{
+        image_builder_composer_exact_repository_filename
+        if
+        image_builder_composer_exact_repository_filename
+        in image_builder_composer_vendor_repository_filenames
+        else
+        (
+          image_builder_composer_legacy_repository_filename
+          if
+          image_builder_composer_legacy_repository_filename
+          in image_builder_composer_vendor_repository_filenames
+          else
+          (
+            image_builder_composer_major_repository_filename
+            if
+            image_builder_composer_major_repository_filename
+            in image_builder_composer_vendor_repository_filenames
+            else
+            ''
+          )
+        )
+      }}
+  when:
+    - image_builder_composer_rhel_major | int < 10
+
+- name: PHASE 15 | Validate matching Composer repository definition exists
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_repository_filename | length > 0
+    fail_msg: >-
+      Unable to locate a compatible osbuild-composer repository definition
+      for RHEL {{ image_builder_composer_rhel_release }}.
+
+      Installed definitions:
+
+      {{ image_builder_composer_vendor_repository_filenames }}
+
+      Candidate major-version file:
+
+      {{ image_builder_composer_major_repository_filename }}
+
+      Candidate exact-release file:
+
+      {{ image_builder_composer_exact_repository_filename }}
+
+      Candidate legacy file:
+
+      {{ image_builder_composer_legacy_repository_filename }}
+
+###############################################################################
+# Resolve final Composer repository paths
+###############################################################################
+
+- name: PHASE 15 | Resolve Composer repository definition locations
+  ansible.builtin.set_fact:
+    image_builder_composer_vendor_repository_file: >-
+      {{ image_builder_composer_vendor_repository_directory }}/{{
+      image_builder_composer_repository_filename }}
+    image_builder_composer_override_file: >-
+      {{ image_builder_composer_override_directory }}/{{
+      image_builder_composer_repository_filename }}
+    image_builder_composer_backup_file: >-
+      /root/{{ image_builder_composer_repository_filename }}.bak
+
+###############################################################################
+# Validate selected vendor Composer definition
+###############################################################################
+
+- name: PHASE 15 | Check selected Composer repository definition
+  ansible.builtin.stat:
+    path: "{{ image_builder_composer_vendor_repository_file }}"
+  register: image_builder_composer_vendor_repository_stat
+
+- name: PHASE 15 | Validate selected Composer repository definition exists
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_vendor_repository_stat.stat.exists
+      - image_builder_composer_vendor_repository_stat.stat.isreg
+    fail_msg: >-
+      Expected osbuild-composer repository definition was not found:
+
+      {{ image_builder_composer_vendor_repository_file }}
+
+- name: PHASE 15 | Report selected Composer repository definition
+  ansible.builtin.debug:
+    msg:
+      - >-
+        RHEL release:
+        {{ image_builder_composer_rhel_release }}
+      - >-
+        Composer repository definition:
+        {{ image_builder_composer_vendor_repository_file }}
+
+###############################################################################
+# Preserve the pristine vendor file
+###############################################################################
+
+- name: PHASE 15 | Preserve original Composer repository definition
+  ansible.builtin.copy:
+    src: "{{ image_builder_composer_vendor_repository_file }}"
+    dest: "{{ image_builder_composer_backup_file }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+
+###############################################################################
+# Read the vendor repository definition
+###############################################################################
+
+- name: PHASE 15 | Read vendor Composer repository definition
+  ansible.builtin.slurp:
+    src: "{{ image_builder_composer_vendor_repository_file }}"
+  register: image_builder_composer_vendor_repository
+
+###############################################################################
+# Decode vendor JSON as text
+###############################################################################
+
+- name: PHASE 15 | Decode vendor Composer repository definition as text
+  ansible.builtin.set_fact:
+    image_builder_composer_vendor_repository_text: >-
+      {{
+        image_builder_composer_vendor_repository.content
+        | b64decode
+        | string
+      }}
+
+###############################################################################
+# Parse vendor JSON into a structured mapping
+###############################################################################
+
+- name: PHASE 15 | Parse vendor Composer repository definition
+  ansible.builtin.set_fact:
+    image_builder_composer_vendor_definition: >-
+      {{
+        image_builder_composer_vendor_repository_text
+        | from_json
+      }}
+
+- name: PHASE 15 | Validate parsed Composer repository definition
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_vendor_definition is mapping
+      - image_builder_composer_vendor_definition | length > 0
+    fail_msg: >-
+      Unable to parse the Composer repository definition as a JSON mapping.
+
+      File:
+
+      {{ image_builder_composer_vendor_repository_file }}
+
+      Raw value type:
+
+      {{ image_builder_composer_vendor_repository_text | type_debug }}
+
+      Parsed value type:
+
+      {{ image_builder_composer_vendor_definition | type_debug }}
+
+###############################################################################
+# Validate local architecture exists in vendor repository definition
+###############################################################################
+
+- name: PHASE 15 | Validate local architecture repository definition
+  ansible.builtin.assert:
+    that:
+      - >-
+        image_builder_composer_architecture
+        in image_builder_composer_vendor_definition
+    fail_msg: >-
+      The Composer repository definition does not contain an entry for
+      architecture {{ image_builder_composer_architecture }}.
+
+      File:
+
+      {{ image_builder_composer_vendor_repository_file }}
+
+###############################################################################
+# Extract local architecture repository definitions
+###############################################################################
+
+- name: PHASE 15 | Resolve local Composer repositories
+  ansible.builtin.set_fact:
+    image_builder_composer_local_repositories: >-
+      {{
+        image_builder_composer_vendor_definition[
+          image_builder_composer_architecture
+        ]
+      }}
+
+###############################################################################
+# Locate BaseOS and AppStream entries
+###############################################################################
+
+- name: PHASE 15 | Resolve Composer BaseOS repository
+  ansible.builtin.set_fact:
+    image_builder_composer_vendor_baseos: >-
+      {{
+        image_builder_composer_local_repositories
+        | selectattr('name', 'equalto', 'baseos')
+        | list
+        | first
+        | default({})
+      }}
+
+- name: PHASE 15 | Resolve Composer AppStream repository
+  ansible.builtin.set_fact:
+    image_builder_composer_vendor_appstream: >-
+      {{
+        image_builder_composer_local_repositories
+        | selectattr('name', 'equalto', 'appstream')
+        | list
+        | first
+        | default({})
+      }}
+
+- name: PHASE 15 | Validate Composer BaseOS and AppStream entries
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_vendor_baseos | length > 0
+      - image_builder_composer_vendor_appstream | length > 0
+      - image_builder_composer_vendor_baseos.baseurl is defined
+      - image_builder_composer_vendor_appstream.baseurl is defined
+      - image_builder_composer_vendor_baseos.baseurl | length > 0
+      - image_builder_composer_vendor_appstream.baseurl | length > 0
+    fail_msg: >-
+      Unable to locate BaseOS and AppStream entries for architecture
+      {{ image_builder_composer_architecture }} in:
+
+      {{ image_builder_composer_vendor_repository_file }}
+
+###############################################################################
+# Capture vendor repository URLs
+###############################################################################
+
+- name: PHASE 15 | Resolve vendor Composer repository URLs
+  ansible.builtin.set_fact:
+    image_builder_composer_vendor_baseos_url: >-
+      {{ image_builder_composer_vendor_baseos.baseurl }}
+    image_builder_composer_vendor_appstream_url: >-
+      {{ image_builder_composer_vendor_appstream.baseurl }}
+
+- name: PHASE 15 | Validate vendor Composer repository URLs
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_vendor_baseos_url | length > 0
+      - image_builder_composer_vendor_appstream_url | length > 0
+    fail_msg: >-
+      The selected Composer repository definition does not contain usable
+      BaseOS and AppStream base URLs.
+
+      BaseOS:
+
+      {{ image_builder_composer_vendor_baseos_url | default('') }}
+
+      AppStream:
+
+      {{ image_builder_composer_vendor_appstream_url | default('') }}
+
+###############################################################################
+# Replace only the current architecture's BaseOS and AppStream URLs
+###############################################################################
+
+- name: PHASE 15 | Build Satellite-backed Composer repository text
+  ansible.builtin.set_fact:
+    image_builder_composer_satellite_repository_text: >-
+      {{
+        image_builder_composer_vendor_repository_text
+        | replace(
+            image_builder_composer_vendor_baseos_url,
+            image_builder_satellite_baseos_url
+          )
+        | replace(
+            image_builder_composer_vendor_appstream_url,
+            image_builder_satellite_appstream_url
+          )
+      }}
+
+###############################################################################
+# Parse generated Satellite JSON
+###############################################################################
+
+- name: PHASE 15 | Parse generated Composer repository definition
+  ansible.builtin.set_fact:
+    image_builder_composer_satellite_definition: >-
+      {{
+        image_builder_composer_satellite_repository_text
+        | from_json
+      }}
+
+###############################################################################
+# Validate generated JSON before installing it
+###############################################################################
+
+- name: PHASE 15 | Validate generated Composer repository definition
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_satellite_definition is mapping
+      - >-
+        image_builder_satellite_baseos_url
+        in image_builder_composer_satellite_repository_text
+      - >-
+        image_builder_satellite_appstream_url
+        in image_builder_composer_satellite_repository_text
+      - >-
+        image_builder_composer_vendor_baseos_url
+        not in image_builder_composer_satellite_repository_text
+      - >-
+        image_builder_composer_vendor_appstream_url
+        not in image_builder_composer_satellite_repository_text
+    fail_msg: >-
+      Failed to generate a valid Satellite-backed Composer repository
+      definition for RHEL {{ image_builder_composer_rhel_release }}.
+
+###############################################################################
+# Validate generated local architecture entries structurally
+###############################################################################
+
+- name: PHASE 15 | Resolve generated local architecture repositories
+  ansible.builtin.set_fact:
+    image_builder_composer_satellite_local_repositories: >-
+      {{
+        image_builder_composer_satellite_definition[
+          image_builder_composer_architecture
+        ]
+      }}
+
+- name: PHASE 15 | Resolve generated BaseOS repository
+  ansible.builtin.set_fact:
+    image_builder_composer_satellite_baseos_definition: >-
+      {{
+        image_builder_composer_satellite_local_repositories
+        | selectattr('name', 'equalto', 'baseos')
+        | list
+        | first
+        | default({})
+      }}
+
+- name: PHASE 15 | Resolve generated AppStream repository
+  ansible.builtin.set_fact:
+    image_builder_composer_satellite_appstream_definition: >-
+      {{
+        image_builder_composer_satellite_local_repositories
+        | selectattr('name', 'equalto', 'appstream')
+        | list
+        | first
+        | default({})
+      }}
+
+- name: PHASE 15 | Validate generated Satellite repository URLs
+  ansible.builtin.assert:
+    that:
+      - >-
+        image_builder_composer_satellite_baseos_definition.baseurl
+        ==
+        image_builder_satellite_baseos_url
+      - >-
+        image_builder_composer_satellite_appstream_definition.baseurl
+        ==
+        image_builder_satellite_appstream_url
+    fail_msg: >-
+      Generated Composer repository definition does not contain the expected
+      Satellite BaseOS and AppStream URLs for architecture
+      {{ image_builder_composer_architecture }}.
+
+###############################################################################
+# Install Composer override
+###############################################################################
+
+- name: PHASE 15 | Create Composer repository override directory
+  ansible.builtin.file:
+    path: "{{ image_builder_composer_override_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: PHASE 15 | Install Satellite-backed Composer repository definition
+  ansible.builtin.copy:
+    content: "{{ image_builder_composer_satellite_repository_text }}"
+    dest: "{{ image_builder_composer_override_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: image_builder_composer_repository_override
+
+###############################################################################
+# Enable Composer Weldr API socket
+#
+# composer-cli communicates with osbuild-composer through:
+#
+#   /run/weldr/api.socket
+#
+# Starting osbuild-composer.service alone does not guarantee that this socket
+# has been created. Explicitly enable and start the socket before any
+# composer-cli commands are executed.
+###############################################################################
+
+- name: PHASE 15 | Enable and start osbuild-composer socket
+  ansible.builtin.systemd_service:
+    name: osbuild-composer.socket
+    state: started
+    enabled: true
+
+###############################################################################
+# Restart Composer only when its repository definition changes
+###############################################################################
+
+- name: PHASE 15 | Restart osbuild-composer service
+  ansible.builtin.systemd_service:
+    name: osbuild-composer.service
+    state: restarted
+  when:
+    - image_builder_composer_repository_override.changed
+
+###############################################################################
+# Ensure Composer service is running
+###############################################################################
+
+- name: PHASE 15 | Ensure osbuild-composer service is active
+  ansible.builtin.systemd_service:
+    name: osbuild-composer.service
+    state: started
+
+###############################################################################
+# Wait for Composer Weldr API
+###############################################################################
+
+- name: PHASE 15 | Wait for Composer Weldr API socket
+  ansible.builtin.wait_for:
+    path: /run/weldr/api.socket
+    state: present
+    timeout: 30
+
+- name: PHASE 15 | Inspect Composer Weldr API socket
+  ansible.builtin.stat:
+    path: /run/weldr/api.socket
+  register: image_builder_composer_weldr_socket
+
+- name: PHASE 15 | Validate Composer Weldr API socket
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_weldr_socket.stat.exists
+      - image_builder_composer_weldr_socket.stat.issock
+    fail_msg: >-
+      osbuild-composer.socket is enabled and started, but the Weldr API
+      socket was not created at /run/weldr/api.socket.
+
+###############################################################################
+# Validate Composer API
+###############################################################################
+
+- name: PHASE 15 | Query Composer API status
+  ansible.builtin.command:
+    argv:
+      - composer-cli
+      - status
+      - show
+  register: image_builder_composer_status
+  changed_when: false
+  retries: 6
+  delay: 5
+  until:
+    - image_builder_composer_status.rc == 0
+
+- name: PHASE 15 | Validate Composer API is responsive
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_status.rc == 0
+    fail_msg: >-
+      composer-cli cannot communicate with osbuild-composer through
+      /run/weldr/api.socket.
+
+      Output:
+
+      {{ image_builder_composer_status.stdout | default('') }}
+
+      Error:
+
+      {{ image_builder_composer_status.stderr | default('') }}
+
+###############################################################################
+# Query Composer sources
+###############################################################################
+
+- name: PHASE 15 | Query Composer BaseOS source
+  ansible.builtin.command:
+    argv:
+      - composer-cli
+      - sources
+      - info
+      - baseos
+  register: image_builder_composer_baseos_source
+  changed_when: false
+
+- name: PHASE 15 | Query Composer AppStream source
+  ansible.builtin.command:
+    argv:
+      - composer-cli
+      - sources
+      - info
+      - appstream
+  register: image_builder_composer_appstream_source
+  changed_when: false
+
+###############################################################################
+# Validate Composer is consuming Satellite content
+###############################################################################
+
+- name: PHASE 15 | Validate Composer uses Satellite repositories
+  ansible.builtin.assert:
+    that:
+      - >-
+        image_builder_satellite_baseos_url
+        in image_builder_composer_baseos_source.stdout
+      - >-
+        image_builder_satellite_appstream_url
+        in image_builder_composer_appstream_source.stdout
+    fail_msg: >-
+      osbuild-composer is not using the expected Satellite repositories.
+
+      Expected BaseOS:
+
+      {{ image_builder_satellite_baseos_url }}
+
+      Composer BaseOS:
+
+      {{ image_builder_composer_baseos_source.stdout }}
+
+      Expected AppStream:
+
+      {{ image_builder_satellite_appstream_url }}
+
+      Composer AppStream:
+
+      {{ image_builder_composer_appstream_source.stdout }}
+
+###############################################################################
+# Verify Composer package metadata
+###############################################################################
+
+- name: PHASE 15 | Verify Composer package metadata query
+  ansible.builtin.command:
+    argv:
+      - composer-cli
+      - modules
+      - list
+      - "*tmux*"
+  register: image_builder_composer_package_query
+  changed_when: false
+
+- name: PHASE 15 | Validate Composer package metadata query
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_package_query.rc == 0
+      - "'tmux' in image_builder_composer_package_query.stdout"
+    fail_msg: >-
+      osbuild-composer could not retrieve package metadata from the
+      Satellite-backed repositories.
+
+      Output:
+
+      {{ image_builder_composer_package_query.stdout }}
+
+      Error:
+
+      {{ image_builder_composer_package_query.stderr }}
+
+###############################################################################
+# Capture recent Composer errors
+###############################################################################
+
+- name: PHASE 15 | Query recent Composer service messages
+  ansible.builtin.command:
+    argv:
+      - journalctl
+      - -u
+      - osbuild-composer.service
+      - --since
+      - "2 minutes ago"
+      - --no-pager
+      - -l
+  register: image_builder_composer_recent_journal
+  changed_when: false
+
+###############################################################################
+# Inspect recent Composer CDN access
+#
+# osbuild-composer preloads metadata for multiple supported RHEL distributions
+# when it starts. A RHEL 10.2 Image Builder can therefore produce CDN errors for
+# unrelated releases such as:
+#
+#   rhel-8
+#   rhel-8.10
+#   rhel-9.4
+#   rhel-9.8
+#   rhel-10.0
+#   rhel-10.1
+#
+# Those preload attempts are not evidence that the current RHEL 10.2 Composer
+# source is incorrectly configured.
+#
+# Only CDN access for the currently running RHEL release and architecture is
+# considered a configuration failure.
+###############################################################################
+
+- name: PHASE 15 | Resolve current release CDN URL fragment
+  ansible.builtin.set_fact:
+    image_builder_composer_current_release_cdn_fragment: >-
+      cdn.redhat.com/content/dist/rhel{{
+      image_builder_composer_rhel_major }}/{{
+      image_builder_composer_rhel_release }}/{{
+      image_builder_composer_architecture }}/
+
+###############################################################################
+# Capture all CDN messages for diagnostics
+###############################################################################
+
+- name: PHASE 15 | Resolve recent Composer CDN messages
+  ansible.builtin.set_fact:
+    image_builder_composer_recent_cdn_messages: >-
+      {{
+        image_builder_composer_recent_journal.stdout_lines
+        | select('search', 'cdn\.redhat\.com')
+        | list
+      }}
+
+###############################################################################
+# Capture only CDN messages for the currently running RHEL release
+###############################################################################
+
+- name: PHASE 15 | Resolve current release Composer CDN errors
+  ansible.builtin.set_fact:
+    image_builder_composer_current_release_cdn_errors: >-
+      {{
+        image_builder_composer_recent_journal.stdout_lines
+        | select(
+            'search',
+            image_builder_composer_current_release_cdn_fragment
+          )
+        | list
+      }}
+
+###############################################################################
+# Fail only if the current release falls back to CDN
+###############################################################################
+
+- name: PHASE 15 | Validate current RHEL release did not fall back to CDN
+  ansible.builtin.assert:
+    that:
+      - image_builder_composer_current_release_cdn_errors | length == 0
+    fail_msg: >-
+      osbuild-composer attempted to access cdn.redhat.com for the currently
+      configured RHEL release after the Satellite repository override was
+      installed.
+
+      RHEL release:
+
+      {{ image_builder_composer_rhel_release }}
+
+      Architecture:
+
+      {{ image_builder_composer_architecture }}
+
+      Expected Satellite BaseOS:
+
+      {{ image_builder_satellite_baseos_url }}
+
+      Expected Satellite AppStream:
+
+      {{ image_builder_satellite_appstream_url }}
+
+      Matching current-release CDN entries:
+
+      {{ image_builder_composer_current_release_cdn_errors }}
+  when:
+    - >-
+      image_builder_composer_fail_on_current_release_cdn_access
+      | default(true)
+      | bool
+
+###############################################################################
+# Report unrelated Composer preload CDN failures without failing the role
+###############################################################################
+
+- name: PHASE 15 | Report unrelated Composer CDN preload messages
+  ansible.builtin.debug:
+    msg:
+      - >-
+        osbuild-composer produced CDN messages while preloading other distro
+        definitions. These do not affect the current
+        RHEL {{ image_builder_composer_rhel_release }} Satellite override.
+      - >-
+        CDN preload message count:
+        {{ image_builder_composer_recent_cdn_messages | length }}
+  when:
+    - image_builder_composer_recent_cdn_messages | length > 0

@@ -104,6 +104,22 @@ resource "aws_security_group" "lab" {
   }
 
   ingress {
+    description = "Image Mode Hackathon Port 2022"
+    from_port   = 2022
+    to_port     = 2022
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Image Mode Hackathon Port 8080"
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
     description = "Internal lab traffic"
     from_port   = 0
     to_port     = 0
@@ -194,6 +210,3 @@ resource "aws_security_group" "gitlab" {
     Environment = var.environment_name
   }
 }
-
-
-

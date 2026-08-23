@@ -238,16 +238,12 @@
         )
       }}
 
-- name: PHASE 1 | Fail rather than overwrite an unexpected registration
-  ansible.builtin.assert:
-    that:
-      - >-
-        satellite_activation_existing_identity.rc | default(1) != 0
-        or satellite_activation_already_correct
-        or satellite_activation_force_registration | bool
-    fail_msg: >-
-      {{ inventory_hostname }} is already registered to a different RHSM
-      organization or server.
+- name: PHASE 1 | Report registration that will be forcibly replaced
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} is registered to a different RHSM organization
+      or server. The stale local consumer identity will be cleaned before a
+      fresh activation-key registration.
 
       Current identity:
 
@@ -260,9 +256,32 @@
           )
         | trim
       }}
+  when:
+    - satellite_activation_existing_identity.rc | default(1) == 0
+    - not satellite_activation_already_correct
 
-      Run satellite_subscription_cleanup first, or set
-      satellite_activation_force_registration=true.
+- name: PHASE 1 | Clean stale local RHSM consumer state
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - clean
+  register: satellite_activation_stale_clean
+  changed_when: satellite_activation_stale_clean.rc == 0
+  when:
+    - satellite_activation_existing_identity.rc | default(1) == 0
+    - not satellite_activation_already_correct
+
+- name: PHASE 1 | Verify stale local RHSM state was cleaned
+  ansible.builtin.assert:
+    that:
+      - satellite_activation_stale_clean.rc | default(1) == 0
+    fail_msg: >-
+      Unable to clean the stale RHSM consumer identity on
+      {{ inventory_hostname }}. The old identity must be removed locally
+      before registering with {{ satellite_activation_resolved_server_fqdn }}.
+  when:
+    - satellite_activation_existing_identity.rc | default(1) == 0
+    - not satellite_activation_already_correct
 
 ###############################################################################
 # PHASE 2 | Install the current Satellite Katello consumer package
@@ -480,6 +499,26 @@
 
       {{ satellite_activation_manage_repos_config.stdout | trim }}
 
+- name: PHASE 3 | Ensure local RHSM consumer identity is absent before registration
+  ansible.builtin.command:
+    argv:
+      - subscription-manager
+      - clean
+  register: satellite_activation_pre_registration_clean
+  changed_when: satellite_activation_pre_registration_clean.rc == 0
+  when:
+    - not satellite_activation_already_correct
+
+- name: PHASE 3 | Verify pre-registration RHSM cleanup succeeded
+  ansible.builtin.assert:
+    that:
+      - satellite_activation_pre_registration_clean.rc | default(1) == 0
+    fail_msg: >-
+      Unable to remove the local RHSM consumer identity before registration on
+      {{ inventory_hostname }}.
+  when:
+    - not satellite_activation_already_correct
+
 - name: PHASE 3 | Register host using OS-specific activation key
   ansible.builtin.command:
     argv:
@@ -487,7 +526,6 @@
       - register
       - "--org={{ satellite_activation_organization_label }}"
       - "--activationkey={{ satellite_activation_selected_key }}"
-      - --force
   register: satellite_activation_registration
   changed_when: satellite_activation_registration.rc == 0
   failed_when: false

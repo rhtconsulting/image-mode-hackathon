@@ -10,6 +10,7 @@
 
   vars_files:
     - ../vars/organizations.yml
+    - ../vars/labels.yml
     - ../vars/credential_types.yml
     - ../vars/credentials.yml
     - ../vars/inventories.yml
@@ -1634,7 +1635,29 @@
             - organizations
 
         #######################################################################
-        # 2. Credential types
+        # 2. Labels
+        #######################################################################
+
+        # Labels must exist before job and workflow templates reference them.
+        - name: Configure AAP labels
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_labels
+            apply:
+              tags:
+                - labels
+          vars:
+            aap_hostname: "{{ controller_host }}"
+            aap_username: "{{ gateway_admin_username }}"
+            aap_password: "{{ gateway_admin_password }}"
+            aap_validate_certs: false
+          when:
+            - controller_labels is defined
+            - controller_labels | length > 0
+          tags:
+            - labels
+
+        #######################################################################
+        # 3. Credential types
         #######################################################################
 
         - name: Configure AAP credential types

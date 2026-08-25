@@ -1,11 +1,32 @@
 ---
 controller_labels:
-
+  # Common Image Mode domain
   - name: image-mode
-    organization: Image Mode Lab
+    organization: "Image Mode Lab"
 
+  # Workflow-family domains
+  - name: deploy-aws
+    organization: "Image Mode Lab"
+
+  - name: add-builders
+    organization: "Image Mode Lab"
+
+  - name: admin-operations
+    organization: "Image Mode Lab"
+
+  # Template-purpose filters
+  - name: workflow-entrypoint
+    organization: "Image Mode Lab"
+
+  - name: workflow-component
+    organization: "Image Mode Lab"
+
+  - name: standalone-job
+    organization: "Image Mode Lab"
+
+  # Existing environment labels
   - name: development
-    organization: Image Mode Lab
+    organization: "Image Mode Lab"
 
   - name: production
-    organization: Image Mode Lab
+    organization: "Image Mode Lab"

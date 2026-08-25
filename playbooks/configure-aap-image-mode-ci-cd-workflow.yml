@@ -179,7 +179,7 @@
     ###########################################################################
 
     configure_image_builder_job_template_name: >-
-      Configure Image Mode Builder Hosts
+      IM | ADMIN | 10 | JT | Configure builder hosts
 
     launch_image_builder_configuration: true
 
@@ -191,7 +191,7 @@
     ###########################################################################
 
     image_mode_deployment_workflow_name: >-
-      Image Mode Deploy Sample Image to AWS
+      IM | DEPLOY-AWS | 00 | WF | Deploy sample image
 
     launch_image_mode_deployment_workflow: true
     image_mode_deployment_workflow_timeout: 14400
@@ -2027,7 +2027,7 @@
     # Automatically launch the Image Mode Builder configuration
     ###########################################################################
 
-    - name: Look up Configure Image Mode Builder Hosts job template
+    - name: Look up IM | ADMIN | 10 | JT | Configure builder hosts job template
       ansible.builtin.uri:
         url: >-
           {{
@@ -2055,7 +2055,7 @@
       tags:
         - launch_image_builders
 
-    - name: Validate Configure Image Mode Builder Hosts job template lookup
+    - name: Validate IM | ADMIN | 10 | JT | Configure builder hosts job template lookup
       ansible.builtin.assert:
         that:
           - configure_image_builder_template_lookup.json is defined
@@ -2080,7 +2080,7 @@
       tags:
         - launch_image_builders
 
-    - name: Set Configure Image Mode Builder Hosts template facts
+    - name: Set IM | ADMIN | 10 | JT | Configure builder hosts template facts
       ansible.builtin.set_fact:
         configure_image_builder_template_id: >-
           {{
@@ -2098,7 +2098,7 @@
       tags:
         - launch_image_builders
 
-    - name: Launch Configure Image Mode Builder Hosts job template
+    - name: Launch IM | ADMIN | 10 | JT | Configure builder hosts job template
       ansible.builtin.uri:
         url: >-
           {{
@@ -2128,7 +2128,7 @@
       tags:
         - launch_image_builders
 
-    - name: Validate Configure Image Mode Builder Hosts launch response
+    - name: Validate IM | ADMIN | 10 | JT | Configure builder hosts launch response
       ansible.builtin.assert:
         that:
           - configure_image_builder_launch_result.json is defined
@@ -2679,7 +2679,7 @@
             {{
               image_mode_deployment_workflow_name
               | default(
-                  'Image Mode Deploy Sample Image to AWS',
+                  'IM | DEPLOY-AWS | 00 | WF | Deploy sample image',
                   true
                 )
             }}

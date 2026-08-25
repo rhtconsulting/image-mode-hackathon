@@ -267,6 +267,8 @@ image_mode_core_packages:
   - cockpit-podman
   - cockpit-storaged
   - cockpit-packagekit
+  #View virtual machines running on hosts via cockpit
+  - cockpit-machines
 
   # Registration
   - insights-client

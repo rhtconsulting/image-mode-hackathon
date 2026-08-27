@@ -9,7 +9,11 @@ controller_workflows:
   # Build and deploy sample Image Mode host
   ###########################################################################
 
-  - name: "Image Mode Deploy Sample Image to AWS"
+  - name: "IM | DEPLOY-AWS | 00 | WF | Deploy sample image"
+    labels:
+      - "image-mode"
+      - "deploy-aws"
+      - "workflow-entrypoint"
     description: >-
       Build the sample RHEL Image Mode container image, create and register an
       AWS AMI, publish the AMI metadata as workflow artifacts, configure the
@@ -28,7 +32,7 @@ controller_workflows:
       - identifier: "build_image_mode_ami"
 
         unified_job_template:
-          name: "Build Image Mode AMI"
+          name: "IM | DEPLOY-AWS | 10 | JT | Build AMI"
           organization:
             name: "Image Mode Lab"
           type: "job_template"
@@ -44,7 +48,7 @@ controller_workflows:
       - identifier: "configure_satellite_for_new_ami"
 
         unified_job_template:
-          name: "Configure Satellite for New AMI"
+          name: "IM | DEPLOY-AWS | 20 | JT | Configure Satellite AMI"
           organization:
             name: "Image Mode Lab"
           type: "job_template"
@@ -60,7 +64,7 @@ controller_workflows:
       - identifier: "use_satellite_to_deploy_ec2_instances"
 
         unified_job_template:
-          name: "Use Satellite To Deploy EC2 Instances"
+          name: "IM | DEPLOY-AWS | 30 | JT | Deploy EC2 instance"
           organization:
             name: "Image Mode Lab"
           type: "job_template"
@@ -69,7 +73,11 @@ controller_workflows:
   # Provision additional Image Builder teams
   ###########################################################################
 
-  - name: "Provision Additional Image Builder Host with Associated Teams"
+  - name: "IM | ADD-BUILDERS | 00 | WF | Provision additional builder hosts"
+    labels:
+      - "image-mode"
+      - "add-builders"
+      - "workflow-entrypoint"
     description: >-
       Create additional RHEL 9 and RHEL 10 Image Builder hosts, add the newly
       provisioned hosts to the staged AAP inventory, enroll them in IdM, and
@@ -90,7 +98,7 @@ controller_workflows:
       - identifier: "create_additional_image_builder_hosts"
 
         unified_job_template:
-          name: "Create Additional Image Builder Hosts"
+          name: "IM | ADD-BUILDERS | 10 | JT | Create AWS instances"
           organization:
             name: "Image Mode Lab"
           type: "job_template"
@@ -106,7 +114,7 @@ controller_workflows:
       - identifier: "populate_staged_image_builder_inventory"
 
         unified_job_template:
-          name: "Populate Staged Image Builder Inventory"
+          name: "IM | ADD-BUILDERS | 20 | JT | Populate staged inventory"
           organization:
             name: "Image Mode Lab"
           type: "job_template"
@@ -122,7 +130,7 @@ controller_workflows:
       - identifier: "enroll_additional_image_builders_in_idm"
 
         unified_job_template:
-          name: "Enroll Additional Image Builder Hosts in IdM"
+          name: "IM | ADD-BUILDERS | 30 | JT | Enroll hosts in IdM"
           organization:
             name: "Image Mode Lab"
           type: "job_template"
@@ -138,7 +146,7 @@ controller_workflows:
       - identifier: "generate_certs_in_aws_for_builders"
 
         unified_job_template:
-          name: "Generate and Stage Image Builder AWS Certificates"
+          name: "IM | ADD-BUILDERS | 40 | JT | Generate AWS certificates"
           organization:
             name: "Image Mode Lab"
           type: "job_template"
@@ -153,7 +161,7 @@ controller_workflows:
       - identifier: "activate_staged_builders_in_satellite"
 
         unified_job_template:
-          name: "Activate Staged Image Builder Hosts in Satellite"
+          name: "IM | ADD-BUILDERS | 50 | JT | Activate hosts in Satellite"
           organization:
             name: "Image Mode Lab"
           type: "job_template"
@@ -168,7 +176,7 @@ controller_workflows:
       - identifier: "configure_additional_staged_builders"
 
         unified_job_template:
-          name: "Configure Additional Staged Image Mode Builder Hosts"
+          name: "IM | ADD-BUILDERS | 60 | JT | Configure staged builders"
           organization:
             name: "Image Mode Lab"
           type: "job_template"
@@ -183,7 +191,7 @@ controller_workflows:
 
       - identifier: "create_image_builder_teams_and_groups"
         unified_job_template:
-          name: "Create Image Builder Teams and Groups"
+          name: "IM | ADD-BUILDERS | 70A | JT | Create teams and groups"
           organization:
             name: "Image Mode Lab"
           type: "job_template"
@@ -196,7 +204,7 @@ controller_workflows:
       - identifier: "promote_new_image_builder_hosts"
 
         unified_job_template:
-          name: "Clear Out Staged Image Builders - Promote New Image Builder Hosts"
+          name: "IM | ADD-BUILDERS | 70B | JT | Promote builder hosts"
           organization:
             name: "Image Mode Lab"
           type: "job_template"
@@ -213,8 +221,10 @@ controller_workflows:
       - identifier: "clear_promoted_builders_from_staged_inventory"
 
         unified_job_template:
-          name: "Clear Promoted Image Builder Hosts From Staged Inventory"
+          name: "IM | ADD-BUILDERS | 80 | JT | Clear staged inventory"
           organization:
             name: "Image Mode Lab"
           type: "job_template"
+
+
 

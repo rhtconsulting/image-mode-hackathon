@@ -10,6 +10,7 @@
 
   vars_files:
     - ../vars/organizations.yml
+    - ../vars/labels.yml
     - ../vars/credential_types.yml
     - ../vars/credentials.yml
     - ../vars/inventories.yml
@@ -179,7 +180,7 @@
     ###########################################################################
 
     configure_image_builder_job_template_name: >-
-      Configure Image Mode Builder Hosts
+      IM | ADMIN | 10 | JT | Configure builder hosts
 
     launch_image_builder_configuration: true
 
@@ -191,7 +192,7 @@
     ###########################################################################
 
     image_mode_deployment_workflow_name: >-
-      Image Mode Deploy Sample Image to AWS
+      IM | DEPLOY-AWS | 00 | WF | Deploy sample image
 
     launch_image_mode_deployment_workflow: true
     image_mode_deployment_workflow_timeout: 14400
@@ -1634,7 +1635,29 @@
             - organizations
 
         #######################################################################
-        # 2. Credential types
+        # 2. Labels
+        #######################################################################
+
+        # Labels must exist before job and workflow templates reference them.
+        - name: Configure AAP labels
+          ansible.builtin.include_role:
+            name: infra.aap_configuration.controller_labels
+            apply:
+              tags:
+                - labels
+          vars:
+            aap_hostname: "{{ controller_host }}"
+            aap_username: "{{ gateway_admin_username }}"
+            aap_password: "{{ gateway_admin_password }}"
+            aap_validate_certs: false
+          when:
+            - controller_labels is defined
+            - controller_labels | length > 0
+          tags:
+            - labels
+
+        #######################################################################
+        # 3. Credential types
         #######################################################################
 
         - name: Configure AAP credential types
@@ -2027,7 +2050,7 @@
     # Automatically launch the Image Mode Builder configuration
     ###########################################################################
 
-    - name: Look up Configure Image Mode Builder Hosts job template
+    - name: Look up IM | ADMIN | 10 | JT | Configure builder hosts job template
       ansible.builtin.uri:
         url: >-
           {{
@@ -2055,7 +2078,7 @@
       tags:
         - launch_image_builders
 
-    - name: Validate Configure Image Mode Builder Hosts job template lookup
+    - name: Validate IM | ADMIN | 10 | JT | Configure builder hosts job template lookup
       ansible.builtin.assert:
         that:
           - configure_image_builder_template_lookup.json is defined
@@ -2080,7 +2103,7 @@
       tags:
         - launch_image_builders
 
-    - name: Set Configure Image Mode Builder Hosts template facts
+    - name: Set IM | ADMIN | 10 | JT | Configure builder hosts template facts
       ansible.builtin.set_fact:
         configure_image_builder_template_id: >-
           {{
@@ -2098,7 +2121,7 @@
       tags:
         - launch_image_builders
 
-    - name: Launch Configure Image Mode Builder Hosts job template
+    - name: Launch IM | ADMIN | 10 | JT | Configure builder hosts job template
       ansible.builtin.uri:
         url: >-
           {{
@@ -2128,7 +2151,7 @@
       tags:
         - launch_image_builders
 
-    - name: Validate Configure Image Mode Builder Hosts launch response
+    - name: Validate IM | ADMIN | 10 | JT | Configure builder hosts launch response
       ansible.builtin.assert:
         that:
           - configure_image_builder_launch_result.json is defined
@@ -2679,7 +2702,7 @@
             {{
               image_mode_deployment_workflow_name
               | default(
-                  'Image Mode Deploy Sample Image to AWS',
+                  'IM | DEPLOY-AWS | 00 | WF | Deploy sample image',
                   true
                 )
             }}

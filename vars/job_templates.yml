@@ -1,7 +1,11 @@
 ---
 controller_templates:
 
-  - name: Configure Image Mode Builder Hosts
+  - name: "IM | ADMIN | 10 | JT | Configure builder hosts"
+    labels:
+      - "image-mode"
+      - "admin-operations"
+      - "standalone-job"
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
     inventory: "Image Builders"
@@ -15,7 +19,11 @@ controller_templates:
       - "AWS IAM Service Account Credential"
 
 
-  - name: "Build Image Mode AMI"
+  - name: "IM | DEPLOY-AWS | 10 | JT | Build AMI"
+    labels:
+      - "image-mode"
+      - "deploy-aws"
+      - "workflow-component"
     description: >-
       Build a RHEL bootc container image on an Image Builder host, push the
       image to Quay, create and register an AWS AMI through
@@ -48,7 +56,11 @@ controller_templates:
     survey_spec: "{{ image_mode_build_ami_survey }}"
 
 
-  - name: "Configure Satellite for New AMI"
+  - name: "IM | DEPLOY-AWS | 20 | JT | Configure Satellite AMI"
+    labels:
+      - "image-mode"
+      - "deploy-aws"
+      - "workflow-component"
     description: >-
       Configure the Satellite AWS compute resource to use the AMI produced by
       the Build Image Mode AMI job. Resolve the corresponding Satellite
@@ -79,7 +91,11 @@ controller_templates:
       configure_satellite_ami_update_existing: true
 
 
-  - name: "Use Satellite To Deploy EC2 Instances"
+  - name: "IM | DEPLOY-AWS | 30 | JT | Deploy EC2 instance"
+    labels:
+      - "image-mode"
+      - "deploy-aws"
+      - "workflow-component"
     description: >-
       Create and provision an AWS EC2 instance through the Satellite AWS
       compute resource. Determine the appropriate RHEL9 or RHEL10 content view
@@ -148,7 +164,11 @@ controller_templates:
   # Provision additional Image Builder hosts
   ###########################################################################
 
-  - name: "Create Additional Image Builder Hosts"
+  - name: "IM | ADD-BUILDERS | 10 | JT | Create AWS instances"
+    labels:
+      - "image-mode"
+      - "add-builders"
+      - "workflow-component"
     description: >-
       Add additional Image Mode Builder teams to the existing AWS lab.
       Each requested team receives one RHEL 9 Image Builder host and one
@@ -183,7 +203,11 @@ controller_templates:
   # Populate the staged inventory
   ###########################################################################
 
-  - name: "Populate Staged Image Builder Inventory"
+  - name: "IM | ADD-BUILDERS | 20 | JT | Populate staged inventory"
+    labels:
+      - "image-mode"
+      - "add-builders"
+      - "workflow-component"
     description: >-
       Read newly provisioned Image Builder host definitions from workflow
       artifacts and add the hosts to the Staged Image Builders inventory.
@@ -214,7 +238,11 @@ controller_templates:
   # Enroll staged hosts in IdM
   ###########################################################################
 
-  - name: "Enroll Additional Image Builder Hosts in IdM"
+  - name: "IM | ADD-BUILDERS | 30 | JT | Enroll hosts in IdM"
+    labels:
+      - "image-mode"
+      - "add-builders"
+      - "workflow-component"
     description: >-
       Enroll post-Terraform Image Builder EC2 instances into the existing
       Red Hat IdM domain using the IdM administrator credential injected by
@@ -247,7 +275,11 @@ controller_templates:
   # Promote completed hosts into production inventory
   ###########################################################################
 
-  - name: "Promote Staged Image Builder Hosts"
+  - name: "IM | ADMIN | 20 | JT | Promote staged builder hosts"
+    labels:
+      - "image-mode"
+      - "admin-operations"
+      - "standalone-job"
     description: >-
       Copy successfully configured Image Builder hosts from the Staged Image
       Builders inventory into the production Image Builders inventory and
@@ -280,7 +312,11 @@ controller_templates:
   # Activate Image Builder Hosts in Satellite
   ###############################################################################
   
-  - name: "Activate Staged Image Builder Hosts in Satellite"
+  - name: "IM | ADD-BUILDERS | 50 | JT | Activate hosts in Satellite"
+    labels:
+      - "image-mode"
+      - "add-builders"
+      - "workflow-component"
     description: >-
       Validate installed ACM certificates, register staged Image Builder hosts
       with Red Hat Satellite using their RHEL-specific activation keys, verify
@@ -316,7 +352,11 @@ controller_templates:
   # Generate and stage AWS certificates
   ###############################################################################
 
-  - name: "Generate and Stage Image Builder AWS Certificates"
+  - name: "IM | ADD-BUILDERS | 40 | JT | Generate AWS certificates"
+    labels:
+      - "image-mode"
+      - "add-builders"
+      - "workflow-component"
     description: >-
       Request or reuse exportable AWS Certificate Manager certificates for
       staged Image Builder hosts, create the required Route 53 DNS validation
@@ -353,7 +393,11 @@ controller_templates:
   ###############################################################################
   # Additional Image Builder Host playbook for configuration hosts in a inventory
   ###############################################################################
-  - name: Configure Additional Staged Image Mode Builder Hosts
+  - name: "IM | ADD-BUILDERS | 60 | JT | Configure staged builders"
+    labels:
+      - "image-mode"
+      - "add-builders"
+      - "workflow-component"
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
     inventory: "Staged Image Builders"
@@ -369,7 +413,11 @@ controller_templates:
   ###############################################################################
   # Move Image Builder Hosts into main inventory - clear out staged_image_builder_hosts
   ###############################################################################
-  - name: Clear Out Staged Image Builders - Promote New Image Builder Hosts
+  - name: "IM | ADD-BUILDERS | 70B | JT | Promote builder hosts"
+    labels:
+      - "image-mode"
+      - "add-builders"
+      - "workflow-component"
     organization: "Image Mode Lab"
     project: "Image Mode CI/CD"
     inventory: "Staged Image Builders"
@@ -385,7 +433,11 @@ controller_templates:
   ###############################################################################
   # Clear out inventory
   ###############################################################################
-  - name: "Clear Promoted Image Builder Hosts From Staged Inventory"
+  - name: "IM | ADD-BUILDERS | 80 | JT | Clear staged inventory"
+    labels:
+      - "image-mode"
+      - "add-builders"
+      - "workflow-component"
     description: >-
       Remove successfully promoted Image Builder host records from the staged
       inventory after the promotion job has completed.
@@ -423,7 +475,11 @@ controller_templates:
   # Create Image Builder AAP teams and inventory groups
   ###############################################################################
 
-  - name: "Create Image Builder Teams and Groups"
+  - name: "IM | ADD-BUILDERS | 70A | JT | Create teams and groups"
+    labels:
+      - "image-mode"
+      - "add-builders"
+      - "workflow-component"
     description: >-
       Analyze the newly promoted Image Builder hostnames, determine their
       required team letters, query existing AAP teams, create only missing
@@ -457,7 +513,11 @@ controller_templates:
   # Create additional Image Mode Lab IdM users
   ###############################################################################
 
-  - name: "Create Additional Image Mode Lab Users"
+  - name: "IM | ADMIN | 30 | JT | Create lab users"
+    labels:
+      - "image-mode"
+      - "admin-operations"
+      - "standalone-job"
     description: >-
       Discover existing numbered user accounts in the IdM ipausers group,
       determine the next available user number, and create the requested
@@ -596,3 +656,4 @@ controller_templates:
   #   credentials:
   #     - "Image Mode Machine Credential"
   #     - "Image Mode Quay Registry Credential"
+

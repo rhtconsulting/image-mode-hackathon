@@ -531,7 +531,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       if [ -f "$COP_REPO_DIR/configure-aap-controller.yml" ]; then
         COP_PLAYBOOK="$COP_REPO_DIR/configure-aap-controller.yml"
       elif [ -f "$COP_REPO_DIR/demo-setup/configure-aap-controller.yml" ]; then
-        COP_PLAYBOOK="$COP_REPO_DIR/playbooks/configure-aap-controller.yml"
+        COP_PLAYBOOK="$COP_REPO_DIR/demo-setup/configure-aap-controller.yml"
       else
         echo "Unable to find the CoP configure-aap-controller.yml playbook." >&2
         exit 1

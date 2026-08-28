@@ -539,6 +539,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
 
       ansible-playbook \
         -i inventory/hosts \
+        --extra-vars "@$COP_VARS_FILE" \
         "$COP_PLAYBOOK"
     EOT
   }

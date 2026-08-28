@@ -1,12 +1,3 @@
-############################################################
-# Automation Controls
-############################################################
-
-variable "run_deploy_services" {
-  description = "Run the initial Image Mode deploy-services.yml playbook"
-  type        = bool
-  default     = true
-}
 
 ############################################################
 # Generate Ansible Inventory File

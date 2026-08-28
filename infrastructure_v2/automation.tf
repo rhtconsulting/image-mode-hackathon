@@ -1,3 +1,4 @@
+############################################################
 # Generate Ansible Inventory File
 ############################################################
 
@@ -250,7 +251,7 @@ resource "local_file" "ansible_inventory" {
 }
 
 ############################################################
-# Clone Repo And Bootstrap Lab
+# Clone Hackathon Repository And Bootstrap Lab
 ############################################################
 
 resource "terraform_data" "bootstrap_lab" {
@@ -273,7 +274,7 @@ resource "terraform_data" "bootstrap_lab" {
       REPO_DIR="${abspath(path.module)}/image-mode-hackathon"
       INVENTORY_FILE="${abspath(path.module)}/inventory.ini"
 
-      REPO_URL="https://github.com/claudiol/image-mode-hackathon.git"
+      REPO_URL="https://github.com/rhtconsulting/image-mode-hackathon.git"
       BRANCH="add-cop-aap-pipeline"
 
       echo "Using inventory: $INVENTORY_FILE"
@@ -286,15 +287,15 @@ resource "terraform_data" "bootstrap_lab" {
 
       cd "$REPO_DIR"
 
-      git fetch origin
+      git fetch origin "$BRANCH"
       git checkout "$BRANCH"
       git pull --ff-only origin "$BRANCH"
 
       mkdir -p playbooks/inventory
-      cp "$INVENTORY_FILE" playbooks/inventory/hosts
 
-      echo "Generated Ansible inventory:"
-      cat playbooks/inventory/hosts
+      install -m 0600 \
+        "$INVENTORY_FILE" \
+        playbooks/inventory/hosts
 
       echo "======================================"
       echo " Deploying Image Mode Lab Services"
@@ -303,6 +304,230 @@ resource "terraform_data" "bootstrap_lab" {
       ansible-playbook \
         -i playbooks/inventory/hosts \
         playbooks/deploy-services.yml
+    EOT
+  }
+}
+
+############################################################
+# Clone And Deploy CoP AAP Pipeline
+#
+# This starts only after bootstrap_lab and deploy-services.yml
+# have completed successfully.
+############################################################
+
+resource "terraform_data" "deploy_cop_aap_pipeline" {
+  depends_on = [
+    terraform_data.bootstrap_lab
+  ]
+
+  triggers_replace = [
+    terraform_data.bootstrap_lab.id,
+    local_file.ansible_inventory.content_sha256,
+
+    aws_secretsmanager_secret.redhat[
+      "redhat/registry_username"
+    ].arn,
+
+    aws_secretsmanager_secret.redhat[
+      "redhat/registry_password"
+    ].arn,
+
+    aws_secretsmanager_secret.generated[
+      "aap/controller_admin_password"
+    ].arn,
+
+    aws_secretsmanager_secret.static[
+      "quay/superuser"
+    ].arn,
+
+    aws_secretsmanager_secret.generated[
+      "quay/superuser_password"
+    ].arn,
+
+    aws_secretsmanager_secret.satellite_aws_access_key_id.arn,
+    aws_secretsmanager_secret.satellite_aws_secret_access_key.arn
+  ]
+
+  provisioner "local-exec" {
+    working_dir = path.module
+
+    environment = {
+      AWS_PROFILE = var.aws_profile
+      AWS_REGION  = var.aws_region
+
+      REDHAT_REGISTRY_USERNAME_SECRET = (
+        aws_secretsmanager_secret.redhat[
+          "redhat/registry_username"
+        ].name
+      )
+
+      REDHAT_REGISTRY_PASSWORD_SECRET = (
+        aws_secretsmanager_secret.redhat[
+          "redhat/registry_password"
+        ].name
+      )
+
+      AAP_CONTROLLER_PASSWORD_SECRET = (
+        aws_secretsmanager_secret.generated[
+          "aap/controller_admin_password"
+        ].name
+      )
+
+      QUAY_USERNAME_SECRET = (
+        aws_secretsmanager_secret.static[
+          "quay/superuser"
+        ].name
+      )
+
+      QUAY_PASSWORD_SECRET = (
+        aws_secretsmanager_secret.generated[
+          "quay/superuser_password"
+        ].name
+      )
+
+      PIPELINE_AWS_ACCESS_KEY_SECRET = (
+        aws_secretsmanager_secret.satellite_aws_access_key_id.name
+      )
+
+      PIPELINE_AWS_SECRET_KEY_SECRET = (
+        aws_secretsmanager_secret.satellite_aws_secret_access_key.name
+      )
+    }
+
+    command = <<-EOT
+      set -euo pipefail
+
+      HACKATHON_REPO_DIR="${abspath(path.module)}/image-mode-hackathon"
+      COP_REPO_DIR="${abspath(path.module)}/rhel-image-mode-aap"
+      INVENTORY_FILE="${abspath(path.module)}/inventory.ini"
+
+      COP_REPO_URL="https://gitlab.com/redhat/cop/rhel/rhel-image-mode-aap.git"
+      COP_REPO_BRANCH="main"
+
+      COP_VARS_TEMPLATE="$HACKATHON_REPO_DIR/cop-aap-pipeline-vars.yml.tpl"
+      COP_VARS_FILE="$COP_REPO_DIR/demo-setup-vars.yml"
+
+      get_secret() {
+        aws secretsmanager get-secret-value \
+          --secret-id "$1" \
+          --query SecretString \
+          --output text
+      }
+
+      cleanup() {
+        unset \
+          REDHAT_REGISTRY_USERNAME \
+          REDHAT_REGISTRY_PASSWORD \
+          AAP2_CONTROLLER_USERNAME \
+          AAP2_CONTROLLER_PASSWORD \
+          QUAY_USERNAME \
+          QUAY_PASSWORD \
+          PIPELINE_AWS_ACCESS_KEY \
+          PIPELINE_AWS_SECRET_KEY \
+          PIPELINE_AWS_STS_TOKEN \
+          AUTOMATION_HUB_TOKEN
+      }
+
+      trap cleanup EXIT
+
+      if [ ! -f "$INVENTORY_FILE" ]; then
+        echo "Generated inventory not found: $INVENTORY_FILE" >&2
+        exit 1
+      fi
+
+      if [ ! -f "$COP_VARS_TEMPLATE" ]; then
+        echo "CoP variables template not found: $COP_VARS_TEMPLATE" >&2
+        exit 1
+      fi
+
+      echo "======================================"
+      echo " Cloning CoP AAP Pipeline Repository"
+      echo "======================================"
+
+      if [ ! -d "$COP_REPO_DIR/.git" ]; then
+        git clone \
+          --branch "$COP_REPO_BRANCH" \
+          "$COP_REPO_URL" \
+          "$COP_REPO_DIR"
+      fi
+
+      cd "$COP_REPO_DIR"
+
+      # Restore the upstream file before pulling in case this
+      # resource generated it during a previous Terraform run.
+      git restore \
+        --source=HEAD \
+        -- demo-setup-vars.yml \
+        2>/dev/null || true
+
+      git fetch origin "$COP_REPO_BRANCH"
+      git checkout "$COP_REPO_BRANCH"
+      git pull --ff-only origin "$COP_REPO_BRANCH"
+
+      # Replace the default variables only in the local clone.
+      # The template contains Ansible environment lookups and
+      # dynamic references to groups['quay'] and hostvars.
+      install -m 0600 \
+        "$COP_VARS_TEMPLATE" \
+        "$COP_VARS_FILE"
+
+      # Reuse the inventory generated by Terraform. This inventory
+      # contains the current dynamically provisioned Quay server.
+      mkdir -p inventory
+
+      install -m 0600 \
+        "$INVENTORY_FILE" \
+        inventory/hosts
+
+      export REDHAT_REGISTRY_USERNAME="$(
+        get_secret "$REDHAT_REGISTRY_USERNAME_SECRET"
+      )"
+
+      export REDHAT_REGISTRY_PASSWORD="$(
+        get_secret "$REDHAT_REGISTRY_PASSWORD_SECRET"
+      )"
+
+      export AAP2_CONTROLLER_USERNAME="admin"
+
+      export AAP2_CONTROLLER_PASSWORD="$(
+        get_secret "$AAP_CONTROLLER_PASSWORD_SECRET"
+      )"
+
+      export QUAY_USERNAME="$(
+        get_secret "$QUAY_USERNAME_SECRET"
+      )"
+
+      export QUAY_PASSWORD="$(
+        get_secret "$QUAY_PASSWORD_SECRET"
+      )"
+
+      export PIPELINE_AWS_ACCESS_KEY="$(
+        get_secret "$PIPELINE_AWS_ACCESS_KEY_SECRET"
+      )"
+
+      export PIPELINE_AWS_SECRET_KEY="$(
+        get_secret "$PIPELINE_AWS_SECRET_KEY_SECRET"
+      )"
+
+      export PIPELINE_AWS_STS_TOKEN=""
+      export AUTOMATION_HUB_TOKEN=""
+
+      echo "======================================"
+      echo " Deploying CoP AAP Pipeline"
+      echo "======================================"
+
+      if [ -f "$COP_REPO_DIR/demo-setup.yml" ]; then
+        COP_PLAYBOOK="$COP_REPO_DIR/demo-setup.yml"
+      elif [ -f "$COP_REPO_DIR/playbooks/demo-setup.yml" ]; then
+        COP_PLAYBOOK="$COP_REPO_DIR/playbooks/demo-setup.yml"
+      else
+        echo "Unable to find the CoP demo-setup.yml playbook." >&2
+        exit 1
+      fi
+
+      ansible-playbook \
+        -i inventory/hosts \
+        "$COP_PLAYBOOK"
     EOT
   }
 }

@@ -418,7 +418,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       COP_REPO_URL="https://gitlab.com/redhat/cop/rhel/rhel-image-mode-aap.git"
       COP_REPO_BRANCH="main"
 
-      COP_VARS_TEMPLATE="$HACKATHON_REPO_DIR/cop-aap-pipeline-vars.yml.tpl"
+      COP_VARS_TEMPLATE="$HACKATHON_REPO_DIR/infrastructure_v2/cop-aap-pipeline-vars.tpl"
       COP_VARS_FILE="$COP_REPO_DIR/demo-setup-vars.yml"
 
       get_secret() {

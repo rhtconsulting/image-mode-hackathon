@@ -3,8 +3,8 @@ controller_projects:
   - name: "Image Mode CI/CD"
     organization: "Image Mode Lab"
     scm_type: git
-    scm_url: "https://github.com/claudiol/image-mode-hackathon.git"
-    scm_branch: "dev"
+    scm_url: "https://github.com/rhtconsulting/image-mode-hackathon"
+    scm_branch: "add-cop-aap-pipeline"
     credential: "Git Credential"
     scm_update_on_launch: true
     update_project: true

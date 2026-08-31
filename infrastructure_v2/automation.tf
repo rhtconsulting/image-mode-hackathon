@@ -1,5 +1,5 @@
 ############################################################
-# Automation Service Endpoints
+# Automation Service Endpoints And CoP Hosts
 ############################################################
 
 locals {
@@ -12,6 +12,34 @@ locals {
   # This automation expects exactly one server with role "aap".
   primary_aap_hostname = one(local.aap_server_hostnames)
   primary_aap_url      = "https://${local.primary_aap_hostname}"
+
+  ###########################################################################
+  # Image Builder hosts added to the CoP AAP inventory
+  ###########################################################################
+
+  cop_image_builder_hosts = [
+    for name, instance in aws_instance.server : {
+      name       = name
+      hostname   = local.flattened_servers[name].hostname
+      private_ip = instance.private_ip
+    }
+    if local.flattened_servers[name].role == "image-builder"
+  ]
+
+  ###########################################################################
+  # Quay identifiers used to remove hosts created by older automation
+  ###########################################################################
+
+  cop_quay_host_identifiers = distinct(flatten([
+    for name, instance in aws_instance.server : compact([
+      name,
+      local.flattened_servers[name].hostname,
+      instance.private_ip,
+      try(aws_eip.server[name].public_ip, ""),
+      instance.public_ip
+    ])
+    if local.flattened_servers[name].role == "quay"
+  ]))
 }
 
 ############################################################
@@ -229,6 +257,8 @@ resource "local_file" "ansible_inventory" {
 
     ###########################################################################
     # Terraform-managed servers
+    #
+    # This original inventory behavior remains unchanged.
     ###########################################################################
 
     servers = {
@@ -342,6 +372,12 @@ resource "terraform_data" "bootstrap_lab" {
 # This starts after bootstrap_lab. When run_deploy_services
 # is false, bootstrap_lab refreshes the repository and
 # inventory but skips deploy-services.yml.
+#
+# Each Terraform-created image-builder is added to the CoP
+# AAP inventory using its private IP address.
+#
+# Quay remains the image registry and is not added as a
+# build host.
 ############################################################
 
 resource "terraform_data" "deploy_cop_aap_pipeline" {
@@ -353,6 +389,8 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
     terraform_data.bootstrap_lab.id,
     local_file.ansible_inventory.content_sha256,
     local.primary_aap_url,
+    jsonencode(local.cop_image_builder_hosts),
+    jsonencode(local.cop_quay_host_identifiers),
 
     aws_secretsmanager_secret.redhat[
       "redhat/registry_username"
@@ -385,8 +423,21 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       AWS_PROFILE = var.aws_profile
       AWS_REGION  = var.aws_region
 
-      # Derived from the Terraform-created server with role "aap".
       AAP2_CONTROLLER_URL = local.primary_aap_url
+
+      # Image builders added to the AAP inventory.
+      IMAGE_BUILDER_HOSTS_JSON = jsonencode(
+        local.cop_image_builder_hosts
+      )
+
+      # Possible names and addresses of an incorrectly created Quay host.
+      QUAY_HOST_IDENTIFIERS_JSON = jsonencode(
+        local.cop_quay_host_identifiers
+      )
+
+      COP_AAP_INVENTORY_NAME = (
+        "Image Mode CI/CD - AAP - SCM Inventory"
+      )
 
       REDHAT_REGISTRY_USERNAME_SECRET = (
         aws_secretsmanager_secret.redhat[
@@ -400,7 +451,6 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
         ].name
       )
 
-      # The public AAP URL points to the platform gateway.
       AAP_CONTROLLER_PASSWORD_SECRET = (
         aws_secretsmanager_secret.generated[
           "aap/gateway_admin_password"
@@ -441,6 +491,9 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       COP_VARS_TEMPLATE="$HACKATHON_REPO_DIR/infrastructure_v2/cop-aap-pipeline-vars.tpl"
       COP_VARS_FILE="$COP_REPO_DIR/demo-setup-vars.yml"
 
+      BUILDERS_FILE=""
+      QUAY_IDENTIFIERS_FILE=""
+
       get_secret() {
         aws secretsmanager get-secret-value \
           --secret-id "$1" \
@@ -449,6 +502,14 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       }
 
       cleanup() {
+        if [ -n "$BUILDERS_FILE" ]; then
+          rm -f "$BUILDERS_FILE"
+        fi
+
+        if [ -n "$QUAY_IDENTIFIERS_FILE" ]; then
+          rm -f "$QUAY_IDENTIFIERS_FILE"
+        fi
+
         unset \
           REDHAT_REGISTRY_USERNAME \
           REDHAT_REGISTRY_PASSWORD \
@@ -460,10 +521,17 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
           PIPELINE_AWS_ACCESS_KEY \
           PIPELINE_AWS_SECRET_KEY \
           PIPELINE_AWS_STS_TOKEN \
-          AUTOMATION_HUB_TOKEN
+          AUTOMATION_HUB_TOKEN \
+          IMAGE_BUILDER_HOSTS_JSON \
+          QUAY_HOST_IDENTIFIERS_JSON
       }
 
       trap cleanup EXIT
+
+      if ! command -v jq >/dev/null 2>&1; then
+        echo "jq is required by the CoP deployment process." >&2
+        exit 1
+      fi
 
       if [ ! -f "$INVENTORY_FILE" ]; then
         echo "Generated inventory not found: $INVENTORY_FILE" >&2
@@ -490,6 +558,22 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
           ;;
       esac
 
+      IMAGE_BUILDER_COUNT="$(
+        printf '%s' "$IMAGE_BUILDER_HOSTS_JSON" |
+          jq 'length'
+      )"
+
+      if [ "$IMAGE_BUILDER_COUNT" -eq 0 ]; then
+        echo "No Terraform servers with role image-builder were found." >&2
+        exit 1
+      fi
+
+      echo "Image builders selected for the CoP AAP inventory:"
+
+      printf '%s' "$IMAGE_BUILDER_HOSTS_JSON" |
+        jq -r \
+          '.[] | "  \(.hostname) -> \(.private_ip)"'
+
       echo "======================================"
       echo " Cloning CoP AAP Pipeline Repository"
       echo "======================================"
@@ -503,8 +587,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
 
       cd "$COP_REPO_DIR"
 
-      # Restore the upstream file before pulling. This discards only
-      # the generated variables file from the previous run.
+      # Restore only the variables file generated during the prior run.
       git restore \
         --source=HEAD \
         -- demo-setup-vars.yml \
@@ -514,12 +597,14 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       git checkout "$COP_REPO_BRANCH"
       git pull --ff-only origin "$COP_REPO_BRANCH"
 
-      # Replace the upstream variables only in the local clone.
+      # Copy the locally maintained variable template over the
+      # default variables file in the cloned CoP repository.
       install -m 0600 \
         "$COP_VARS_TEMPLATE" \
         "$COP_VARS_FILE"
 
-      # Reuse the Terraform-generated inventory.
+      # Reuse the original Terraform-generated inventory without
+      # modifying its public ansible_host values.
       mkdir -p inventory
 
       install -m 0600 \
@@ -565,8 +650,6 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
 
       echo "AAP endpoint: $AAP2_CONTROLLER_URL"
 
-      # An HTTP response proves the AAP web service is reachable.
-      # DNS failures, timeouts, and refused connections return nonzero.
       if ! curl \
         --silent \
         --show-error \
@@ -581,10 +664,6 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
 
       echo "AAP endpoint is reachable."
 
-      echo "======================================"
-      echo " Deploying CoP AAP Pipeline"
-      echo "======================================"
-
       if [ -f "$COP_REPO_DIR/configure-aap-controller.yml" ]; then
         COP_PLAYBOOK="$COP_REPO_DIR/configure-aap-controller.yml"
       elif [ -f "$COP_REPO_DIR/demo-setup/configure-aap-controller.yml" ]; then
@@ -594,14 +673,125 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
         exit 1
       fi
 
+      echo "======================================"
+      echo " Configuring CoP AAP Pipeline"
+      echo "======================================"
+
       echo "Using playbook: $COP_PLAYBOOK"
       echo "Using variables: $COP_VARS_FILE"
       echo "Using inventory: $COP_REPO_DIR/inventory/hosts"
 
-      ansible-playbook \
-        -i "$COP_REPO_DIR/inventory/hosts" \
-        --extra-vars "@$COP_VARS_FILE" \
-        "$COP_PLAYBOOK"
+      BUILDERS_FILE="$(mktemp)"
+      chmod 600 "$BUILDERS_FILE"
+
+      printf '%s' "$IMAGE_BUILDER_HOSTS_JSON" |
+        jq -c '.[]' > "$BUILDERS_FILE"
+
+      while IFS= read -r BUILDER_JSON; do
+        BUILDER_NAME="$(
+          printf '%s' "$BUILDER_JSON" |
+            jq -r '.name'
+        )"
+
+        BUILDER_HOSTNAME="$(
+          printf '%s' "$BUILDER_JSON" |
+            jq -r '.hostname'
+        )"
+
+        BUILDER_PRIVATE_IP="$(
+          printf '%s' "$BUILDER_JSON" |
+            jq -r '.private_ip'
+        )"
+
+        if [ -z "$BUILDER_PRIVATE_IP" ] ||
+           [ "$BUILDER_PRIVATE_IP" = "null" ]; then
+          echo "Image builder $BUILDER_NAME has no private IP." >&2
+          exit 1
+        fi
+
+        echo "--------------------------------------"
+        echo " Configuring image builder"
+        echo " Name:       $BUILDER_NAME"
+        echo " Hostname:   $BUILDER_HOSTNAME"
+        echo " Private IP: $BUILDER_PRIVATE_IP"
+        echo "--------------------------------------"
+
+        # Command-line extra variables override server_hostname from
+        # demo-setup-vars.yml. The CoP repository currently models
+        # one build server, so run it once for each image builder.
+        ansible-playbook \
+          -i "$COP_REPO_DIR/inventory/hosts" \
+          --extra-vars "@$COP_VARS_FILE" \
+          --extra-vars "server_hostname=$BUILDER_PRIVATE_IP" \
+          --extra-vars "server_name=$BUILDER_HOSTNAME" \
+          "$COP_PLAYBOOK"
+      done < "$BUILDERS_FILE"
+
+      rm -f "$BUILDERS_FILE"
+      BUILDERS_FILE=""
+
+      echo "======================================"
+      echo " Removing Stale Quay Inventory Hosts"
+      echo "======================================"
+
+      AAP_INVENTORY_ID="$(
+        curl \
+          --silent \
+          --show-error \
+          --insecure \
+          --user "$AAP2_CONTROLLER_USERNAME:$AAP2_CONTROLLER_PASSWORD" \
+          --get \
+          --data-urlencode "name=$COP_AAP_INVENTORY_NAME" \
+          "$AAP2_CONTROLLER_URL/api/controller/v2/inventories/" |
+          jq -r '.results[0].id // empty'
+      )"
+
+      if [ -z "$AAP_INVENTORY_ID" ]; then
+        echo "AAP inventory not found: $COP_AAP_INVENTORY_NAME" >&2
+        exit 1
+      fi
+
+      QUAY_IDENTIFIERS_FILE="$(mktemp)"
+      chmod 600 "$QUAY_IDENTIFIERS_FILE"
+
+      printf '%s' "$QUAY_HOST_IDENTIFIERS_JSON" |
+        jq -r '.[]' > "$QUAY_IDENTIFIERS_FILE"
+
+      while IFS= read -r QUAY_IDENTIFIER; do
+        [ -n "$QUAY_IDENTIFIER" ] || continue
+
+        STALE_HOST_ID="$(
+          curl \
+            --silent \
+            --show-error \
+            --insecure \
+            --user "$AAP2_CONTROLLER_USERNAME:$AAP2_CONTROLLER_PASSWORD" \
+            --get \
+            --data-urlencode "name=$QUAY_IDENTIFIER" \
+            "$AAP2_CONTROLLER_URL/api/controller/v2/inventories/$AAP_INVENTORY_ID/hosts/" |
+            jq -r '.results[0].id // empty'
+        )"
+
+        if [ -n "$STALE_HOST_ID" ]; then
+          echo "Removing stale Quay host: $QUAY_IDENTIFIER"
+
+          curl \
+            --silent \
+            --show-error \
+            --fail \
+            --insecure \
+            --user "$AAP2_CONTROLLER_USERNAME:$AAP2_CONTROLLER_PASSWORD" \
+            --request DELETE \
+            "$AAP2_CONTROLLER_URL/api/controller/v2/hosts/$STALE_HOST_ID/"
+        fi
+      done < "$QUAY_IDENTIFIERS_FILE"
+
+      rm -f "$QUAY_IDENTIFIERS_FILE"
+      QUAY_IDENTIFIERS_FILE=""
+
+      echo "======================================"
+      echo " CoP AAP Pipeline Configuration Done"
+      echo "======================================"
     EOT
   }
 }

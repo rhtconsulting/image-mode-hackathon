@@ -485,8 +485,8 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       COP_REPO_DIR="${abspath(path.module)}/rhel-image-mode-aap"
       INVENTORY_FILE="${abspath(path.module)}/inventory.ini"
 
-      COP_REPO_URL="https://gitlab.com/redhat/cop/rhel/rhel-image-mode-aap.git"
-      COP_REPO_BRANCH="main"
+      COP_REPO_URL="https://gitlab.com/philip860/rhel-image-mode-aap.git"
+      COP_REPO_BRANCH="dev"
 
       COP_VARS_TEMPLATE="$HACKATHON_REPO_DIR/infrastructure_v2/cop-aap-pipeline-vars.tpl"
       COP_VARS_FILE="$COP_REPO_DIR/demo-setup-vars.yml"

@@ -337,6 +337,21 @@
 # Push image to Quay
 ###############################################################################
 
+- name: IMAGE MODE AMI | Log in to Quay
+  ansible.builtin.command:
+    argv:
+      - podman
+      - login
+      - "{{ quay_registry_host }}"
+      - --username
+      - "{{ quay_registry_username }}"
+      - --password-stdin
+    stdin: "{{ quay_registry_password }}"
+  register: image_mode_quay_login
+  changed_when: true
+  no_log: false
+  when: image_mode_push_container | bool
+
 - name: IMAGE MODE AMI | Push bootc container to Quay
   ansible.builtin.command:
     argv:

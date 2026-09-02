@@ -3,8 +3,16 @@ controller_projects:
   - name: "Image Mode CI/CD"
     organization: "Image Mode Lab"
     scm_type: git
-    scm_url: "https://github.com/claudiol/image-mode-hackathon.git"
+    scm_url: "https://github.com/rhtconsulting/image-mode-hackathon"
     scm_branch: "dev"
     credential: "Git Credential"
     scm_update_on_launch: true
     update_project: true
+
+  # - name: "RHEL Image Mode CoP"
+  #   organization: "Image Mode Lab"
+  #   scm_type: git
+  #   scm_url: "https://gitlab.com/redhat/cop/rhel/rhel-image-mode-aap.git"
+  #   scm_branch: "main"
+  #   scm_update_on_launch: true
+  #   update_project: true

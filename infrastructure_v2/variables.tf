@@ -762,3 +762,13 @@ variable "satellite_image_builder_compute_profile_name" {
     error_message = "satellite_image_builder_compute_profile_name must not be empty."
   }
 }
+
+###############################################################################
+# Allow deploy.services.yml playbook to be skipped if set to false
+###############################################################################
+
+variable "run_deploy_services" {
+  description = "Run the initial Image Mode lab deploy-services.yml playbook"
+  type        = bool
+  default     = true
+}

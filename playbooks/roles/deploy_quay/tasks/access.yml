@@ -1,4 +1,48 @@
 ---
+###############################################################################
+# Enable LDAP synchronization for Quay teams
+#
+# Synchronize the owners team last. Synchronizing owners can remove the
+# bootstrap administrator and revoke the API token's organization permissions.
+###############################################################################
+
+- name: Build safe Quay team synchronization order
+  ansible.builtin.set_fact:
+    quay_team_syncs_ordered: >-
+      {{
+        (
+          quay_team_syncs
+          | rejectattr('team', 'equalto', quay_owner_team)
+          | list
+        )
+        +
+        (
+          quay_team_syncs
+          | selectattr('team', 'equalto', quay_owner_team)
+          | list
+        )
+      }}
+
+- name: Validate Quay team synchronization order
+  ansible.builtin.assert:
+    that:
+      - quay_team_syncs_ordered | length == quay_team_syncs | length
+      - quay_team_syncs_ordered | length > 0
+      - quay_team_syncs_ordered[-1].team == quay_owner_team
+    fail_msg: >-
+      Unable to build a safe Quay synchronization order. The owners team
+      must exist and must be synchronized last.
+
+- name: Display Quay team synchronization order
+  ansible.builtin.debug:
+    msg: >-
+      Quay LDAP teams will be synchronized in this order:
+      {{
+        quay_team_syncs_ordered
+        | map(attribute='team')
+        | join(' -> ')
+      }}
+
 - name: Enable LDAP synchronization for Quay teams
   ansible.builtin.uri:
     url: >-
@@ -9,6 +53,7 @@
     validate_certs: false
     headers:
       Authorization: "Bearer {{ quay_api_token }}"
+      Accept: application/json
     body_format: json
     body:
       group_dn: "{{ item.group_dn }}"
@@ -16,50 +61,29 @@
       - 200
       - 201
       - 204
-      - 400
-  loop: "{{ quay_team_syncs }}"
+    return_content: true
+  loop: "{{ quay_team_syncs_ordered }}"
+  loop_control:
+    label: "{{ item.team }}"
   register: quay_enable_team_sync
+  changed_when: quay_enable_team_sync.status in [200, 201, 204]
   no_log: true
-  failed_when: >
-    quay_enable_team_sync.status == 400
-    and (
-      quay_enable_team_sync.json.error_message | default('')
-      is not search('already|exists|enabled')
-    )
 
-# - name: Read synchronized Quay team configuration
-#   ansible.builtin.uri:
-#     url: >-
-#       https://127.0.0.1:{{ quay_https_port
-#       }}/api/v1/organization/{{ quay_default_org
-#       }}/team/{{ item.team }}/permissions
-#     method: GET
-#     validate_certs: false
-#     headers:
-#       Authorization: "Bearer {{ quay_api_token }}"
-#       Accept: application/json
-#     status_code: 200
-#     return_content: true
-#   loop: "{{ quay_team_syncs }}"
-#   loop_control:
-#     label: "{{ item.team }}"
-#   register: quay_synced_teams
-#   changed_when: false
-#   no_log: false
+- name: Report enabled Quay LDAP team synchronization
+  ansible.builtin.debug:
+    msg:
+      team: "{{ item.item.team }}"
+      role: "{{ item.item.role }}"
+      idm_group: "{{ item.item.idm_group }}"
+      group_dn: "{{ item.item.group_dn }}"
+      api_status: "{{ item.status }}"
+  loop: "{{ quay_enable_team_sync.results }}"
+  loop_control:
+    label: "{{ item.item.team }}"
 
-# - name: Show synchronized Quay team validation
-#   ansible.builtin.debug:
-#     msg:
-#       team: "{{ item.item.team }}"
-#       role: "{{ item.item.role }}"
-#       idm_group: "{{ item.item.idm_group }}"
-#       group_dn: "{{ item.item.group_dn }}"
-#       api_status: "{{ item.status }}"
-#       repository_permissions: >-
-#         {{ item.json.permissions | default([]) }}
-#   loop: "{{ quay_synced_teams.results }}"
-#   loop_control:
-#     label: "{{ item.item.team }}"
+###############################################################################
+# Report deployment result
+###############################################################################
 
 - name: Display deployment result
   ansible.builtin.debug:
@@ -108,3 +132,4 @@
 
 - name: Display running containers
   ansible.builtin.debug:
+    var: podman_ps.stdout_lines

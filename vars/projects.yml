@@ -4,15 +4,15 @@ controller_projects:
     organization: "Image Mode Lab"
     scm_type: git
     scm_url: "https://github.com/rhtconsulting/image-mode-hackathon"
-    scm_branch: "add-cop-aap-pipeline"
+    scm_branch: "dev"
     credential: "Git Credential"
     scm_update_on_launch: true
     update_project: true
 
-  - name: "RHEL Image Mode CoP"
-    organization: "Image Mode Lab"
-    scm_type: git
-    scm_url: "https://gitlab.com/redhat/cop/rhel/rhel-image-mode-aap.git"
-    scm_branch: "main"
-    scm_update_on_launch: true
-    update_project: true
+  # - name: "RHEL Image Mode CoP"
+  #   organization: "Image Mode Lab"
+  #   scm_type: git
+  #   scm_url: "https://gitlab.com/redhat/cop/rhel/rhel-image-mode-aap.git"
+  #   scm_branch: "main"
+  #   scm_update_on_launch: true
+  #   update_project: true

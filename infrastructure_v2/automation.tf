@@ -43,6 +43,14 @@ locals {
 }
 
 ############################################################
+# Existing Quay LDAP Registry Credential
+############################################################
+
+data "aws_secretsmanager_secret" "quay_image_mode_builder" {
+  name = "${var.secret_prefix}/quay/ldap_users/image-mode-builder"
+}
+
+############################################################
 # Generate Ansible Inventory File
 ############################################################
 
@@ -326,7 +334,7 @@ resource "terraform_data" "bootstrap_lab" {
       INVENTORY_FILE="${abspath(path.module)}/inventory.ini"
 
       REPO_URL="https://github.com/rhtconsulting/image-mode-hackathon.git"
-      BRANCH="dev"
+      BRANCH="add-cop-aap-pipeline"
 
       echo "Using inventory: $INVENTORY_FILE"
 
@@ -404,13 +412,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       "aap/gateway_admin_password"
     ].arn,
 
-    aws_secretsmanager_secret.static[
-      "quay/superuser"
-    ].arn,
-
-    aws_secretsmanager_secret.generated[
-      "quay/superuser_password"
-    ].arn,
+    data.aws_secretsmanager_secret.quay_image_mode_builder.arn,
 
     aws_secretsmanager_secret.satellite_aws_access_key_id.arn,
     aws_secretsmanager_secret.satellite_aws_secret_access_key.arn
@@ -457,16 +459,8 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
         ].name
       )
 
-      QUAY_USERNAME_SECRET = (
-        aws_secretsmanager_secret.static[
-          "quay/superuser"
-        ].name
-      )
-
-      QUAY_PASSWORD_SECRET = (
-        aws_secretsmanager_secret.generated[
-          "quay/superuser_password"
-        ].name
+      QUAY_CREDENTIALS_SECRET = (
+        data.aws_secretsmanager_secret.quay_image_mode_builder.name
       )
 
       PIPELINE_AWS_ACCESS_KEY_SECRET = (
@@ -516,6 +510,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
           AAP2_CONTROLLER_URL \
           AAP2_CONTROLLER_USERNAME \
           AAP2_CONTROLLER_PASSWORD \
+          QUAY_CREDENTIALS_JSON \
           QUAY_USERNAME \
           QUAY_PASSWORD \
           PIPELINE_AWS_ACCESS_KEY \
@@ -625,13 +620,28 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
         get_secret "$AAP_CONTROLLER_PASSWORD_SECRET"
       )"
 
+      QUAY_CREDENTIALS_JSON="$(
+        get_secret "$QUAY_CREDENTIALS_SECRET"
+      )"
+
       export QUAY_USERNAME="$(
-        get_secret "$QUAY_USERNAME_SECRET"
+        printf '%s' "$QUAY_CREDENTIALS_JSON" |
+          jq -er '.username | strings | select(length > 0)'
       )"
 
       export QUAY_PASSWORD="$(
-        get_secret "$QUAY_PASSWORD_SECRET"
+        printf '%s' "$QUAY_CREDENTIALS_JSON" |
+          jq -er '.password | strings | select(length > 0)'
       )"
+
+      if [ "$QUAY_USERNAME" != "image-mode-builder" ]; then
+        echo \
+          "Secret $QUAY_CREDENTIALS_SECRET contains an unexpected username." \
+          >&2
+        exit 1
+      fi
+
+      unset QUAY_CREDENTIALS_JSON
 
       export PIPELINE_AWS_ACCESS_KEY="$(
         get_secret "$PIPELINE_AWS_ACCESS_KEY_SECRET"

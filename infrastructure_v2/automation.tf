@@ -13,6 +13,11 @@ locals {
   primary_aap_hostname = one(local.aap_server_hostnames)
   primary_aap_url      = "https://${local.primary_aap_hostname}"
 
+  # Created by the Quay deployment during bootstrap_lab.
+  cop_quay_credentials_secret_name = (
+    "${var.secret_prefix}/quay/ldap_users/image-mode-builder"
+  )
+
   ###########################################################################
   # Image Builder hosts added to the CoP AAP inventory
   ###########################################################################
@@ -40,14 +45,6 @@ locals {
     ])
     if local.flattened_servers[name].role == "quay"
   ]))
-}
-
-############################################################
-# Existing Quay LDAP Registry Credential
-############################################################
-
-data "aws_secretsmanager_secret" "quay_image_mode_builder" {
-  name = "${var.secret_prefix}/quay/ldap_users/image-mode-builder"
 }
 
 ############################################################
@@ -412,7 +409,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       "aap/gateway_admin_password"
     ].arn,
 
-    data.aws_secretsmanager_secret.quay_image_mode_builder.arn,
+    local.cop_quay_credentials_secret_name,
 
     aws_secretsmanager_secret.satellite_aws_access_key_id.arn,
     aws_secretsmanager_secret.satellite_aws_secret_access_key.arn
@@ -460,7 +457,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       )
 
       QUAY_CREDENTIALS_SECRET = (
-        data.aws_secretsmanager_secret.quay_image_mode_builder.name
+        local.cop_quay_credentials_secret_name
       )
 
       PIPELINE_AWS_ACCESS_KEY_SECRET = (

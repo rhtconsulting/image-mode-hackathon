@@ -4,7 +4,7 @@ controller_projects:
     organization: "Image Mode Lab"
     scm_type: git
     scm_url: "https://github.com/rhtconsulting/image-mode-hackathon"
-    scm_branch: "dev"
+    scm_branch: "deadd-gitlab-webhookv"
     credential: "Git Credential"
     scm_update_on_launch: true
     update_project: true

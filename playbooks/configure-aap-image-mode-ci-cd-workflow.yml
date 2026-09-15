@@ -185,6 +185,16 @@
     # surveys or job templates provide all required defaults.
     image_mode_deployment_workflow_extra_vars: {}
 
+    ###########################################################################
+    # AAP API resiliency
+    ###########################################################################
+
+    aap_api_timeout: 60
+    aap_api_readiness_retries: 12
+    aap_api_readiness_delay: 5
+    aap_dependency_retries: 12
+    aap_dependency_delay: 5
+
   pre_tasks:
 
     #Instead of specifying all surveys above, we will load the entire directory at one time 
@@ -1145,7 +1155,7 @@
         force_basic_auth: true
         validate_certs: false
         status_code: 200
-        timeout: 30
+        timeout: "{{ aap_api_timeout | int }}"
         return_content: false
       loop: "{{ aap_controller_endpoint_candidates }}"
       loop_control:
@@ -1186,6 +1196,57 @@
             {{ aap_gateway_password_secret_name }}
       when: controller_host | length == 0
 
+    - name: Wait for selected AAP Gateway API to become stable
+      ansible.builtin.uri:
+        url: "{{ controller_host }}/api/gateway/v1/me/"
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+        timeout: "{{ aap_api_timeout | int }}"
+        return_content: false
+      register: aap_gateway_readiness
+      changed_when: false
+      failed_when: false
+      until:
+        - aap_gateway_readiness.status | default(0) | int == 200
+      retries: "{{ aap_api_readiness_retries | int }}"
+      delay: "{{ aap_api_readiness_delay | int }}"
+      no_log: true
+
+    - name: Wait for selected AAP Controller API to become stable
+      ansible.builtin.uri:
+        url: "{{ controller_host }}/api/controller/v2/ping/"
+        method: GET
+        user: "{{ controller_username }}"
+        password: "{{ controller_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+        timeout: "{{ aap_api_timeout | int }}"
+        return_content: true
+      register: aap_controller_readiness
+      changed_when: false
+      failed_when: false
+      until:
+        - aap_controller_readiness.status | default(0) | int == 200
+        - aap_controller_readiness.json is defined
+      retries: "{{ aap_api_readiness_retries | int }}"
+      delay: "{{ aap_api_readiness_delay | int }}"
+      no_log: true
+
+    - name: Validate selected AAP endpoint health
+      ansible.builtin.assert:
+        that:
+          - aap_gateway_readiness.status | default(0) | int == 200
+          - aap_controller_readiness.status | default(0) | int == 200
+        fail_msg: >-
+          The selected AAP endpoint authenticated successfully but did not remain
+          healthy across both the Gateway and Controller APIs. Review AAP service,
+          database, proxy, and network health before continuing.
+
     ###########################################################################
     # Set variables consumed by infra.aap_configuration
     ###########################################################################
@@ -1214,7 +1275,7 @@
         force_basic_auth: true
         validate_certs: false
         status_code: 200
-        timeout: 30
+        timeout: "{{ aap_api_timeout | int }}"
         return_content: true
       register: aap_authenticated_user_result
       changed_when: false
@@ -1547,9 +1608,16 @@
         validate_certs: false
         status_code: 200
         return_content: true
-        timeout: 30
+        timeout: "{{ aap_api_timeout | int }}"
       register: image_mode_organization_check
       changed_when: false
+      failed_when: false
+      until:
+        - image_mode_organization_check.status | default(0) | int == 200
+        - image_mode_organization_check.json is defined
+        - image_mode_organization_check.json.count | default(0) | int == 1
+      retries: "{{ aap_api_readiness_retries | int }}"
+      delay: "{{ aap_api_readiness_delay | int }}"
       no_log: true
       tags:
         - organizations
@@ -1567,6 +1635,14 @@
         fail_msg: >-
           The Image Mode Lab organization was not found in Automation
           Controller after it was created.
+      tags:
+        - organizations
+        - always
+
+    - name: Set Image Mode Lab organization ID
+      ansible.builtin.set_fact:
+        image_mode_organization_id: >-
+          {{ image_mode_organization_check.json.results[0].id | int }}
       tags:
         - organizations
         - always
@@ -1978,6 +2054,116 @@
             - job_templates
 
         #######################################################################
+        # 8.5. Stabilize Controller API before workflow dependency resolution
+        #######################################################################
+
+        - name: Wait for Controller API after job-template configuration
+          ansible.builtin.uri:
+            url: "{{ controller_host }}/api/controller/v2/ping/"
+            method: GET
+            user: "{{ gateway_admin_username }}"
+            password: "{{ gateway_admin_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            status_code: 200
+            timeout: "{{ aap_api_timeout | int }}"
+            return_content: true
+          register: aap_post_job_template_readiness
+          changed_when: false
+          failed_when: false
+          until:
+            - aap_post_job_template_readiness.status | default(0) | int == 200
+            - aap_post_job_template_readiness.json is defined
+          retries: "{{ aap_api_readiness_retries | int }}"
+          delay: "{{ aap_api_readiness_delay | int }}"
+          no_log: true
+          tags:
+            - job_templates
+            - workflow_job_templates
+
+        - name: Build workflow job-template dependency list
+          ansible.builtin.set_fact:
+            image_mode_workflow_job_template_dependencies: >-
+              {{
+                (
+                  image_mode_workflow_job_template_dependencies | default([])
+                )
+                + [item.1.unified_job_template.name]
+              }}
+          loop: >-
+            {{
+              query(
+                'ansible.builtin.subelements',
+                controller_workflows | default([]),
+                'workflow_nodes',
+                {'skip_missing': true}
+              )
+            }}
+          when:
+            - item.1.unified_job_template is defined
+            - item.1.unified_job_template.name is defined
+            - >-
+              item.1.unified_job_template.type
+              | default('job_template')
+              == 'job_template'
+          loop_control:
+            label: "{{ item.1.identifier | default(item.1.unified_job_template.name) }}"
+          tags:
+            - workflow_job_templates
+
+        - name: Normalize workflow job-template dependency list
+          ansible.builtin.set_fact:
+            image_mode_workflow_job_template_dependencies: >-
+              {{
+                image_mode_workflow_job_template_dependencies
+                | default([])
+                | unique
+                | list
+              }}
+          tags:
+            - workflow_job_templates
+
+        - name: Wait for workflow job-template dependencies to become API-ready
+          ansible.builtin.uri:
+            url: >-
+              {{
+                controller_host
+                ~ '/api/controller/v2/unified_job_templates/'
+                ~ '?type=job_template'
+                ~ '&organization='
+                ~ (image_mode_organization_id | string)
+                ~ '&name='
+                ~ (item | urlencode)
+              }}
+            method: GET
+            user: "{{ gateway_admin_username }}"
+            password: "{{ gateway_admin_password }}"
+            force_basic_auth: true
+            validate_certs: false
+            status_code: 200
+            timeout: "{{ aap_api_timeout | int }}"
+            return_content: true
+          register: workflow_dependency_lookup
+          changed_when: false
+          failed_when: false
+          until:
+            - workflow_dependency_lookup.status | default(0) | int == 200
+            - workflow_dependency_lookup.json is defined
+            - workflow_dependency_lookup.json.count | default(0) | int == 1
+          retries: "{{ aap_dependency_retries | int }}"
+          delay: "{{ aap_dependency_delay | int }}"
+          loop: "{{ image_mode_workflow_job_template_dependencies }}"
+          loop_control:
+            label: "{{ item }}"
+          no_log: true
+          when:
+            - controller_workflows is defined
+            - controller_workflows | length > 0
+            - image_mode_workflow_job_template_dependencies | length > 0
+          tags:
+            - workflow_job_templates
+
+        #######################################################################
         # 9. Workflow job templates
         #######################################################################
 
@@ -2025,7 +2211,7 @@
         force_basic_auth: true
         validate_certs: "{{ controller_validate_certs }}"
         status_code: 200
-        timeout: 30
+        timeout: "{{ aap_api_timeout | int }}"
         return_content: true
       register: configure_image_builder_template_lookup
       changed_when: false
@@ -2096,7 +2282,7 @@
         status_code:
           - 201
           - 202
-        timeout: 30
+        timeout: "{{ aap_api_timeout | int }}"
         return_content: true
         body_format: json
         body: {}
@@ -2183,7 +2369,7 @@
         force_basic_auth: true
         validate_certs: "{{ controller_validate_certs }}"
         status_code: 200
-        timeout: 30
+        timeout: "{{ aap_api_timeout | int }}"
         return_content: true
       register: configure_image_builder_job_status
       changed_when: false
@@ -2292,7 +2478,7 @@
         force_basic_auth: true
         validate_certs: "{{ controller_validate_certs }}"
         status_code: 200
-        timeout: 30
+        timeout: "{{ aap_api_timeout | int }}"
         return_content: true
       register: image_mode_deployment_workflow_lookup
       changed_when: false
@@ -2387,7 +2573,7 @@
         status_code:
           - 201
           - 202
-        timeout: 30
+        timeout: "{{ aap_api_timeout | int }}"
         return_content: true
         body_format: json
         body:
@@ -2483,7 +2669,7 @@
         force_basic_auth: true
         validate_certs: "{{ controller_validate_certs }}"
         status_code: 200
-        timeout: 30
+        timeout: "{{ aap_api_timeout | int }}"
         return_content: true
       register: image_mode_deployment_workflow_status
       changed_when: false

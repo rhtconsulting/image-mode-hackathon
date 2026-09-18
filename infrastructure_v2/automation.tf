@@ -357,6 +357,7 @@ resource "terraform_data" "bootstrap_lab" {
   ]
 
   provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
     working_dir = path.module
 
     environment = {
@@ -464,6 +465,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
   ]
 
   provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
     working_dir = path.module
 
     environment = {
@@ -971,6 +973,7 @@ resource "terraform_data" "configure_cop_gitlab_webhook" {
   ]
 
   provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
     working_dir = path.module
 
     environment = {
@@ -1178,3 +1181,4 @@ resource "terraform_data" "configure_cop_gitlab_webhook" {
     EOT
   }
 }
+

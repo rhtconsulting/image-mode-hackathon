@@ -431,7 +431,16 @@ resource "terraform_data" "bootstrap_lab" {
 
 resource "terraform_data" "deploy_cop_aap_pipeline" {
   depends_on = [
-    terraform_data.bootstrap_lab
+    terraform_data.bootstrap_lab,
+    aws_secretsmanager_secret_version.redhat[
+      "redhat/registry_username"
+    ],
+    aws_secretsmanager_secret_version.redhat[
+      "redhat/registry_password"
+    ],
+    aws_secretsmanager_secret_version.generated[
+      "aap/gateway_admin_password"
+    ]
   ]
 
   triggers_replace = [
@@ -549,10 +558,33 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       COP_RUNTIME_VARS_FILE=""
 
       get_secret() {
-        aws secretsmanager get-secret-value \
-          --secret-id "$1" \
-          --query SecretString \
-          --output text
+        local secret_name="$1"
+        local secret_value=""
+
+        for ((attempt = 1; attempt <= 60; attempt++)); do
+          if secret_value="$(
+            aws secretsmanager get-secret-value \
+              --secret-id "$secret_name" \
+              --query SecretString \
+              --output text 2>/dev/null
+          )" && [ -n "$secret_value" ] && [ "$secret_value" != "None" ]; then
+            printf '%s' "$secret_value"
+            return 0
+          fi
+
+          if [ "$attempt" -eq 1 ]; then
+            echo "Waiting for required Secrets Manager value: $secret_name" >&2
+          fi
+
+          sleep 5
+        done
+
+        echo "Required Secrets Manager value is unavailable after 5 minutes: $secret_name" >&2
+        aws secretsmanager describe-secret \
+          --secret-id "$secret_name" \
+          --query '{Name:Name,ARN:ARN,DeletedDate:DeletedDate}' \
+          --output json >&2 || true
+        return 1
       }
 
       cleanup() {
@@ -956,7 +988,10 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
 resource "terraform_data" "configure_cop_gitlab_webhook" {
   depends_on = [
     terraform_data.deploy_cop_aap_pipeline,
-    aws_secretsmanager_secret.cop_aap_webhook
+    aws_secretsmanager_secret.cop_aap_webhook,
+    aws_secretsmanager_secret_version.generated[
+      "aap/gateway_admin_password"
+    ]
   ]
 
   triggers_replace = [
@@ -1181,4 +1216,3 @@ resource "terraform_data" "configure_cop_gitlab_webhook" {
     EOT
   }
 }
-

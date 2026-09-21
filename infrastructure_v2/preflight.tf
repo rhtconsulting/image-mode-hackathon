@@ -73,7 +73,6 @@ resource "terraform_data" "preflight_cleanup" {
       "${var.environment_name}-image-builder-certificate-management"
     )
 
-    secrets = local.all_lab_secret_names
   }
 
   provisioner "local-exec" {
@@ -147,9 +146,8 @@ resource "terraform_data" "preflight_cleanup" {
       }
 
       STATE_FILE=$(mktemp "$${TMPDIR:-/tmp}/image-mode-lab-state.XXXXXX")
-      SECRET_NAMES_FILE=$(mktemp "$${TMPDIR:-/tmp}/image-mode-lab-secrets.XXXXXX")
-      chmod 600 "$STATE_FILE" "$SECRET_NAMES_FILE"
-      trap 'rm -f "$STATE_FILE" "$SECRET_NAMES_FILE"' EXIT
+      chmod 600 "$STATE_FILE"
+      trap 'rm -f "$STATE_FILE"' EXIT
       terraform state pull >"$STATE_FILE" 2>/dev/null || printf '{}' >"$STATE_FILE"
 
       cleanup_artifact_bucket() {
@@ -503,77 +501,6 @@ resource "terraform_data" "preflight_cleanup" {
           --key-name "$KEY_PAIR_NAME" \
           >/dev/null 2>&1 || true
       fi
-
-      #########################################################################
-      # Secrets Manager cleanup
-      #########################################################################
-
-      echo "Checking Secrets Manager secrets"
-
-      cat > "$SECRET_NAMES_FILE" <<'EOF_SECRETS'
-%{for secret_name in local.all_lab_secret_names~}
-${secret_name}
-%{endfor~}
-EOF_SECRETS
-
-      while IFS= read -r SECRET_NAME; do
-        [ -n "$SECRET_NAME" ] || continue
-
-        case "$SECRET_NAME" in
-          "${var.secret_prefix}/satellite/aws_access_key_id")
-            SECRET_STATE_ADDRESS='aws_secretsmanager_secret.satellite_aws_access_key_id'
-            ;;
-
-          "${var.secret_prefix}/satellite/aws_secret_access_key")
-            SECRET_STATE_ADDRESS='aws_secretsmanager_secret.satellite_aws_secret_access_key'
-            ;;
-
-          "${var.secret_prefix}/aws/rhel-iam")
-            SECRET_STATE_ADDRESS='aws_secretsmanager_secret.rhel_iam_credentials'
-            ;;
-
-          "${local.lab_ssh_private_key_secret_name}")
-            SECRET_STATE_ADDRESS='aws_secretsmanager_secret.ssh_private_key'
-            ;;
-
-          *)
-            # Generated, static, and Red Hat secrets are managed through
-            # for_each resources. If any collection is in state, Terraform
-            # owns those secrets and preflight must not remove them.
-            if terraform state list 2>/dev/null |
-              grep -Eq '^aws_secretsmanager_secret\.(generated|static|redhat)\['; then
-              continue
-            fi
-
-            SECRET_STATE_ADDRESS=''
-            ;;
-        esac
-
-        if [ -n "$SECRET_STATE_ADDRESS" ] &&
-          state_has "$SECRET_STATE_ADDRESS"; then
-          echo "Skipping managed secret: $SECRET_NAME"
-          continue
-        fi
-
-        echo "Deleting unmanaged secret if it exists: $SECRET_NAME"
-
-        aws secretsmanager delete-secret \
-          --secret-id "$SECRET_NAME" \
-          --force-delete-without-recovery \
-          >/dev/null 2>&1 || true
-
-        for ((i = 1; i <= 30; i++)); do
-          if aws secretsmanager describe-secret \
-            --secret-id "$SECRET_NAME" \
-            >/dev/null 2>&1; then
-            sleep 2
-          else
-            break
-          fi
-        done
-      done < "$SECRET_NAMES_FILE"
-
-
 
       #########################################################################
       # AAP IAM resources

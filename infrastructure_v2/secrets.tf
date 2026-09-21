@@ -134,16 +134,13 @@ resource "random_password" "generated" {
 resource "aws_secretsmanager_secret" "generated" {
   for_each = local.generated_secret_names
 
-  depends_on = [
-    terraform_data.preflight_cleanup
-  ]
-
   name                    = "${var.secret_prefix}/${each.value}"
   recovery_window_in_days = 0
 
   tags = {
     Name        = "${var.secret_prefix}/${each.value}"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
 }
 
@@ -153,17 +150,15 @@ resource "aws_secretsmanager_secret_version" "generated" {
   secret_id     = aws_secretsmanager_secret.generated[each.key].id
   secret_string = random_password.generated[each.key].result
 
-  depends_on = [
-    aws_secretsmanager_secret.generated
-  ]
+  lifecycle {
+    # Preserve the current AWS value during normal plan/apply operations.
+    # Use Terraform's explicit -replace option when rotation is required.
+    ignore_changes = [secret_string]
+  }
 }
 
 resource "aws_secretsmanager_secret" "static" {
   for_each = local.static_secret_values
-
-  depends_on = [
-    terraform_data.preflight_cleanup
-  ]
 
   name                    = "${var.secret_prefix}/${each.key}"
   recovery_window_in_days = 0
@@ -171,6 +166,7 @@ resource "aws_secretsmanager_secret" "static" {
   tags = {
     Name        = "${var.secret_prefix}/${each.key}"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
 }
 
@@ -180,17 +176,13 @@ resource "aws_secretsmanager_secret_version" "static" {
   secret_id     = aws_secretsmanager_secret.static[each.key].id
   secret_string = each.value
 
-  depends_on = [
-    aws_secretsmanager_secret.static
-  ]
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
 }
 
 resource "aws_secretsmanager_secret" "redhat" {
   for_each = local.redhat_secret_values
-
-  depends_on = [
-    terraform_data.preflight_cleanup
-  ]
 
   name                    = "${var.secret_prefix}/${each.key}"
   recovery_window_in_days = 0
@@ -198,6 +190,7 @@ resource "aws_secretsmanager_secret" "redhat" {
   tags = {
     Name        = "${var.secret_prefix}/${each.key}"
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
 }
 
@@ -207,22 +200,19 @@ resource "aws_secretsmanager_secret_version" "redhat" {
   secret_id     = aws_secretsmanager_secret.redhat[each.key].id
   secret_string = each.value
 
-  depends_on = [
-    aws_secretsmanager_secret.redhat
-  ]
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
 }
 
 resource "aws_secretsmanager_secret" "ssh_private_key" {
-  depends_on = [
-    terraform_data.preflight_cleanup
-  ]
-
   name                    = local.lab_ssh_private_key_secret_name
   recovery_window_in_days = 0
 
   tags = {
     Name        = local.lab_ssh_private_key_secret_name
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
 }
 
@@ -230,9 +220,9 @@ resource "aws_secretsmanager_secret_version" "ssh_private_key" {
   secret_id     = aws_secretsmanager_secret.ssh_private_key.id
   secret_string = tls_private_key.lab_ssh.private_key_pem
 
-  depends_on = [
-    aws_secretsmanager_secret.ssh_private_key
-  ]
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
 }
 
 ############################################################
@@ -244,10 +234,6 @@ resource "aws_secretsmanager_secret_version" "ssh_private_key" {
 ############################################################
 
 resource "aws_secretsmanager_secret" "cop_aap_webhook" {
-  depends_on = [
-    terraform_data.preflight_cleanup
-  ]
-
   name                    = local.cop_aap_webhook_secret_name
   description             = "AAP GitLab webhook for image-mode/sample-rhel9-web"
   recovery_window_in_days = 0
@@ -255,6 +241,7 @@ resource "aws_secretsmanager_secret" "cop_aap_webhook" {
   tags = {
     Name        = local.cop_aap_webhook_secret_name
     Environment = var.environment_name
+    ManagedBy   = "Terraform"
   }
 }
 

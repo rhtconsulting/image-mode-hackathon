@@ -196,68 +196,178 @@ resource "terraform_data" "preflight_cleanup" {
         aws s3api delete-bucket --bucket "$ARTIFACT_BUCKET_NAME"
       }
 
-      cleanup_orphan_subnets() {
-        SUBNETS=$(aws ec2 describe-subnets \
-          --filters \
-            "Name=tag:Environment,Values=$ENVIRONMENT_NAME" \
-          --query 'Subnets[].[SubnetId,VpcId]' --output text)
-        [ -n "$SUBNETS" ] && [ "$SUBNETS" != "None" ] || return 0
+      cleanup_orphan_vpcs() {
+        VPC_IDS=$(aws ec2 describe-vpcs \
+          --filters "Name=tag:Environment,Values=$ENVIRONMENT_NAME" \
+          --query 'Vpcs[].VpcId' --output text)
+        [ -n "$VPC_IDS" ] && [ "$VPC_IDS" != "None" ] || return 0
 
-        while IFS=$'\t' read -r SUBNET_ID VPC_ID; do
-          [ -n "$SUBNET_ID" ] || continue
-          if state_contains_id "$SUBNET_ID"; then
-            echo "Skipping state-managed subnet: $SUBNET_ID"
+        for VPC_ID in $VPC_IDS; do
+          if state_contains_id "$VPC_ID"; then
+            echo "Skipping state-managed VPC: $VPC_ID"
             continue
           fi
 
-          echo "Cleaning orphaned subnet $SUBNET_ID in VPC $VPC_ID"
+          echo "Cleaning orphaned VPC and dependencies: $VPC_ID"
 
-          ENDPOINTS=$(aws ec2 describe-vpc-endpoints \
-            --filters "Name=subnet-id,Values=$SUBNET_ID" \
-            --query 'VpcEndpoints[].VpcEndpointId' --output text 2>/dev/null || true)
-          if [ -n "$ENDPOINTS" ] && [ "$ENDPOINTS" != "None" ]; then
-            aws ec2 delete-vpc-endpoints --vpc-endpoint-ids $ENDPOINTS >/dev/null
-          fi
+          SUBNET_IDS=$(aws ec2 describe-subnets \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query 'Subnets[].SubnetId' --output text)
+
+          # Stop Auto Scaling from replacing instances during cleanup.
+          ASG_DATA=$(aws autoscaling describe-auto-scaling-groups \
+            --query 'AutoScalingGroups[].[AutoScalingGroupName,VPCZoneIdentifier]' \
+            --output text 2>/dev/null || true)
+          while IFS=$'\t' read -r ASG_NAME ASG_SUBNETS; do
+            [ -n "$ASG_NAME" ] && [ "$ASG_NAME" != "None" ] || continue
+            for SUBNET_ID in $SUBNET_IDS; do
+              case ",$ASG_SUBNETS," in
+                *",$SUBNET_ID,"*)
+                  aws autoscaling update-auto-scaling-group \
+                    --auto-scaling-group-name "$ASG_NAME" \
+                    --min-size 0 --max-size 0 --desired-capacity 0
+                  aws autoscaling delete-auto-scaling-group \
+                    --auto-scaling-group-name "$ASG_NAME" --force-delete
+                  break
+                  ;;
+              esac
+            done
+          done <<< "$ASG_DATA"
+
+          # Route 53 Resolver endpoints own service-managed ENIs and are a
+          # common reason resolver subnets cannot be deleted.
+          RESOLVER_ENDPOINT_IDS=$(aws route53resolver list-resolver-endpoints \
+            --filters "Name=HostVPCId,Values=$VPC_ID" \
+            --query 'ResolverEndpoints[].Id' --output text 2>/dev/null || true)
+          for RESOLVER_ENDPOINT_ID in $RESOLVER_ENDPOINT_IDS; do
+            [ "$RESOLVER_ENDPOINT_ID" != "None" ] || continue
+            echo "Deleting Route 53 Resolver endpoint: $RESOLVER_ENDPOINT_ID"
+            aws route53resolver delete-resolver-endpoint \
+              --resolver-endpoint-id "$RESOLVER_ENDPOINT_ID" >/dev/null
+          done
 
           INSTANCE_IDS=$(aws ec2 describe-instances \
-            --filters "Name=subnet-id,Values=$SUBNET_ID" \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
               'Name=instance-state-name,Values=pending,running,stopping,stopped' \
             --query 'Reservations[].Instances[].InstanceId' --output text)
           if [ -n "$INSTANCE_IDS" ] && [ "$INSTANCE_IDS" != "None" ]; then
+            for INSTANCE_ID in $INSTANCE_IDS; do
+              aws ec2 modify-instance-attribute --instance-id "$INSTANCE_ID" \
+                --disable-api-termination Value=false >/dev/null 2>&1 || true
+            done
             aws ec2 terminate-instances --instance-ids $INSTANCE_IDS >/dev/null
             aws ec2 wait instance-terminated --instance-ids $INSTANCE_IDS
           fi
 
+          LOAD_BALANCER_ARNS=$(aws elbv2 describe-load-balancers \
+            --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" \
+            --output text 2>/dev/null || true)
+          for LOAD_BALANCER_ARN in $LOAD_BALANCER_ARNS; do
+            [ "$LOAD_BALANCER_ARN" != "None" ] || continue
+            aws elbv2 delete-load-balancer \
+              --load-balancer-arn "$LOAD_BALANCER_ARN"
+          done
+
+          CLASSIC_LOAD_BALANCERS=$(aws elb describe-load-balancers \
+            --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" \
+            --output text 2>/dev/null || true)
+          for LOAD_BALANCER_NAME in $CLASSIC_LOAD_BALANCERS; do
+            [ "$LOAD_BALANCER_NAME" != "None" ] || continue
+            aws elb delete-load-balancer \
+              --load-balancer-name "$LOAD_BALANCER_NAME"
+          done
+
+          VPC_ENDPOINT_IDS=$(aws ec2 describe-vpc-endpoints \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query 'VpcEndpoints[].VpcEndpointId' --output text 2>/dev/null || true)
+          if [ -n "$VPC_ENDPOINT_IDS" ] && [ "$VPC_ENDPOINT_IDS" != "None" ]; then
+            aws ec2 delete-vpc-endpoints \
+              --vpc-endpoint-ids $VPC_ENDPOINT_IDS >/dev/null
+          fi
+
           NAT_GATEWAY_IDS=$(aws ec2 describe-nat-gateways \
-            --filter "Name=subnet-id,Values=$SUBNET_ID" \
+            --filter "Name=vpc-id,Values=$VPC_ID" \
               'Name=state,Values=pending,available,failed' \
-            --query 'NatGateways[].NatGatewayId' --output text)
+            --query 'NatGateways[].NatGatewayId' --output text 2>/dev/null || true)
           for NAT_GATEWAY_ID in $NAT_GATEWAY_IDS; do
             [ "$NAT_GATEWAY_ID" != "None" ] || continue
             aws ec2 delete-nat-gateway --nat-gateway-id "$NAT_GATEWAY_ID" >/dev/null
             aws ec2 wait nat-gateway-deleted --nat-gateway-ids "$NAT_GATEWAY_ID"
           done
 
-          for ((ATTEMPT = 1; ATTEMPT <= 30; ATTEMPT++)); do
-            NETWORK_INTERFACE_IDS=$(aws ec2 describe-network-interfaces \
-              --filters "Name=subnet-id,Values=$SUBNET_ID" \
-              --query 'NetworkInterfaces[?Status==`available`].NetworkInterfaceId' \
+          # Resolver endpoints, load balancers, and VPC endpoints remove their
+          # ENIs asynchronously. Wait up to five minutes and delete only ENIs
+          # AWS reports as available.
+          for ((ATTEMPT = 1; ATTEMPT <= 60; ATTEMPT++)); do
+            AVAILABLE_ENIS=$(aws ec2 describe-network-interfaces \
+              --filters "Name=vpc-id,Values=$VPC_ID" \
+                'Name=status,Values=available' \
+              --query 'NetworkInterfaces[].NetworkInterfaceId' \
               --output text 2>/dev/null || true)
-            for NETWORK_INTERFACE_ID in $NETWORK_INTERFACE_IDS; do
-              [ "$NETWORK_INTERFACE_ID" != "None" ] || continue
+            for ENI_ID in $AVAILABLE_ENIS; do
+              [ "$ENI_ID" != "None" ] || continue
               aws ec2 delete-network-interface \
-                --network-interface-id "$NETWORK_INTERFACE_ID" >/dev/null 2>&1 || true
+                --network-interface-id "$ENI_ID" >/dev/null 2>&1 || true
             done
-            REMAINING=$(aws ec2 describe-network-interfaces \
-              --filters "Name=subnet-id,Values=$SUBNET_ID" \
+
+            REMAINING_ENIS=$(aws ec2 describe-network-interfaces \
+              --filters "Name=vpc-id,Values=$VPC_ID" \
               --query 'length(NetworkInterfaces)' --output text)
-            [ "$REMAINING" = "0" ] && break
+            [ "$REMAINING_ENIS" = "0" ] && break
             sleep 5
           done
 
-          aws ec2 delete-subnet --subnet-id "$SUBNET_ID" ||
-            fail_cleanup "Unable to delete orphaned subnet $SUBNET_ID; dependent AWS resources remain"
-        done <<< "$SUBNETS"
+          REMAINING_ENI_IDS=$(aws ec2 describe-network-interfaces \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query 'NetworkInterfaces[].NetworkInterfaceId' --output text)
+          if [ -n "$REMAINING_ENI_IDS" ] && [ "$REMAINING_ENI_IDS" != "None" ]; then
+            aws ec2 describe-network-interfaces \
+              --network-interface-ids $REMAINING_ENI_IDS \
+              --query 'NetworkInterfaces[].[NetworkInterfaceId,InterfaceType,Description,Status]' \
+              --output table >&2
+            fail_cleanup "AWS-managed network interfaces still block deletion of orphaned VPC $VPC_ID"
+          fi
+
+          for SUBNET_ID in $SUBNET_IDS; do
+            [ "$SUBNET_ID" != "None" ] || continue
+            aws ec2 delete-subnet --subnet-id "$SUBNET_ID"
+          done
+
+          ROUTE_TABLE_IDS=$(aws ec2 describe-route-tables \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query 'RouteTables[?Associations[?Main==`false`] || length(Associations)==`0`].RouteTableId' \
+            --output text 2>/dev/null || true)
+          for ROUTE_TABLE_ID in $ROUTE_TABLE_IDS; do
+            [ "$ROUTE_TABLE_ID" != "None" ] || continue
+            aws ec2 delete-route-table --route-table-id "$ROUTE_TABLE_ID" \
+              >/dev/null 2>&1 || true
+          done
+
+          SECURITY_GROUP_IDS=$(aws ec2 describe-security-groups \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
+            --output text 2>/dev/null || true)
+          for SECURITY_GROUP_ID in $SECURITY_GROUP_IDS; do
+            [ "$SECURITY_GROUP_ID" != "None" ] || continue
+            aws ec2 delete-security-group --group-id "$SECURITY_GROUP_ID" \
+              >/dev/null 2>&1 || true
+          done
+
+          INTERNET_GATEWAY_IDS=$(aws ec2 describe-internet-gateways \
+            --filters "Name=attachment.vpc-id,Values=$VPC_ID" \
+            --query 'InternetGateways[].InternetGatewayId' \
+            --output text 2>/dev/null || true)
+          for INTERNET_GATEWAY_ID in $INTERNET_GATEWAY_IDS; do
+            [ "$INTERNET_GATEWAY_ID" != "None" ] || continue
+            aws ec2 detach-internet-gateway \
+              --internet-gateway-id "$INTERNET_GATEWAY_ID" --vpc-id "$VPC_ID"
+            aws ec2 delete-internet-gateway \
+              --internet-gateway-id "$INTERNET_GATEWAY_ID"
+          done
+
+          aws ec2 delete-vpc --vpc-id "$VPC_ID" ||
+            fail_cleanup "Unable to delete orphaned VPC $VPC_ID; dependent AWS resources remain"
+        done
       }
 
       #########################################################################
@@ -489,7 +599,7 @@ resource "terraform_data" "preflight_cleanup" {
       #########################################################################
 
       echo "Checking orphaned network and S3 resources"
-      cleanup_orphan_subnets
+      cleanup_orphan_vpcs
       cleanup_artifact_bucket
 
       echo "Checking EC2 key pair: $KEY_PAIR_NAME"

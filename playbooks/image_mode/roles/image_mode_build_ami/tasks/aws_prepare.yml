@@ -87,7 +87,7 @@
       - "LocationConstraint={{ image_mode_aws_region }}"
   environment: "{{ image_mode_aws_environment }}"
   changed_when: true
-  no_log: true
+  no_log: false
   when:
     - image_mode_bucket_check.rc != 0
     - image_mode_create_artifacts_bucket | bool

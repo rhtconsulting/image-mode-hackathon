@@ -1,57 +1,43 @@
 ############################################################
-# Preflight Cleanup For Lab Rebuilds
+# Non-Destructive Preflight Validation
+#
+# Normal terraform apply operations must not delete AWS resources. Destructive
+# orphan cleanup belongs in the destroy-time cleanup resource below, or in an
+# explicit operator-run recovery procedure performed before terraform plan.
 ############################################################
 
 resource "terraform_data" "preflight_cleanup" {
-  triggers_replace = [
-    timestamp()
-  ]
-
   input = {
-    cleanup_version      = 9
-    environment_name     = var.environment_name
-    secret_prefix        = var.secret_prefix
-    aws_region           = var.aws_region
-    aws_profile          = var.aws_profile
-    key_pair_name        = "${var.environment_name}-ssh-key"
-    artifact_bucket_name = "${var.environment_name}-image-mode-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
+    cleanup_version  = 10
+    environment_name = var.environment_name
+    secret_prefix    = var.secret_prefix
+    aws_region       = var.aws_region
+    aws_profile      = var.aws_profile
+    aws_account_id   = data.aws_caller_identity.current.account_id
 
-    aap_role_name    = "${var.environment_name}-aap-role"
-    aap_profile_name = "${var.environment_name}-aap-instance-profile"
+    key_pair_name = "${var.environment_name}-ssh-key"
 
-    satellite_role_name    = "${var.environment_name}-satellite-role"
-    satellite_profile_name = "${var.environment_name}-satellite-instance-profile"
-
-    gitlab_role_name    = "${var.environment_name}-gitlab-runtime-role"
-    gitlab_profile_name = "${var.environment_name}-gitlab-instance-profile"
-
-    satellite_provisioner_user_name = (
-      "${var.environment_name}-satellite-provisioner"
+    artifact_bucket_name = (
+      "${var.environment_name}-image-mode-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
     )
 
-    rhel_iam_user_name = "rhel-iam"
-
-    lab_default_role_name = (
-      "${var.environment_name}-ec2-default-role"
-    )
-
-    lab_default_profile_name = (
-      "${var.environment_name}-ec2-default-instance-profile"
-    )
-
-    image_builder_role_name = (
-      "${var.environment_name}-image-builder-role"
-    )
-
-    image_builder_profile_name = (
-      "${var.environment_name}-image-builder-instance-profile"
-    )
+    aap_role_name              = "${var.environment_name}-aap-role"
+    aap_profile_name           = "${var.environment_name}-aap-instance-profile"
+    satellite_role_name        = "${var.environment_name}-satellite-role"
+    satellite_profile_name     = "${var.environment_name}-satellite-instance-profile"
+    gitlab_role_name           = "${var.environment_name}-gitlab-runtime-role"
+    gitlab_profile_name        = "${var.environment_name}-gitlab-instance-profile"
+    satellite_provisioner_user = "${var.environment_name}-satellite-provisioner"
+    rhel_iam_user_name         = "rhel-iam"
+    lab_default_role_name      = "${var.environment_name}-ec2-default-role"
+    lab_default_profile_name   = "${var.environment_name}-ec2-default-instance-profile"
+    image_builder_role_name    = "${var.environment_name}-image-builder-role"
+    image_builder_profile_name = "${var.environment_name}-image-builder-instance-profile"
+    vmimport_role_name         = "vmimport"
 
     image_builder_installation_isos_policy_name = (
       "${var.environment_name}-image-builder-installation-isos-read"
     )
-
-    vmimport_role_name = "vmimport"
 
     image_mode_artifact_policy_name = (
       "${var.environment_name}-image-mode-artifact-bucket-rw"
@@ -72,312 +58,33 @@ resource "terraform_data" "preflight_cleanup" {
     image_builder_certificate_policy_name = (
       "${var.environment_name}-image-builder-certificate-management"
     )
-
   }
 
-  provisioner "local-exec" {
-    interpreter = ["/bin/bash", "-c"]
-    working_dir = path.module
+  lifecycle {
+    precondition {
+      condition     = trimspace(var.environment_name) != ""
+      error_message = "environment_name must not be empty."
+    }
 
-    command = <<-EOT
-      set -euo pipefail
+    precondition {
+      condition     = trimspace(var.aws_region) != ""
+      error_message = "aws_region must not be empty."
+    }
 
-      export AWS_REGION="${var.aws_region}"
-      export AWS_DEFAULT_REGION="${var.aws_region}"
-      export AWS_PAGER=""
+    precondition {
+      condition = can(regex(
+        "^[a-z0-9][a-z0-9-]*[a-z0-9]$",
+        var.environment_name
+      ))
 
-      if [ -n "${var.aws_profile}" ]; then
-        export AWS_PROFILE="${var.aws_profile}"
-      else
-        unset AWS_PROFILE AWS_DEFAULT_PROFILE
-      fi
-
-      KEY_PAIR_NAME="${var.environment_name}-ssh-key"
-      ENVIRONMENT_NAME="${var.environment_name}"
-      ARTIFACT_BUCKET_NAME="${var.environment_name}-image-mode-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
-
-      AAP_ROLE_NAME="${var.environment_name}-aap-role"
-      AAP_PROFILE_NAME="${var.environment_name}-aap-instance-profile"
-
-      SATELLITE_ROLE_NAME="${var.environment_name}-satellite-role"
-      SATELLITE_PROFILE_NAME="${var.environment_name}-satellite-instance-profile"
-
-      GITLAB_ROLE_NAME="${var.environment_name}-gitlab-runtime-role"
-      GITLAB_PROFILE_NAME="${var.environment_name}-gitlab-instance-profile"
-
-      LAB_DEFAULT_ROLE_NAME="${var.environment_name}-ec2-default-role"
-      LAB_DEFAULT_PROFILE_NAME="${var.environment_name}-ec2-default-instance-profile"
-
-      IMAGE_BUILDER_ROLE_NAME="${var.environment_name}-image-builder-role"
-      IMAGE_BUILDER_PROFILE_NAME="${var.environment_name}-image-builder-instance-profile"
-      IMAGE_BUILDER_INSTALLATION_ISOS_POLICY_NAME="${var.environment_name}-image-builder-installation-isos-read"
-
-      VMIMPORT_ROLE_NAME="vmimport"
-      VMIMPORT_POLICY_NAME="${var.environment_name}-vmimport"
-
-      SATELLITE_PROVISIONER_USER_NAME="${var.environment_name}-satellite-provisioner"
-      SATELLITE_PROVISIONER_POLICY_NAME="${var.environment_name}-satellite-ec2-provisioning"
-
-      RHEL_IAM_USER_NAME="rhel-iam"
-
-      IMAGE_MODE_ARTIFACT_POLICY_NAME="${var.environment_name}-image-mode-artifact-bucket-rw"
-      BOOTC_AMI_IMPORT_POLICY_NAME="${var.environment_name}-bootc-ami-import-caller"
-      EC2_DISCOVERY_POLICY_NAME="${var.environment_name}-ec2-discovery"
-      IMAGE_BUILDER_EC2_PROVISIONING_POLICY_NAME="${var.environment_name}-image-builder-ec2-provisioning"
-      IMAGE_BUILDER_CERTIFICATE_POLICY_NAME="${var.environment_name}-image-builder-certificate-management"
-
-      echo "Preflight cleanup: duplicate-prone unmanaged lab resources"
-
-      #########################################################################
-      # Terraform state helpers
-      #########################################################################
-
-      state_has() {
-        terraform state list 2>/dev/null | grep -Fqx "$1"
-      }
-
-      state_contains_id() {
-        grep -Fq "\"$1\"" "$STATE_FILE"
-      }
-
-      fail_cleanup() {
-        echo "ERROR: $*" >&2
-        exit 1
-      }
-
-      STATE_FILE=$(mktemp "$${TMPDIR:-/tmp}/image-mode-lab-state.XXXXXX")
-      chmod 600 "$STATE_FILE"
-      trap 'rm -f "$STATE_FILE"' EXIT
-      terraform state pull >"$STATE_FILE" 2>/dev/null || printf '{}' >"$STATE_FILE"
-
-      cleanup_artifact_bucket() {
-        if state_has 'aws_s3_bucket.image_mode_artifacts'; then
-          echo "Skipping artifact bucket because it is managed by Terraform state."
-          return
-        fi
-
-        if ! aws s3api head-bucket --bucket "$ARTIFACT_BUCKET_NAME" 2>/dev/null; then
-          return
-        fi
-
-        BUCKET_ENVIRONMENT=$(aws s3api get-bucket-tagging \
-          --bucket "$ARTIFACT_BUCKET_NAME" \
-          --query "TagSet[?Key=='Environment'].Value | [0]" \
-          --output text 2>/dev/null || true)
-        [ "$BUCKET_ENVIRONMENT" = "$ENVIRONMENT_NAME" ] ||
-          fail_cleanup "Refusing to delete unowned bucket $ARTIFACT_BUCKET_NAME"
-
-        echo "Deleting orphaned artifact bucket: $ARTIFACT_BUCKET_NAME"
-
-        UPLOADS=$(aws s3api list-multipart-uploads \
-          --bucket "$ARTIFACT_BUCKET_NAME" \
-          --query 'Uploads[].[Key,UploadId]' --output text 2>/dev/null || true)
-        if [ -n "$UPLOADS" ] && [ "$UPLOADS" != "None" ]; then
-          while IFS=$'\t' read -r OBJECT_KEY UPLOAD_ID; do
-            [ -n "$OBJECT_KEY" ] || continue
-            aws s3api abort-multipart-upload --bucket "$ARTIFACT_BUCKET_NAME" \
-              --key "$OBJECT_KEY" --upload-id "$UPLOAD_ID"
-          done <<< "$UPLOADS"
-        fi
-
-        while true; do
-          VERSIONS=$(aws s3api list-object-versions \
-            --bucket "$ARTIFACT_BUCKET_NAME" --max-items 1000 \
-            --query '[Versions[].[Key,VersionId],DeleteMarkers[].[Key,VersionId]][]' \
-            --output text)
-          [ -n "$VERSIONS" ] && [ "$VERSIONS" != "None" ] || break
-          while IFS=$'\t' read -r OBJECT_KEY VERSION_ID; do
-            [ -n "$OBJECT_KEY" ] || continue
-            aws s3api delete-object --bucket "$ARTIFACT_BUCKET_NAME" \
-              --key "$OBJECT_KEY" --version-id "$VERSION_ID" >/dev/null
-          done <<< "$VERSIONS"
-        done
-
-        aws s3api delete-bucket --bucket "$ARTIFACT_BUCKET_NAME"
-      }
-
-      cleanup_orphan_vpcs() {
-        VPC_IDS=$(aws ec2 describe-vpcs \
-          --filters "Name=tag:Environment,Values=$ENVIRONMENT_NAME" \
-          --query 'Vpcs[].VpcId' --output text)
-        [ -n "$VPC_IDS" ] && [ "$VPC_IDS" != "None" ] || return 0
-
-        for VPC_ID in $VPC_IDS; do
-          if state_contains_id "$VPC_ID"; then
-            echo "Skipping state-managed VPC: $VPC_ID"
-            continue
-          fi
-
-          echo "Cleaning orphaned VPC and dependencies: $VPC_ID"
-
-          SUBNET_IDS=$(aws ec2 describe-subnets \
-            --filters "Name=vpc-id,Values=$VPC_ID" \
-            --query 'Subnets[].SubnetId' --output text)
-
-          # Stop Auto Scaling from replacing instances during cleanup.
-          ASG_DATA=$(aws autoscaling describe-auto-scaling-groups \
-            --query 'AutoScalingGroups[].[AutoScalingGroupName,VPCZoneIdentifier]' \
-            --output text 2>/dev/null || true)
-          while IFS=$'\t' read -r ASG_NAME ASG_SUBNETS; do
-            [ -n "$ASG_NAME" ] && [ "$ASG_NAME" != "None" ] || continue
-            for SUBNET_ID in $SUBNET_IDS; do
-              case ",$ASG_SUBNETS," in
-                *",$SUBNET_ID,"*)
-                  aws autoscaling update-auto-scaling-group \
-                    --auto-scaling-group-name "$ASG_NAME" \
-                    --min-size 0 --max-size 0 --desired-capacity 0
-                  aws autoscaling delete-auto-scaling-group \
-                    --auto-scaling-group-name "$ASG_NAME" --force-delete
-                  break
-                  ;;
-              esac
-            done
-          done <<< "$ASG_DATA"
-
-          # Route 53 Resolver endpoints own service-managed ENIs and are a
-          # common reason resolver subnets cannot be deleted.
-          RESOLVER_ENDPOINT_IDS=$(aws route53resolver list-resolver-endpoints \
-            --filters "Name=HostVPCId,Values=$VPC_ID" \
-            --query 'ResolverEndpoints[].Id' --output text 2>/dev/null || true)
-          for RESOLVER_ENDPOINT_ID in $RESOLVER_ENDPOINT_IDS; do
-            [ "$RESOLVER_ENDPOINT_ID" != "None" ] || continue
-            echo "Deleting Route 53 Resolver endpoint: $RESOLVER_ENDPOINT_ID"
-            aws route53resolver delete-resolver-endpoint \
-              --resolver-endpoint-id "$RESOLVER_ENDPOINT_ID" >/dev/null
-          done
-
-          INSTANCE_IDS=$(aws ec2 describe-instances \
-            --filters "Name=vpc-id,Values=$VPC_ID" \
-              'Name=instance-state-name,Values=pending,running,stopping,stopped' \
-            --query 'Reservations[].Instances[].InstanceId' --output text)
-          if [ -n "$INSTANCE_IDS" ] && [ "$INSTANCE_IDS" != "None" ]; then
-            for INSTANCE_ID in $INSTANCE_IDS; do
-              aws ec2 modify-instance-attribute --instance-id "$INSTANCE_ID" \
-                --disable-api-termination Value=false >/dev/null 2>&1 || true
-            done
-            aws ec2 terminate-instances --instance-ids $INSTANCE_IDS >/dev/null
-            aws ec2 wait instance-terminated --instance-ids $INSTANCE_IDS
-          fi
-
-          LOAD_BALANCER_ARNS=$(aws elbv2 describe-load-balancers \
-            --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" \
-            --output text 2>/dev/null || true)
-          for LOAD_BALANCER_ARN in $LOAD_BALANCER_ARNS; do
-            [ "$LOAD_BALANCER_ARN" != "None" ] || continue
-            aws elbv2 delete-load-balancer \
-              --load-balancer-arn "$LOAD_BALANCER_ARN"
-          done
-
-          CLASSIC_LOAD_BALANCERS=$(aws elb describe-load-balancers \
-            --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" \
-            --output text 2>/dev/null || true)
-          for LOAD_BALANCER_NAME in $CLASSIC_LOAD_BALANCERS; do
-            [ "$LOAD_BALANCER_NAME" != "None" ] || continue
-            aws elb delete-load-balancer \
-              --load-balancer-name "$LOAD_BALANCER_NAME"
-          done
-
-          VPC_ENDPOINT_IDS=$(aws ec2 describe-vpc-endpoints \
-            --filters "Name=vpc-id,Values=$VPC_ID" \
-            --query 'VpcEndpoints[].VpcEndpointId' --output text 2>/dev/null || true)
-          if [ -n "$VPC_ENDPOINT_IDS" ] && [ "$VPC_ENDPOINT_IDS" != "None" ]; then
-            aws ec2 delete-vpc-endpoints \
-              --vpc-endpoint-ids $VPC_ENDPOINT_IDS >/dev/null
-          fi
-
-          NAT_GATEWAY_IDS=$(aws ec2 describe-nat-gateways \
-            --filter "Name=vpc-id,Values=$VPC_ID" \
-              'Name=state,Values=pending,available,failed' \
-            --query 'NatGateways[].NatGatewayId' --output text 2>/dev/null || true)
-          for NAT_GATEWAY_ID in $NAT_GATEWAY_IDS; do
-            [ "$NAT_GATEWAY_ID" != "None" ] || continue
-            aws ec2 delete-nat-gateway --nat-gateway-id "$NAT_GATEWAY_ID" >/dev/null
-            aws ec2 wait nat-gateway-deleted --nat-gateway-ids "$NAT_GATEWAY_ID"
-          done
-
-          # Resolver endpoints, load balancers, and VPC endpoints remove their
-          # ENIs asynchronously. Wait up to five minutes and delete only ENIs
-          # AWS reports as available.
-          for ((ATTEMPT = 1; ATTEMPT <= 60; ATTEMPT++)); do
-            AVAILABLE_ENIS=$(aws ec2 describe-network-interfaces \
-              --filters "Name=vpc-id,Values=$VPC_ID" \
-                'Name=status,Values=available' \
-              --query 'NetworkInterfaces[].NetworkInterfaceId' \
-              --output text 2>/dev/null || true)
-            for ENI_ID in $AVAILABLE_ENIS; do
-              [ "$ENI_ID" != "None" ] || continue
-              aws ec2 delete-network-interface \
-                --network-interface-id "$ENI_ID" >/dev/null 2>&1 || true
-            done
-
-            REMAINING_ENIS=$(aws ec2 describe-network-interfaces \
-              --filters "Name=vpc-id,Values=$VPC_ID" \
-              --query 'length(NetworkInterfaces)' --output text)
-            [ "$REMAINING_ENIS" = "0" ] && break
-            sleep 5
-          done
-
-          REMAINING_ENI_IDS=$(aws ec2 describe-network-interfaces \
-            --filters "Name=vpc-id,Values=$VPC_ID" \
-            --query 'NetworkInterfaces[].NetworkInterfaceId' --output text)
-          if [ -n "$REMAINING_ENI_IDS" ] && [ "$REMAINING_ENI_IDS" != "None" ]; then
-            aws ec2 describe-network-interfaces \
-              --network-interface-ids $REMAINING_ENI_IDS \
-              --query 'NetworkInterfaces[].[NetworkInterfaceId,InterfaceType,Description,Status]' \
-              --output table >&2
-            fail_cleanup "AWS-managed network interfaces still block deletion of orphaned VPC $VPC_ID"
-          fi
-
-          for SUBNET_ID in $SUBNET_IDS; do
-            [ "$SUBNET_ID" != "None" ] || continue
-            aws ec2 delete-subnet --subnet-id "$SUBNET_ID"
-          done
-
-          ROUTE_TABLE_IDS=$(aws ec2 describe-route-tables \
-            --filters "Name=vpc-id,Values=$VPC_ID" \
-            --query 'RouteTables[?Associations[?Main==`false`] || length(Associations)==`0`].RouteTableId' \
-            --output text 2>/dev/null || true)
-          for ROUTE_TABLE_ID in $ROUTE_TABLE_IDS; do
-            [ "$ROUTE_TABLE_ID" != "None" ] || continue
-            aws ec2 delete-route-table --route-table-id "$ROUTE_TABLE_ID" \
-              >/dev/null 2>&1 || true
-          done
-
-          SECURITY_GROUP_IDS=$(aws ec2 describe-security-groups \
-            --filters "Name=vpc-id,Values=$VPC_ID" \
-            --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
-            --output text 2>/dev/null || true)
-          for SECURITY_GROUP_ID in $SECURITY_GROUP_IDS; do
-            [ "$SECURITY_GROUP_ID" != "None" ] || continue
-            aws ec2 delete-security-group --group-id "$SECURITY_GROUP_ID" \
-              >/dev/null 2>&1 || true
-          done
-
-          INTERNET_GATEWAY_IDS=$(aws ec2 describe-internet-gateways \
-            --filters "Name=attachment.vpc-id,Values=$VPC_ID" \
-            --query 'InternetGateways[].InternetGatewayId' \
-            --output text 2>/dev/null || true)
-          for INTERNET_GATEWAY_ID in $INTERNET_GATEWAY_IDS; do
-            [ "$INTERNET_GATEWAY_ID" != "None" ] || continue
-            aws ec2 detach-internet-gateway \
-              --internet-gateway-id "$INTERNET_GATEWAY_ID" --vpc-id "$VPC_ID"
-            aws ec2 delete-internet-gateway \
-              --internet-gateway-id "$INTERNET_GATEWAY_ID"
-          done
-
-          aws ec2 delete-vpc --vpc-id "$VPC_ID" ||
-            fail_cleanup "Unable to delete orphaned VPC $VPC_ID; dependent AWS resources remain"
-        done
-      }
-
-      echo "Checking orphaned network and S3 resources"
-      cleanup_orphan_vpcs
-      cleanup_artifact_bucket
-
-      echo "Preflight cleanup complete"
-    EOT
+      error_message = (
+        "environment_name must contain lowercase letters, numbers, and hyphens."
+      )
+    }
   }
 }
+
+
 ############################################################
 # Destroy-Time Cleanup Of Unmanaged Lab Resources
 #
@@ -479,6 +186,30 @@ resource "terraform_data" "destroy_cleanup" {
         fail \
           "VPC ownership mismatch: expected $CLEANUP_ENVIRONMENT_NAME, got $VPC_ENVIRONMENT"
       fi
+
+      ########################################################
+      # Delete Route 53 Resolver endpoints
+      #
+      # Resolver endpoints own service-managed ENIs. They must
+      # be removed before Terraform can delete the lab subnets.
+      ########################################################
+
+      RESOLVER_ENDPOINT_IDS="$(
+        aws route53resolver list-resolver-endpoints \
+          --filters "Name=HostVPCId,Values=$CLEANUP_VPC_ID" \
+          --query 'ResolverEndpoints[].Id' \
+          --output text 2>/dev/null || true
+      )"
+
+      for RESOLVER_ENDPOINT_ID in $RESOLVER_ENDPOINT_IDS; do
+        [ "$RESOLVER_ENDPOINT_ID" != "None" ] || continue
+
+        echo "Deleting Route 53 Resolver endpoint: $RESOLVER_ENDPOINT_ID"
+
+        aws route53resolver delete-resolver-endpoint \
+          --resolver-endpoint-id "$RESOLVER_ENDPOINT_ID" \
+          >/dev/null
+      done
 
       ########################################################
       # Delete Auto Scaling groups using lab subnets

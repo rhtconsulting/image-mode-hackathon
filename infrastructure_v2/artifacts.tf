@@ -58,8 +58,10 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
 
   name = "${var.environment_name}-image-mode-artifact-bucket-rw"
 
+  # Keep this description unchanged. IAM managed-policy descriptions
+  # cannot be updated in place; changing it forces policy replacement.
   description = (
-    "Create, configure, and access Image Mode build artifacts in the shared S3 bucket."
+    "Push and pull Image Mode build artifacts from the shared S3 bucket."
   )
 
   policy = jsonencode({

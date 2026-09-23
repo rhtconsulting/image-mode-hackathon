@@ -21,19 +21,19 @@ resource "terraform_data" "preflight_cleanup" {
       "${var.environment_name}-image-mode-artifacts-${data.aws_caller_identity.current.account_id}-${var.aws_region}"
     )
 
-    aap_role_name              = "${var.environment_name}-aap-role"
-    aap_profile_name           = "${var.environment_name}-aap-instance-profile"
-    satellite_role_name        = "${var.environment_name}-satellite-role"
-    satellite_profile_name     = "${var.environment_name}-satellite-instance-profile"
-    gitlab_role_name           = "${var.environment_name}-gitlab-runtime-role"
-    gitlab_profile_name        = "${var.environment_name}-gitlab-instance-profile"
-    satellite_provisioner_user = "${var.environment_name}-satellite-provisioner"
-    rhel_iam_user_name         = "rhel-iam"
-    lab_default_role_name      = "${var.environment_name}-ec2-default-role"
-    lab_default_profile_name   = "${var.environment_name}-ec2-default-instance-profile"
-    image_builder_role_name    = "${var.environment_name}-image-builder-role"
-    image_builder_profile_name = "${var.environment_name}-image-builder-instance-profile"
-    vmimport_role_name         = "vmimport"
+    aap_role_name                   = "${var.environment_name}-aap-role"
+    aap_profile_name                = "${var.environment_name}-aap-instance-profile"
+    satellite_role_name             = "${var.environment_name}-satellite-role"
+    satellite_profile_name          = "${var.environment_name}-satellite-instance-profile"
+    gitlab_role_name                = "${var.environment_name}-gitlab-runtime-role"
+    gitlab_profile_name             = "${var.environment_name}-gitlab-instance-profile"
+    satellite_provisioner_user_name = "${var.environment_name}-satellite-provisioner"
+    rhel_iam_user_name              = "rhel-iam"
+    lab_default_role_name           = "${var.environment_name}-ec2-default-role"
+    lab_default_profile_name        = "${var.environment_name}-ec2-default-instance-profile"
+    image_builder_role_name         = "${var.environment_name}-image-builder-role"
+    image_builder_profile_name      = "${var.environment_name}-image-builder-instance-profile"
+    vmimport_role_name              = "vmimport"
 
     image_builder_installation_isos_policy_name = (
       "${var.environment_name}-image-builder-installation-isos-read"
@@ -186,30 +186,6 @@ resource "terraform_data" "destroy_cleanup" {
         fail \
           "VPC ownership mismatch: expected $CLEANUP_ENVIRONMENT_NAME, got $VPC_ENVIRONMENT"
       fi
-
-      ########################################################
-      # Delete Route 53 Resolver endpoints
-      #
-      # Resolver endpoints own service-managed ENIs. They must
-      # be removed before Terraform can delete the lab subnets.
-      ########################################################
-
-      RESOLVER_ENDPOINT_IDS="$(
-        aws route53resolver list-resolver-endpoints \
-          --filters "Name=HostVPCId,Values=$CLEANUP_VPC_ID" \
-          --query 'ResolverEndpoints[].Id' \
-          --output text 2>/dev/null || true
-      )"
-
-      for RESOLVER_ENDPOINT_ID in $RESOLVER_ENDPOINT_IDS; do
-        [ "$RESOLVER_ENDPOINT_ID" != "None" ] || continue
-
-        echo "Deleting Route 53 Resolver endpoint: $RESOLVER_ENDPOINT_ID"
-
-        aws route53resolver delete-resolver-endpoint \
-          --resolver-endpoint-id "$RESOLVER_ENDPOINT_ID" \
-          >/dev/null
-      done
 
       ########################################################
       # Delete Auto Scaling groups using lab subnets

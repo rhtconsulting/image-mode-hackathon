@@ -373,6 +373,7 @@ resource "terraform_data" "bootstrap_lab" {
 
       REPO_DIR="${abspath(path.module)}/image-mode-hackathon"
       INVENTORY_FILE="${abspath(path.module)}/inventory.ini"
+      DEPLOY_SUCCESS_FILE="${abspath(path.module)}/.deploy-services-success"
 
       REPO_URL="https://github.com/rhtconsulting/image-mode-hackathon.git"
       BRANCH="dev"
@@ -402,9 +403,20 @@ resource "terraform_data" "bootstrap_lab" {
         echo " Deploying Image Mode Lab Services"
         echo "======================================"
 
+        # A marker from an earlier successful run must never allow the CoP
+        # pipeline to continue after a new, failed deployment attempt.
+        rm -f "$DEPLOY_SUCCESS_FILE"
+
         ansible-playbook \
           -i playbooks/inventory/hosts \
           playbooks/deploy-services.yml
+
+        # With set -e enabled, this is reached only when ansible-playbook
+        # completes with exit status 0 (no failed or unreachable hosts).
+        printf '%s\n' "${local_file.ansible_inventory.content_sha256}" \
+          > "$DEPLOY_SUCCESS_FILE"
+
+        echo "deploy-services.yml completed successfully with 0 failures."
       else
         echo "======================================"
         echo " Skipping deploy-services.yml"
@@ -816,7 +828,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       export AUTOMATION_HUB_TOKEN=""
 
       echo "======================================"
-      echo " Validating AAP Endpoint"
+      echo " Validating Completed Lab Deployment"
       echo "======================================"
 
       echo "AAP endpoint: $AAP2_CONTROLLER_URL"
@@ -826,19 +838,51 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       echo "Image name: $SAMPLE_IMAGE_NAME"
       echo "Default image tag: $SAMPLE_IMAGE_TAG"
 
+      DEPLOY_SUCCESS_FILE="${abspath(path.module)}/.deploy-services-success"
+      EXPECTED_INVENTORY_SHA256="${local_file.ansible_inventory.content_sha256}"
+
+      if [ ! -f "$DEPLOY_SUCCESS_FILE" ]; then
+        echo "The deploy-services.yml success marker does not exist." >&2
+        echo "The CoP pipeline will not run because the complete lab deployment" >&2
+        echo "has not been confirmed successful." >&2
+        echo "Run Terraform with run_deploy_services=true to resume the" >&2
+        echo "idempotent deployment before configuring the CoP pipeline." >&2
+        exit 1
+      fi
+
+      DEPLOYED_INVENTORY_SHA256="$(tr -d '[:space:]' < "$DEPLOY_SUCCESS_FILE")"
+
+      if [ "$DEPLOYED_INVENTORY_SHA256" != "$EXPECTED_INVENTORY_SHA256" ]; then
+        echo "The deploy-services.yml success marker belongs to a different inventory." >&2
+        echo "The CoP pipeline will not run against an unconfirmed deployment." >&2
+        echo "Run Terraform with run_deploy_services=true for the current inventory." >&2
+        exit 1
+      fi
+
+      echo "Confirmed: deploy-services.yml completed successfully for this inventory."
+
+      echo "======================================"
+      echo " Validating AAP API"
+      echo "======================================"
+
+      # This is a fail-fast sanity check, not a startup wait. A successful
+      # deploy-services.yml run has already installed and configured AAP.
       if ! curl \
         --silent \
         --show-error \
         --insecure \
-        --connect-timeout 15 \
-        --max-time 30 \
+        --fail \
+        --connect-timeout 5 \
+        --max-time 15 \
         --output /dev/null \
-        "$AAP2_CONTROLLER_URL/"; then
-        echo "Unable to connect to AAP at $AAP2_CONTROLLER_URL" >&2
+        "$AAP2_CONTROLLER_URL/api/gateway/v1/ping/"; then
+        echo "AAP Gateway API is unavailable at $AAP2_CONTROLLER_URL." >&2
+        echo "The completed deployment is no longer healthy; refusing to run" >&2
+        echo "the CoP pipeline. Check the AAP services, DNS, and port 443." >&2
         exit 1
       fi
 
-      echo "AAP endpoint is reachable."
+      echo "AAP Gateway API is healthy."
 
       if [ -f "$COP_REPO_DIR/configure-aap-controller.yml" ]; then
         COP_PLAYBOOK="$COP_REPO_DIR/configure-aap-controller.yml"

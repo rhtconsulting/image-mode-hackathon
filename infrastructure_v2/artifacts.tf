@@ -52,15 +52,14 @@ resource "aws_s3_bucket_versioning" "image_mode_artifacts" {
 ############################################################
 
 resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
-
   depends_on = [
-
     terraform_data.preflight_cleanup
-
   ]
 
   name = "${var.environment_name}-image-mode-artifact-bucket-rw"
 
+  # Keep this description unchanged. IAM managed-policy descriptions
+  # cannot be updated in place; changing it forces policy replacement.
   description = (
     "Push and pull Image Mode build artifacts from the shared S3 bucket."
   )
@@ -85,14 +84,15 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
       },
 
       #########################################################################
-      # Inspect and configure the Image Mode artifact bucket
+      # Create, inspect, and configure the Image Mode artifact bucket
       #########################################################################
 
       {
-        Sid    = "InspectAndConfigureImageModeArtifactBucket"
+        Sid    = "CreateInspectAndConfigureImageModeArtifactBucket"
         Effect = "Allow"
 
         Action = [
+          "s3:CreateBucket",
           "s3:GetBucketAcl",
           "s3:GetBucketLocation",
           "s3:GetBucketVersioning",
@@ -144,10 +144,13 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
 
         Condition = {
           StringLike = {
-            "s3:prefix" = [var.keycloak_installer_s3_key]
+            "s3:prefix" = [
+              var.keycloak_installer_s3_key
+            ]
           }
         }
       },
+
       {
         Sid    = "DownloadKeycloakInstaller"
         Effect = "Allow"
@@ -162,7 +165,6 @@ resource "aws_iam_policy" "image_mode_artifact_bucket_rw" {
     ]
   })
 }
-
 
 
 ############################################################
@@ -183,6 +185,3 @@ resource "aws_iam_role_policy_attachment" "gitlab_image_mode_artifacts" {
   role       = aws_iam_role.gitlab_runtime.name
   policy_arn = aws_iam_policy.image_mode_artifact_bucket_rw.arn
 }
-
-
-############################################################

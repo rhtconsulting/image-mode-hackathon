@@ -289,6 +289,18 @@
     backup: true
   when: not satellite_cleanup_manage_repos_enabled
 
+# Refresh the persistent SSH control connection before final validation. This
+# prevents a stale multiplexed connection from being reused after package and
+# repository cleanup activity.
+- name: PHASE 7 | Reset persistent SSH connection before validation
+  ansible.builtin.meta: reset_connection
+
+- name: PHASE 7 | Wait for SSH connection before final validation
+  ansible.builtin.wait_for_connection:
+    connect_timeout: 10
+    sleep: 5
+    timeout: 120
+
 - name: PHASE 7 | Read final RHSM configuration
   ansible.builtin.command:
     argv:
@@ -297,6 +309,9 @@
       - --list
   register: satellite_cleanup_final_config
   changed_when: false
+  retries: 3
+  delay: 5
+  until: satellite_cleanup_final_config.rc | default(1) == 0
 
 - name: PHASE 7 | Assert RHSM repository management is enabled
   ansible.builtin.assert:

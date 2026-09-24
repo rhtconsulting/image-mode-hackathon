@@ -376,7 +376,7 @@ resource "terraform_data" "bootstrap_lab" {
       DEPLOY_SUCCESS_FILE="${abspath(path.module)}/.deploy-services-success"
 
       REPO_URL="https://github.com/rhtconsulting/image-mode-hackathon.git"
-      BRANCH="adjust-secret-cleanup"
+      BRANCH="dev"
 
       echo "Using inventory: $INVENTORY_FILE"
 

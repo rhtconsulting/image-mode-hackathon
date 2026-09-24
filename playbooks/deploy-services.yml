@@ -1,36 +1,36 @@
 ---
-- name: Deploy Red Hat IdM Server
-  ansible.builtin.import_playbook: deploy-idm.yml
+# - name: Deploy Red Hat IdM Server
+#   ansible.builtin.import_playbook: deploy-idm.yml
 
-- name: Enroll hosts into IdM
-  ansible.builtin.import_playbook: enroll-idm-clients.yml
+# - name: Enroll hosts into IdM
+#   ansible.builtin.import_playbook: enroll-idm-clients.yml
 
-- name: Deploy Keycloak
-  ansible.builtin.import_playbook: deploy-keycloak.yml
+# - name: Deploy Keycloak
+#   ansible.builtin.import_playbook: deploy-keycloak.yml
 
 
-# RHTAS uses Keycloak as its OIDC provider, so it must be deployed after
-# Keycloak is available and the trusted-artifact-signer client exists.
-- name: Deploy Red Hat Trusted Artifact Signer
-  ansible.builtin.import_playbook: deploy-rhtas.yml
+# # RHTAS uses Keycloak as its OIDC provider, so it must be deployed after
+# # Keycloak is available and the trusted-artifact-signer client exists.
+# - name: Deploy Red Hat Trusted Artifact Signer
+#   ansible.builtin.import_playbook: deploy-rhtas.yml
 
-- name: Deploy Gitlab
-  ansible.builtin.import_playbook: deploy-gitlab.yml
+# - name: Deploy Gitlab
+#   ansible.builtin.import_playbook: deploy-gitlab.yml
 
-- name: Deploy Satellite
-  ansible.builtin.import_playbook: deploy-satellite.yml
+# - name: Deploy Satellite
+#   ansible.builtin.import_playbook: deploy-satellite.yml
 
-- name: Deploy Ansible Automation Platform
-  ansible.builtin.import_playbook: deploy-aap.yml
+# - name: Deploy Ansible Automation Platform
+#   ansible.builtin.import_playbook: deploy-aap.yml
 
-- name: Configure Ansible Automation Platform For SSO
-  ansible.builtin.import_playbook: configure-aap-idm-sso.yml
+# - name: Configure Ansible Automation Platform For SSO
+#   ansible.builtin.import_playbook: configure-aap-idm-sso.yml
 
-- name: Deploy Quay
-  ansible.builtin.import_playbook: deploy-quay.yml
+# - name: Deploy Quay
+#   ansible.builtin.import_playbook: deploy-quay.yml
 
-- name: Stage SSL Certs on Image Builder
-  ansible.builtin.import_playbook: stage-certs-on-image-builder-hosts.yml
+# - name: Stage SSL Certs on Image Builder
+#   ansible.builtin.import_playbook: stage-certs-on-image-builder-hosts.yml
 
 - name: Activate Satellite Registration On All Hosts
   ansible.builtin.import_playbook: activate-satellite-subscription.yml

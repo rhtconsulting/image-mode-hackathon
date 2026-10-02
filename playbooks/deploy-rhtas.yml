@@ -518,7 +518,7 @@
           - 301
           - 302
           - 404
-        validate_certs: false
+        validate_certs: true
       loop: "{{ rhtas_required_ingress_names }}"
       loop_control:
         label: "{{ item }}"

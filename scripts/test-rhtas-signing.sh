@@ -42,7 +42,8 @@
 #   - sha256sum
 #
 # Default RHTAS:
-#   rhtas-1.lab.sandbox866.opentlc.com
+#   The local server FQDN returned by hostname -f.
+#   Run on the RHTAS host, or supply RHTAS_HOST explicitly.
 #
 # Default test registry:
 #   ttl.sh
@@ -69,14 +70,9 @@ set -Eeuo pipefail
 # Configuration
 ###############################################################################
 
-RHTAS_HOST="${RHTAS_HOST:-rhtas-1.lab.sandbox866.opentlc.com}"
+# Preserve the caller's selection before the profile can overwrite RHTAS_HOST.
+readonly RHTAS_REQUESTED_HOST="${RHTAS_HOST:-}"
 WORKDIR="${WORKDIR:-/tmp/rhtas-sign-test}"
-
-CLI_SERVER_URL="https://cli-server.${RHTAS_HOST}"
-FULCIO_URL="https://fulcio.${RHTAS_HOST}"
-REKOR_URL="https://rekor.${RHTAS_HOST}"
-TUF_URL="https://tuf.${RHTAS_HOST}"
-TSA_URL="https://tsa.${RHTAS_HOST}"
 
 TUF_ROOT="${WORKDIR}/1.root.json"
 
@@ -166,8 +162,37 @@ pass "Loaded /etc/profile.d/rhtas.sh"
 
 
 ###############################################################################
-# Use the explicitly selected RHTAS deployment.
+# Select the local RHTAS deployment, unless the caller explicitly overrides it.
 ###############################################################################
+
+if [[ -n "${RHTAS_REQUESTED_HOST}" ]]; then
+    RHTAS_HOST="${RHTAS_REQUESTED_HOST}"
+    RHTAS_HOST_SOURCE="RHTAS_HOST override"
+else
+    if ! RHTAS_HOST="$(hostname -f 2>/dev/null)"; then
+        fail "Unable to detect the server FQDN. Set RHTAS_HOST to the RHTAS server's full hostname."
+    fi
+    RHTAS_HOST_SOURCE="hostname -f"
+fi
+
+# Normalize DNS spelling and reject short names, URLs, ports, and invalid labels.
+RHTAS_HOST="$(printf '%s' "${RHTAS_HOST}" | tr '[:upper:]' '[:lower:]')"
+RHTAS_HOST="${RHTAS_HOST%.}"
+if [[ ${#RHTAS_HOST} -gt 253 || "${RHTAS_HOST}" != *.* ||
+      "${RHTAS_HOST}" =~ ^[0-9.]+$ ]]; then
+    fail "RHTAS_HOST must be a full DNS hostname: '${RHTAS_HOST}'"
+fi
+if ! [[ "${RHTAS_HOST}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
+    fail "Invalid RHTAS hostname: '${RHTAS_HOST}'. Supply a hostname without a URL scheme, path, or port."
+fi
+IFS='.' read -r -a rhtas_labels <<< "${RHTAS_HOST}"
+for rhtas_label in "${rhtas_labels[@]}"; do
+    if (( ${#rhtas_label} > 63 )); then
+        fail "RHTAS hostname contains a DNS label longer than 63 characters"
+    fi
+done
+
+info "Selected ${RHTAS_HOST} using ${RHTAS_HOST_SOURCE}"
 
 export RHTAS_HOST
 export RHTAS_BASE_HOSTNAME="${RHTAS_HOST}"

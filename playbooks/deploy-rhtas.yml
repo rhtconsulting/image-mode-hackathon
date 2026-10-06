@@ -406,13 +406,11 @@
     - name: PHASE 3A | Convert exported ACM certificate into Ansible facts
       ansible.builtin.set_fact:
         rhtas_acm_export: "{{ rhtas_acm_export_result.stdout | from_json }}"
-        rhtas_acm_fullchain: >-
-          {{
-            (rhtas_acm_export_result.stdout | from_json).Certificate
-            ~ '\n'
-            ~ (rhtas_acm_export_result.stdout | from_json).CertificateChain
-          }}
+        rhtas_acm_fullchain: |
+          {{ (rhtas_acm_export_result.stdout | from_json).Certificate | trim }}
+          {{ (rhtas_acm_export_result.stdout | from_json).CertificateChain | trim }}
       no_log: true
+
 
     - name: PHASE 3A | Create temporary encrypted private-key file
       ansible.builtin.tempfile:
@@ -520,7 +518,7 @@
           - 301
           - 302
           - 404
-        validate_certs: false
+        validate_certs: true
       loop: "{{ rhtas_required_ingress_names }}"
       loop_control:
         label: "{{ item }}"

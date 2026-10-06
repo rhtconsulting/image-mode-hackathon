@@ -39,6 +39,7 @@
     keycloak_rhtas_redirect_uris:
       - "http://localhost:*"
       - "http://127.0.0.1:*"
+      - "urn:ietf:wg:oauth:2.0:oob"
     keycloak_rhtas_ci_client_id: trusted-artifact-signer-ci
     keycloak_rhtas_ci_client_name: >-
       Red Hat Trusted Artifact Signer - AAP Automation
@@ -1431,6 +1432,7 @@
           - (keycloak_rhtas_client_result.stdout | from_json).clientId == keycloak_rhtas_client_id
           - (keycloak_rhtas_client_result.stdout | from_json).publicClient | bool
           - (keycloak_rhtas_client_result.stdout | from_json).standardFlowEnabled | bool
+          - "'urn:ietf:wg:oauth:2.0:oob' in ((keycloak_rhtas_client_result.stdout | from_json).redirectUris | default([]))"
           - "'email' in (keycloak_rhtas_final_mappers.stdout | from_json | map(attribute='name') | list)"
           - "'email-verified' in (keycloak_rhtas_final_mappers.stdout | from_json | map(attribute='name') | list)"
           - "'trusted-artifact-signer-audience' in (keycloak_rhtas_final_mappers.stdout | from_json | map(attribute='name') | list)"

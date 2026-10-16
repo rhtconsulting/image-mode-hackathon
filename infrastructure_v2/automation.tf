@@ -31,6 +31,16 @@ locals {
   # This automation expects exactly one server with role "gitlab".
   primary_gitlab_hostname = one(local.gitlab_server_hostnames)
 
+  satellite_server_hostnames = [
+    for name, server in local.flattened_servers :
+    server.hostname
+    if server.role == "satellite"
+  ]
+
+  # Dynamically resolved from the Satellite server created by this deployment.
+  primary_satellite_hostname = one(local.satellite_server_hostnames)
+  primary_satellite_url      = "https://${local.primary_satellite_hostname}"
+
   cop_webhook_workflow_name = (
     "[Image Mode CI/CD - AAP] Build sample RHEL 9 web image"
   )
@@ -376,7 +386,7 @@ resource "terraform_data" "bootstrap_lab" {
       DEPLOY_SUCCESS_FILE="${abspath(path.module)}/.deploy-services-success"
 
       REPO_URL="https://github.com/rhtconsulting/image-mode-hackathon.git"
-      BRANCH="dev"
+      BRANCH="add-dynamic-satellite-endpoint-detection"
 
       echo "Using inventory: $INVENTORY_FILE"
 
@@ -460,6 +470,8 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
     local_file.ansible_inventory.content_sha256,
     local.primary_aap_url,
     local.primary_quay_hostname,
+    local.primary_satellite_hostname,
+    local.primary_satellite_url,
     local.cop_sample_git_project_path,
     local.cop_sample_quay_namespace,
     local.cop_sample_image_name,
@@ -499,6 +511,10 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
 
       # Dynamic registry endpoint produced by this Terraform environment.
       QUAY_REGISTRY_HOST = local.primary_quay_hostname
+
+      # Dynamic Satellite endpoints produced by this Terraform environment.
+      SATELLITE_SERVER_HOST = local.primary_satellite_hostname
+      SATELLITE_SERVER_URL  = local.primary_satellite_url
 
       # Stable paths and tag used to construct workflow defaults. The service
       # endpoints themselves are read from the generated Ansible inventory.
@@ -560,7 +576,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       INVENTORY_FILE="${abspath(path.module)}/inventory.ini"
 
       COP_REPO_URL="https://gitlab.com/philip860/rhel-image-mode-aap.git"
-      COP_REPO_BRANCH="dev"
+      COP_REPO_BRANCH="add-rhtas-tasks"
 
       COP_VARS_TEMPLATE="$HACKATHON_REPO_DIR/infrastructure_v2/cop-aap-pipeline-vars.tpl"
       COP_VARS_FILE="$COP_REPO_DIR/demo-setup-vars.yml"
@@ -619,6 +635,8 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
           AAP2_CONTROLLER_USERNAME \
           AAP2_CONTROLLER_PASSWORD \
           QUAY_REGISTRY_HOST \
+          SATELLITE_SERVER_HOST \
+          SATELLITE_SERVER_URL \
           SAMPLE_GIT_PROJECT_PATH \
           SAMPLE_QUAY_NAMESPACE \
           SAMPLE_IMAGE_NAME \
@@ -668,6 +686,25 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
           exit 1
           ;;
       esac
+
+      if [ -z "$SATELLITE_SERVER_HOST" ] ||
+         [ -z "$SATELLITE_SERVER_URL" ]; then
+        echo "Terraform did not generate the Satellite endpoints." >&2
+        exit 1
+      fi
+
+      case "$SATELLITE_SERVER_HOST" in
+        http://*|https://*|*/*)
+          echo "Invalid Satellite registry hostname: $SATELLITE_SERVER_HOST" >&2
+          echo "Expected a hostname without a scheme or repository path." >&2
+          exit 1
+          ;;
+      esac
+
+      if [ "$SATELLITE_SERVER_URL" != "https://$SATELLITE_SERVER_HOST" ]; then
+        echo "Satellite URL and hostname do not describe the same server." >&2
+        exit 1
+      fi
 
       if [ -z "$SAMPLE_GIT_PROJECT_PATH" ] ||
          [ -z "$SAMPLE_QUAY_NAMESPACE" ] ||
@@ -794,12 +831,16 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
         --arg quay_login_password "$QUAY_PASSWORD" \
         --arg custom_registry_username "$QUAY_USERNAME" \
         --arg custom_registry_password "$QUAY_PASSWORD" \
+        --arg satellite_server_url "$SATELLITE_SERVER_URL" \
+        --arg satellite_registry_url "$SATELLITE_SERVER_HOST" \
         '{
           custom_registry_url: $custom_registry_url,
           quay_login_username: $quay_login_username,
           quay_login_password: $quay_login_password,
           custom_registry_username: $custom_registry_username,
-          custom_registry_password: $custom_registry_password
+          custom_registry_password: $custom_registry_password,
+          satellite_server_url: $satellite_server_url,
+          satellite_registry_url: $satellite_registry_url
         }' > "$COP_RUNTIME_VARS_FILE"
 
       if [ "$(jq -r '.custom_registry_url' "$COP_RUNTIME_VARS_FILE")" != \
@@ -809,8 +850,12 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
          [ -z "$(jq -r '.quay_login_password' "$COP_RUNTIME_VARS_FILE")" ] ||
          [ "$(jq -r '.custom_registry_username' "$COP_RUNTIME_VARS_FILE")" != \
            "image-mode-builder" ] ||
-         [ -z "$(jq -r '.custom_registry_password' "$COP_RUNTIME_VARS_FILE")" ]; then
-        echo "Unable to prepare required Quay credential variables." >&2
+         [ -z "$(jq -r '.custom_registry_password' "$COP_RUNTIME_VARS_FILE")" ] ||
+         [ "$(jq -r '.satellite_server_url' "$COP_RUNTIME_VARS_FILE")" != \
+           "$SATELLITE_SERVER_URL" ] ||
+         [ "$(jq -r '.satellite_registry_url' "$COP_RUNTIME_VARS_FILE")" != \
+           "$SATELLITE_SERVER_HOST" ]; then
+        echo "Unable to prepare required Quay and Satellite runtime variables." >&2
         exit 1
       fi
 
@@ -833,6 +878,8 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
 
       echo "AAP endpoint: $AAP2_CONTROLLER_URL"
       echo "Quay login registry: $QUAY_REGISTRY_HOST"
+      echo "Satellite API: $SATELLITE_SERVER_URL"
+      echo "Satellite registry: $SATELLITE_SERVER_HOST"
       echo "GitLab project path: $SAMPLE_GIT_PROJECT_PATH"
       echo "Quay namespace: $SAMPLE_QUAY_NAMESPACE"
       echo "Image name: $SAMPLE_IMAGE_NAME"

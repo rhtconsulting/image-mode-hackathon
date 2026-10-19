@@ -109,6 +109,9 @@
         | default(secret_prefix ~ '/aws/rhel-iam', true)
       }}
 
+    rhtas_oidc_client_secret_name: >-
+      {{ secret_prefix }}/rhtas/oidc_ci_client_secret
+      
     ###########################################################################
     # Registry configuration
     ###########################################################################
@@ -652,6 +655,81 @@
           Verify that the secret exists and that the CaC AWS identity has
           secretsmanager:GetSecretValue permission.
 
+
+    ###########################################################################
+    # Read rhtas oidc client secret credentials
+    ###########################################################################
+
+    - name: Require the Terraform RHTAS inventory group
+      ansible.builtin.assert:
+        that:
+          - groups['rhtas'] | default([]) | length > 0
+        fail_msg: >-
+          The generated inventory must contain at least one host in group
+          'rhtas' before the RHTAS signing credential can be configured.
+
+    - name: Resolve the primary RHTAS hostname
+      ansible.builtin.set_fact:
+        resolved_rhtas_inventory_hostname: "{{ groups['rhtas'][0] }}"
+        rhtas_base_hostname: >-
+          {{
+            hostvars[groups['rhtas'][0]].rhtas_base_hostname
+            | default(
+                hostvars[groups['rhtas'][0]].public_tls_fqdn
+                | default(
+                    hostvars[groups['rhtas'][0]].fqdn
+                    | default(groups['rhtas'][0], true),
+                    true
+                  ),
+                true
+              )
+            | string
+            | trim
+          }}
+
+    - name: Read the RHTAS unattended-signing client secret
+      ansible.builtin.command:
+        argv:
+          - aws
+          - secretsmanager
+          - get-secret-value
+          - --secret-id
+          - "{{ rhtas_oidc_client_secret_name }}"
+          - --region
+          - "{{ resolved_aws_region }}"
+          - --profile
+          - "{{ resolved_aws_profile }}"
+          - --query
+          - SecretString
+          - --output
+          - text
+      register: rhtas_oidc_client_secret_result
+      changed_when: false
+      no_log: true
+
+    - name: Set the RHTAS unattended-signing credential variables
+      ansible.builtin.set_fact:
+        rhtas_oidc_client_secret: >-
+          {{
+            rhtas_oidc_client_secret_result.stdout
+            | string
+            | trim
+          }}
+      no_log: true
+
+    - name: Validate the RHTAS unattended-signing credential variables
+      ansible.builtin.assert:
+        that:
+          - rhtas_base_hostname | default('') | length > 0
+          - rhtas_oidc_issuer_url | default('') | length > 0
+          - rhtas_oidc_client_secret | default('') | length > 0
+          - rhtas_oidc_client_secret != 'None'
+        fail_msg: >-
+          The RHTAS endpoint or unattended-signing client secret could not be
+          resolved. Verify inventory group 'rhtas', rhtas_oidc_issuer_url, AWS
+          Secrets Manager secret '{{ rhtas_oidc_client_secret_name }}', and the
+          CaC AWS identity's secretsmanager:GetSecretValue permission.
+      no_log: true
 
     ###########################################################################
     # Read dedicated Quay LDAP registry credentials

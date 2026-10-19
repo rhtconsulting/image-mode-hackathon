@@ -502,6 +502,8 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
     working_dir = path.module
 
     environment = {
+      RUN_DEPLOY_SERVICES = tostring(var.run_deploy_services)
+
       AWS_PROFILE        = var.aws_profile
       AWS_REGION         = var.aws_region
       AWS_DEFAULT_REGION = var.aws_region
@@ -873,7 +875,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       export AUTOMATION_HUB_TOKEN=""
 
       echo "======================================"
-      echo " Validating Completed Lab Deployment"
+      echo " Validating Lab Deployment"
       echo "======================================"
 
       echo "AAP endpoint: $AAP2_CONTROLLER_URL"
@@ -888,32 +890,52 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       DEPLOY_SUCCESS_FILE="${abspath(path.module)}/.deploy-services-success"
       EXPECTED_INVENTORY_SHA256="${local_file.ansible_inventory.content_sha256}"
 
-      if [ ! -f "$DEPLOY_SUCCESS_FILE" ]; then
-        echo "The deploy-services.yml success marker does not exist." >&2
-        echo "The CoP pipeline will not run because the complete lab deployment" >&2
-        echo "has not been confirmed successful." >&2
-        echo "Run Terraform with run_deploy_services=true to resume the" >&2
-        echo "idempotent deployment before configuring the CoP pipeline." >&2
-        exit 1
+      if [ "$RUN_DEPLOY_SERVICES" = "true" ]; then
+        echo "Validating freshly completed lab deployment."
+
+        if [ ! -f "$DEPLOY_SUCCESS_FILE" ]; then
+          echo "ERROR: Deployment success marker is missing." >&2
+          exit 1
+        fi
+
+        DEPLOYED_INVENTORY_SHA256="$(
+          tr -d '[:space:]' < "$DEPLOY_SUCCESS_FILE"
+        )"
+
+        if [ "$DEPLOYED_INVENTORY_SHA256" != "$EXPECTED_INVENTORY_SHA256" ]; then
+          echo "ERROR: Deployment inventory fingerprint mismatch." >&2
+          exit 1
+        fi
+
+        echo "Confirmed: deploy-services.yml completed for this inventory."
+
+      else
+        echo "======================================"
+        echo " Reusing Existing Lab Deployment"
+        echo "======================================"
+
+        if [ -f "$DEPLOY_SUCCESS_FILE" ]; then
+          DEPLOYED_INVENTORY_SHA256="$(
+            tr -d '[:space:]' < "$DEPLOY_SUCCESS_FILE"
+          )"
+
+          if [ "$DEPLOYED_INVENTORY_SHA256" = "$EXPECTED_INVENTORY_SHA256" ]; then
+            echo "Existing deployment marker matches current inventory."
+          else
+            echo "WARNING: Inventory differs from the last successful deployment."
+            echo "Live service validation is required before proceeding."
+          fi
+        else
+          echo "WARNING: No deployment success marker found."
+          echo "Live service validation is required before proceeding."
+        fi
       fi
-
-      DEPLOYED_INVENTORY_SHA256="$(tr -d '[:space:]' < "$DEPLOY_SUCCESS_FILE")"
-
-      if [ "$DEPLOYED_INVENTORY_SHA256" != "$EXPECTED_INVENTORY_SHA256" ]; then
-        echo "The deploy-services.yml success marker belongs to a different inventory." >&2
-        echo "The CoP pipeline will not run against an unconfirmed deployment." >&2
-        echo "Run Terraform with run_deploy_services=true for the current inventory." >&2
-        exit 1
-      fi
-
-      echo "Confirmed: deploy-services.yml completed successfully for this inventory."
 
       echo "======================================"
       echo " Validating AAP API"
       echo "======================================"
 
-      # This is a fail-fast sanity check, not a startup wait. A successful
-      # deploy-services.yml run has already installed and configured AAP.
+      # Check AAP reachability for both fresh and reused deployments.
       if ! curl \
         --silent \
         --show-error \
@@ -924,12 +946,60 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
         --output /dev/null \
         "$AAP2_CONTROLLER_URL/api/gateway/v1/ping/"; then
         echo "AAP Gateway API is unavailable at $AAP2_CONTROLLER_URL." >&2
-        echo "The completed deployment is no longer healthy; refusing to run" >&2
+        echo "AAP did not pass the endpoint check; refusing to run" >&2
         echo "the CoP pipeline. Check the AAP services, DNS, and port 443." >&2
         exit 1
       fi
 
       echo "AAP Gateway API is healthy."
+
+      echo "Validating Satellite API..."
+
+      if ! SATELLITE_HTTP_CODE="$(
+        curl --silent --show-error --insecure \
+          --output /dev/null \
+          --write-out '%%{http_code}' \
+          --connect-timeout 5 \
+          --max-time 15 \
+          "$SATELLITE_SERVER_URL/api/status"
+      )"; then
+        echo "ERROR: Unable to connect to Satellite API: $SATELLITE_SERVER_URL" >&2
+        exit 1
+      fi
+
+      case "$SATELLITE_HTTP_CODE" in
+        200|401|403)
+          echo "Satellite API reachable (HTTP $SATELLITE_HTTP_CODE)."
+          ;;
+        *)
+          echo "ERROR: Satellite API unavailable (HTTP $SATELLITE_HTTP_CODE)." >&2
+          exit 1
+          ;;
+      esac
+
+      echo "Validating Quay Registry..."
+
+      if ! QUAY_HTTP_CODE="$(
+        curl --silent --show-error --insecure \
+          --output /dev/null \
+          --write-out '%%{http_code}' \
+          --connect-timeout 5 \
+          --max-time 15 \
+          "https://$QUAY_REGISTRY_HOST/v2/"
+      )"; then
+        echo "ERROR: Unable to connect to Quay Registry: $QUAY_REGISTRY_HOST" >&2
+        exit 1
+      fi
+
+      case "$QUAY_HTTP_CODE" in
+        200|401)
+          echo "Quay Registry reachable (HTTP $QUAY_HTTP_CODE)."
+          ;;
+        *)
+          echo "ERROR: Quay Registry unavailable (HTTP $QUAY_HTTP_CODE)." >&2
+          exit 1
+          ;;
+      esac
 
       if [ -f "$COP_REPO_DIR/configure-aap-controller.yml" ]; then
         COP_PLAYBOOK="$COP_REPO_DIR/configure-aap-controller.yml"

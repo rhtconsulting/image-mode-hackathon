@@ -386,7 +386,7 @@ resource "terraform_data" "bootstrap_lab" {
       DEPLOY_SUCCESS_FILE="${abspath(path.module)}/.deploy-services-success"
 
       REPO_URL="https://github.com/rhtconsulting/image-mode-hackathon.git"
-      BRANCH="add-dynamic-satellite-endpoint-detection"
+      BRANCH="dev"
 
       echo "Using inventory: $INVENTORY_FILE"
 
@@ -578,7 +578,7 @@ resource "terraform_data" "deploy_cop_aap_pipeline" {
       INVENTORY_FILE="${abspath(path.module)}/inventory.ini"
 
       COP_REPO_URL="https://gitlab.com/philip860/rhel-image-mode-aap.git"
-      COP_REPO_BRANCH="add-rhtas-tasks"
+      COP_REPO_BRANCH="dev"
 
       COP_VARS_TEMPLATE="$HACKATHON_REPO_DIR/infrastructure_v2/cop-aap-pipeline-vars.tpl"
       COP_VARS_FILE="$COP_REPO_DIR/demo-setup-vars.yml"
